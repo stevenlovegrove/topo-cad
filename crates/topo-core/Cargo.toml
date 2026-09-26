@@ -1,0 +1,12 @@
+[package]
+name = "topo-core"
+description = "Topology-first model IR: nodes, members, sections, materials, connections, groups"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

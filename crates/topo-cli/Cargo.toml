@@ -1,0 +1,19 @@
+[package]
+name = "topo-cli"
+description = "Command-line renderer for topo-cad models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "topo"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+topo-core.workspace = true
+topo-geom.workspace = true
+topo-draw.workspace = true
+topo-timber.workspace = true
+topo-analysis.workspace = true
+topo-script.workspace = true

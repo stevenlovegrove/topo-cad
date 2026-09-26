@@ -1,0 +1,10 @@
+[package]
+name = "topo-geom"
+description = "Derives member solids from topology: junction resolution, end cuts, clashes, meshes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+topo-core.workspace = true

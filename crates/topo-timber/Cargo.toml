@@ -1,0 +1,13 @@
+[package]
+name = "topo-timber"
+description = "Wood light-frame domain: lumber catalog, NDS reference data, fastening presets, wall/floor generators"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+topo-core.workspace = true
+
+[dev-dependencies]
+topo-geom.workspace = true

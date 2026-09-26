@@ -1,0 +1,23 @@
+[package]
+name = "topo-script"
+description = "Runs topo-cad TypeScript models (QuickJS + oxc) and builds the model from their scene spec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+topo-core.workspace = true
+topo-timber.workspace = true
+rquickjs = { version = "0.14", features = ["loader"] }
+oxc_allocator = "0.151"
+oxc_parser = "0.151"
+oxc_semantic = "0.151"
+oxc_transformer = "0.151"
+oxc_codegen = "0.151"
+oxc_span = "0.151"
+
+[dev-dependencies]
+topo-geom.workspace = true
+topo-analysis.workspace = true

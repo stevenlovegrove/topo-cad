@@ -1,0 +1,14 @@
+[package]
+name = "topo-analysis"
+description = "Analytical model extraction, load paths, load combinations and design-code interfaces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+topo-core.workspace = true
+topo-geom.workspace = true
+
+[dev-dependencies]
+topo-timber.workspace = true

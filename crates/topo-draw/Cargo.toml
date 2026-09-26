@@ -1,0 +1,13 @@
+[package]
+name = "topo-draw"
+description = "Engineering drawings from topo-cad models: views, hidden-line removal, dimensions, schedules, SVG/DXF"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+topo-core.workspace = true
+topo-geom.workspace = true
+topo-timber.workspace = true
+topo-analysis.workspace = true

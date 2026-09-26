@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "paths": { "topo-cad": ["../ts/topo-cad.ts"] }
+  },
+  "include": ["*.ts"]
+}
