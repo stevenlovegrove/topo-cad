@@ -10,6 +10,7 @@ import {
   Building, DFL, dressed, ft, horizontal, inch, lengthOf, meet, measured, type Nominal, Perimeter, type Point, psf,
   TrussRoof, TrussShape, unknown, Wall,
 } from "topo-cad";
+import { fieldMeasurements } from "./garage-truss.measured";
 
 export interface TrussParams {
   /** Top chord pitch (rise/run). */
@@ -132,4 +133,4 @@ export default Building.named("Existing garage truss")
     notes: ["2x6 bottom chord; 2x4 top chords and webs. Eave tail plumb cut.", "Left flat part cantilevers past the left wall. Wall height is a placeholder."],
   })
   .add(leftWalls, rightWalls, roof)
-  .measure(measurements);
+  .measure(measurements, fieldMeasurements);

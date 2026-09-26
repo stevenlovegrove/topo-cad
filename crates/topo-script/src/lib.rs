@@ -6,6 +6,7 @@
 //! export (a `Building`) is serialized to a [`SceneSpec`] and expanded into a
 //! [`Model`](topo_core::Model) by the Rust generators.
 
+pub mod measfile;
 pub mod solve;
 pub mod spec;
 
@@ -91,10 +92,9 @@ impl Resolver for ModelResolver {
         if !(name.starts_with("./") || name.starts_with("../")) {
             return Err(rquickjs::Error::new_resolving_message(base, name, "only \"topo-cad\" and relative imports (./file) are supported"));
         }
-        let mut p = Path::new(base).parent().unwrap_or(Path::new("")).join(name);
-        if p.extension().is_none() {
-            p.set_extension("ts");
-        }
+        // `.ts` is implied unless given (`./x.measured` → `./x.measured.ts`).
+        let file = if name.ends_with(".ts") { name.to_string() } else { format!("{name}.ts") };
+        let p = Path::new(base).parent().unwrap_or(Path::new("")).join(file);
         Ok(normalize(&p).to_string_lossy().into_owned())
     }
 }

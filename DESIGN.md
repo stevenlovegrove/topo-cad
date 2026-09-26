@@ -209,7 +209,29 @@ variants (existing vs. proposed) are functions of each other.
   computed in the local frame, so a moved or rotated copy is identical.
 * **Plated/hardware joints** are exempt from the bearing check (the hardware
   carries the load; fit-up gaps such as at a scissors apex are expected).
-* **Stable names** for generated pieces (planned) so overrides survive edits.
+* **Stable names** for generated pieces: members have paths such as
+  `Existing trusses/T2/bottom_chord.F-H1`, matched by suffix.
+
+## 8a. Field measurements and fitting
+
+Measurements relate *physical features* rather than topology nodes (which
+are often not measurable). A feature is the intersection of 1–3 named planes
+of member solids — faces (`top`, `bottom`, `front`, `back`), cut ends
+(`start`, `end`) or mid-planes — so "where the top chord's top face meets the
+bottom chord's top face" is a precise, stable reference. Quantities:
+horizontal/vertical distance (direction inferred from the features; an error
+if ambiguous) and member length (lumber or centreline).
+
+A script declares `unknown(...)` parameters and `measured(...)` readings;
+`topo run` fits the unknowns by Levenberg–Marquardt, re-evaluating the script
+per trial, and reports values ± 1σ, misfits, and undetermined unknowns. The
+script stays the source of truth: there is no separate solved state.
+
+`topo serve model.ts` is the visual companion: pick faces, corners and
+members on the drawings (server-side hit testing against the exact solids),
+see the model's value, type the tape reading, and it is appended as readable
+TypeScript to `model.measured.ts`. File changes trigger a re-fit; measurements
+are drawn on the sheets coloured by fit.
 
 ## 9. Roadmap
 

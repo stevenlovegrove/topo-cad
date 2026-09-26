@@ -337,12 +337,12 @@ fn relative_imports_resolve_against_the_importing_file() {
     std::fs::write(
         dir.join("lib/shapes.ts"),
         r#"import { ft, TrussShape } from "topo-cad";
-           import { PITCH } from "../consts";
+           import { PITCH } from "../consts.v2";  // a dot in the name, no .ts
            export const myTruss = (span: number): TrussShape => TrussShape.kingPost({ span, pitch: PITCH });
            export const DEFAULT_SPAN = ft(16);"#,
     )
     .unwrap();
-    std::fs::write(dir.join("consts.ts"), "export const PITCH: number = 5 / 12;").unwrap();
+    std::fs::write(dir.join("consts.v2.ts"), "export const PITCH: number = 5 / 12;").unwrap();
     let main = dir.join("model.ts");
     let src = r#"
         import { Building, DFL, ft, Perimeter, TrussRoof, Wall } from "topo-cad";
@@ -441,4 +441,98 @@ fn fit_errors_name_the_measurement() {
     let src = FIT_MODEL.replace("EXTRA", "ft(9)").replace("frame/post#2", "frame/post#9");
     let e = run_solved(&src, "t.ts").unwrap_err().to_string();
     assert!(e.contains("measurement \"clear\"") && e.contains("post#9"), "{e}");
+}
+
+/// Clicking where the outer corner is drawn picks exactly that corner, and a
+/// measurement built from the pick reproduces the tape reading.
+#[test]
+fn picking_the_outer_corner_on_the_truss_sheet() {
+    use topo_draw::pick::{locate, overlay, pick, OverlayInput};
+    use topo_geom::measure::{self, Feature, PlaneRef, Quantity};
+    let src = std::fs::read_to_string(GARAGE_TRUSS).unwrap();
+    let (m, fit) = run_solved(&src, GARAGE_TRUSS).unwrap();
+    let topo = Topology::build(&m);
+    let g = Geometry::build(&m, &topo);
+    let set = topo_draw::DrawingSet::build(&m, &topo, &g);
+    let bc = m.find_member("T2/bottom_chord.F-H1").unwrap();
+    let face = |mm: &str, side: &str| PlaneRef::Face { member: m.member_path(m.find_member(mm).unwrap()), side: side.into() };
+    let corner = Feature { planes: vec![face("T2/top_chord.H0-P", "top"), face("T2/bottom_chord.F-H1", "top")] };
+    let at = measure::feature(&m, &g, &corner).unwrap().point;
+    // The typical-truss sheet shows T2.
+    let sheet = set.sheets.iter().find(|s| locate(s, bc, at).is_some() && s.title.contains("Truss")).expect("truss sheet");
+    let svg = locate(sheet, bc, at).unwrap();
+
+    // Click a little off the corner: still within the pick radius.
+    let p = pick(&m, &g, sheet, [svg[0] + 0.01, svg[1] - 0.01], 0.06).expect("something picked");
+    assert_eq!(p.kind, "corner", "{p:#?}");
+    let picked = p.primary.unwrap().feature;
+    let same = |a: &Feature, b: &Feature| a.planes.len() == b.planes.len() && a.planes.iter().all(|x| b.planes.contains(x));
+    assert!(same(&picked, &corner), "{picked:?}");
+    assert_eq!(p.alternatives.len(), 2, "the two faces are offered too");
+
+    // A measurement made from the pick reproduces the tape reading.
+    let start = Feature { planes: vec![face("T2/bottom_chord.F-H1", "start")] };
+    let q = Quantity::Horizontal { a: start, b: picked };
+    let v = measure::evaluate(&m, &g, &q).unwrap();
+    assert!((v - topo_core::units::inch(42.3)).abs() < 1e-6, "{}", v / topo_core::units::inch(1.0));
+
+    // Clicking on the chord's top face away from any corner picks that face.
+    let mid = g.member(bc).place.at(g.member(bc).place.centroid, 3.0) + topo_core::Vec3::Z * topo_core::units::inch(2.75);
+    let svg2 = locate(sheet, bc, mid).unwrap();
+    let p2 = pick(&m, &g, sheet, svg2, 0.06).expect("face picked");
+    assert_eq!(p2.kind, "face", "{p2:#?}");
+    assert!(p2.primary.unwrap().label.contains("top face of T2/bottom_chord.F-H1"));
+
+    // Overlays: every fitted measurement that involves T2 is drawn on the sheet.
+    let fit = fit.unwrap();
+    let items: Vec<OverlayInput> = fit
+        .measurements
+        .iter()
+        .map(|mm| OverlayInput { name: &mm.name, quantity: &mm.quantity, text: mm.name.clone(), ok: Some(true) })
+        .collect();
+    let drawn = overlay(&m, &g, sheet, &items);
+    assert_eq!(drawn.len(), fit.measurements.len(), "{:?}", drawn.iter().map(|o| &o.name).collect::<Vec<_>>());
+}
+
+/// What the UI does when saving: append a picked quantity to the sidecar
+/// file; re-running the model picks it up and fits it.
+#[test]
+fn sidecar_round_trip() {
+    use topo_core::units::{ft, inch};
+    use topo_geom::measure::{Feature, PlaneRef, Quantity};
+    let dir = std::env::temp_dir().join(format!("topo-script-sidecar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let model_path = dir.join("frame.ts");
+    let model_src = r#"
+        import { Assembly, Building, DFL, ft, unknown } from "topo-cad";
+        import { fieldMeasurements } from "./frame.measured";
+        const w = unknown("width", ft(9), { unit: "length", min: ft(1) });
+        const frame = Assembly.named("frame")
+          .point("a", [0, 0, 0]).point("b", [0, 0, ft(7)]).point("c", [w, 0, ft(7)]).point("d", [w, 0, 0])
+          .member("post", ["a", "b"], { size: [4, 4], grade: DFL.No2 })
+          .member("post", ["d", "c"], { size: [4, 4], grade: DFL.No2 })
+          .member("beam", ["b", "c"], { size: [4, 6], grade: DFL.No2, anchor: [0, -0.5], priority: 10 })
+          .supportedAt("a", "d");
+        export default Building.named("t").add(frame).measure(fieldMeasurements);
+    "#;
+    std::fs::write(&model_path, model_src).unwrap();
+    let file = model_path.to_str().unwrap();
+    // Without the sidecar the import fails with a clear message.
+    assert!(run(model_src, file).unwrap_err().to_string().contains("frame.measured"));
+
+    // With an empty sidecar the model builds; then save a picked measurement.
+    measfile::ensure(&model_path).unwrap();
+    let (m, fit) = run_solved(model_src, file).unwrap();
+    assert!(fit.unwrap().measurements.is_empty());
+    let face = |mm: &str, side: &str| PlaneRef::Face { member: m.member_path(m.find_member(mm).unwrap()), side: side.into() };
+    let q = Quantity::Horizontal { a: Feature { planes: vec![face("post#1", "back")] }, b: Feature { planes: vec![face("post#2", "front")] } };
+    let line = measfile::append(&model_path, &m, "clear between posts", &q, ft(10.0) - inch(3.5), Some("at floor level")).unwrap();
+    assert!(line.contains("horizontal(member(\"post#1\").face(\"back\"), member(\"post#2\").face(\"front\"))"), "{line}");
+
+    let (_, fit) = run_solved(model_src, file).unwrap_or_else(|e| panic!("{e}"));
+    let fit = fit.unwrap();
+    assert_eq!(fit.measurements.len(), 1);
+    let w = fit.unknowns.iter().find(|u| u.name == "width").unwrap().value;
+    assert!((w - ft(10.0)).abs() < 1e-6, "fitted width {}", w / inch(1.0));
+    std::fs::remove_dir_all(&dir).ok();
 }

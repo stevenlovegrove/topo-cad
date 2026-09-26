@@ -4,6 +4,7 @@ pub mod annot;
 pub mod doc;
 pub mod dxf;
 pub mod hlr;
+pub mod pick;
 pub mod schedule;
 pub mod sheet;
 pub mod svg;

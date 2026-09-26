@@ -28,6 +28,7 @@ pub struct UnknownResult {
 #[derive(Clone, Debug, Serialize)]
 pub struct MeasurementResult {
     pub name: String,
+    pub quantity: topo_geom::measure::Quantity,
     pub measured: f64,
     /// Value in the fitted model (`None` if it could not be evaluated).
     pub model: Option<f64>,
@@ -237,6 +238,7 @@ pub fn solve(script: &Script) -> Result<(Model, Option<SolveReport>), ScriptErro
             .zip(values)
             .map(|(m, v)| MeasurementResult {
                 name: m.name.clone(),
+                quantity: m.quantity.clone(),
                 measured: m.value,
                 model: v.as_ref().ok().copied(),
                 tolerance: m.tolerance,
@@ -284,7 +286,9 @@ impl SolveReport {
             .map(|m| match (m.model, &m.error) {
                 (Some(v), _) => {
                     let d = v - m.measured;
-                    let sign = if d < -1e-9 { "-" } else { "+" };
+                    // No sign on differences that round to zero (at 1/16").
+                    let zero = (d.abs() / topo_core::units::INCH * 16.0).round() == 0.0;
+                    let sign = if zero { "" } else if d < 0.0 { "-" } else { "+" };
                     let status = if m.misfit().is_some_and(|f| f.abs() <= 1.0) { "ok" } else { "CHECK" };
                     vec![m.name.clone(), fmt_ft_in(m.measured), fmt_ft_in(v), format!("{sign}{}", fmt_inches(d.abs())), status.into()]
                 }

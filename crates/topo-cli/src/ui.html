@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>topo-cad</title>
+<style>
+  :root {
+    --bg: #f4f4f1; --panel: #ffffff; --ink: #1b1b1b; --muted: #6b6b66; --line: #dcdcd6;
+    --accent: #1f5fbf; --ok: #1e7b3a; --bad: #c0392b; --pick: #e8590c; --pick2: #7b2cbf;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header b { font-size: 15px; }
+  #status { color: var(--muted); }
+  #status .ok { color: var(--ok); } #status .bad { color: var(--bad); }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+  nav button { border: 1px solid var(--line); background: var(--bg); padding: 3px 9px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; }
+  nav button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  main { display: flex; height: calc(100% - 46px); }
+  #viewer { flex: 1; position: relative; overflow: hidden; background: #e9e9e4; cursor: crosshair; }
+  #sheet { width: 100%; height: 100%; }
+  #sheet svg { width: 100%; height: 100%; display: block; }
+  #tip { position: absolute; pointer-events: none; background: rgba(27,27,27,.88); color: #fff; padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
+  #hint { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.8); padding: 2px 6px; border-radius: 4px; }
+  aside { width: 420px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 4px 14px 20px; }
+  aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  button.act { border: 1px solid var(--accent); color: var(--accent); background: #fff; padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.act.primary { background: var(--accent); color: #fff; }
+  button.act:disabled { opacity: .4; cursor: default; }
+  .step { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-top: 8px; }
+  .step .k { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .step.a { border-left: 4px solid var(--pick); } .step.b { border-left: 4px solid var(--pick2); }
+  .step.waiting { color: var(--muted); font-style: italic; }
+  .step label { display: block; font-size: 13px; margin: 2px 0; cursor: pointer; }
+  input[type=text], select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; width: 100%; }
+  .field { margin-top: 8px; }
+  .field span { font-size: 12px; color: var(--muted); }
+  .preview { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  code { font-size: 11px; background: #f2f2ee; padding: 2px 4px; border-radius: 3px; display: block; white-space: pre-wrap; word-break: break-all; }
+  #msg { margin-top: 8px; font-size: 13px; }
+  #msg.err { color: var(--bad); } #msg.ok { color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td, th { padding: 4px 4px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  tr.okrow td:last-child { color: var(--ok); font-weight: 600; }
+  tr.badrow td:last-child { color: var(--bad); font-weight: 600; }
+  tr.meas { cursor: pointer; } tr.meas.sel { background: #fff4d6; }
+  .undet { color: var(--bad); font-weight: 600; }
+  #banner .err { background: #fdecea; color: var(--bad); padding: 8px; border-radius: 6px; margin-top: 10px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  #banner .warn { background: #fff4d6; padding: 8px; border-radius: 6px; margin-top: 10px; font-size: 12px; }
+  ul#issues { padding-left: 16px; margin: 0; font-size: 12px; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <b id="title">topo-cad</b>
+  <span id="status">loading…</span>
+  <nav id="tabs"></nav>
+</header>
+<main>
+  <div id="viewer">
+    <div id="sheet"></div>
+    <div id="tip"></div>
+    <div id="hint">scroll to zoom · drag to pan · double-click to fit</div>
+  </div>
+  <aside>
+    <div id="banner"></div>
+    <h3>New measurement</h3>
+    <div class="row">
+      <button class="act" id="btnDist" title="Pick two features (faces, corners, centrelines)">Distance</button>
+      <button class="act" id="btnLen" title="Pick one member">Member length</button>
+      <button class="act" id="btnCancel" hidden>Cancel</button>
+    </div>
+    <div id="steps"></div>
+    <div id="form" hidden>
+      <div class="field" id="kindField">
+        <span>Measured</span>
+        <select id="kind"></select>
+      </div>
+      <div class="preview" id="modelValue"></div>
+      <div class="field"><span>Name</span><input type="text" id="name" placeholder="e.g. eave tail past chord end"></div>
+      <div class="field"><span>Tape reading</span><input type="text" id="value" placeholder="e.g. 3' 6 5/16&quot; or 42.3&quot;"></div>
+      <div class="preview" id="valuePreview"></div>
+      <div class="field"><span>Note (optional)</span><input type="text" id="note" placeholder="how / where it was measured"></div>
+      <div class="row" style="margin-top:10px"><button class="act primary" id="btnSave">Save measurement</button></div>
+    </div>
+    <div id="msg"></div>
+    <h3>Measurements</h3>
+    <table id="meas"></table>
+    <h3>Unknowns</h3>
+    <table id="unk"></table>
+    <h3>Issues</h3>
+    <ul id="issues"></ul>
+  </aside>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+let state = null, sheet = 0, svg = null, viewBox = null, overlays = [], selected = null;
+let mode = null;          // null | "dist" | "len"
+let picks = [];           // chosen features: {label, feature, lines, points} or {member, label, outline}
+let choice = [];          // candidate lists per step (for alternatives)
+let hover = null, pending = false, queued = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) });
+  const t = r.headers.get("content-type") || "";
+  return t.includes("json") ? r.json() : r.text();
+}
+
+// ----- state polling -------------------------------------------------------
+async function poll() {
+  try {
+    const s = await api("/api/state");
+    if (!state || s.version !== state.version) {
+      state = s;
+      renderPanel();
+      if (!s.error) await loadSheet();
+    }
+  } catch (e) { $("status").textContent = "server not reachable"; }
+  setTimeout(poll, 1000);
+}
+
+function renderPanel() {
+  const s = state;
+  $("title").textContent = s.name || "topo-cad";
+  const banner = $("banner");
+  banner.innerHTML = "";
+  if (s.error) {
+    banner.innerHTML = `<div class="err">${esc(s.error)}</div>`;
+    $("status").textContent = "model error";
+    return;
+  }
+  if (s.sidecar && s.sidecar.exists && !s.sidecar.imported) {
+    banner.innerHTML = `<div class="warn">New measurements are saved to <b>${esc(s.sidecar.path)}</b>. Import it in your model to use them:<code>${esc(s.sidecar.hint)}</code></div>`;
+  }
+  const fit = s.fit;
+  const st = $("status");
+  if (fit) {
+    const bad = fit.measurements.filter((r) => r[4] !== "ok").length;
+    const und = fit.undetermined.length;
+    st.innerHTML = `${fit.measurements.length} measurements, ${fit.unknowns.length} unknowns · rms ${fit.rms.toFixed(2)} tol · ` +
+      (bad ? `<span class="bad">${bad} to check</span>` : `<span class="ok">all consistent</span>`) +
+      (und ? ` · <span class="bad">${und} undetermined</span>` : "") +
+      ` · ${s.issues.length} issues`;
+  } else {
+    st.textContent = `${s.issues.length} issues · no measurements yet`;
+  }
+  const tabs = $("tabs");
+  tabs.innerHTML = "";
+  s.sheets.forEach((sh, i) => {
+    const b = document.createElement("button");
+    b.textContent = sh.number;
+    b.title = sh.title;
+    if (i === sheet) b.className = "on";
+    b.onclick = () => { sheet = i; viewBox = null; renderPanel(); loadSheet(); };
+    tabs.appendChild(b);
+  });
+  const mt = $("meas");
+  mt.innerHTML = "<tr><th>Measurement</th><th class=num>Tape</th><th class=num>Model</th><th class=num>Diff</th><th></th></tr>";
+  (fit ? fit.measurements : []).forEach((r, i) => {
+    const tr = document.createElement("tr");
+    tr.className = "meas " + (r[4] === "ok" ? "okrow" : "badrow") + (selected === fit.names[i] ? " sel" : "");
+    tr.innerHTML = `<td>${esc(r[0])}</td><td class=num>${esc(r[1])}</td><td class=num>${esc(r[2])}</td><td class=num>${esc(r[3])}</td><td>${esc(r[4])}</td>`;
+    tr.onclick = () => { selected = selected === fit.names[i] ? null : fit.names[i]; renderPanel(); drawOverlays(); };
+    mt.appendChild(tr);
+  });
+  const ut = $("unk");
+  ut.innerHTML = "<tr><th>Unknown</th><th class=num>Fitted</th><th class=num>± 1σ</th></tr>";
+  (fit ? fit.unknowns : []).forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(r[0])}</td><td class=num>${esc(r[1])}</td><td class="num ${r[2] === "NOT DETERMINED" ? "undet" : ""}">${esc(r[2])}</td>`;
+    ut.appendChild(tr);
+  });
+  $("issues").innerHTML = s.issues.length ? s.issues.map((i) => `<li>${esc(i)}</li>`).join("") : "<li class=muted>none</li>";
+}
+
+// ----- sheet view ----------------------------------------------------------
+async function loadSheet() {
+  if (!state || state.error || !state.sheets.length) return;
+  const text = await api(`/api/sheet/${sheet}`);
+  const holder = $("sheet");
+  holder.innerHTML = text;
+  svg = holder.querySelector("svg");
+  svg.removeAttribute("width");
+  svg.removeAttribute("height");
+  if (!viewBox) viewBox = fitViews();
+  svg.setAttribute("viewBox", viewBox.join(" "));
+  for (const id of ["ov", "hl"]) {
+    const g = document.createElementNS(NS, "g");
+    g.id = id;
+    svg.appendChild(g);
+  }
+  overlays = await api(`/api/overlay/${sheet}`);
+  drawOverlays();
+  drawPicks();
+}
+
+// Initial zoom: the model views on the sheet (the whole sheet if there are none).
+function fitViews() {
+  const views = state.sheets[sheet].views || [];
+  if (!views.length) return svg.getAttribute("viewBox").split(/\s+/).map(Number);
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const v of views) { x0 = Math.min(x0, v.bbox[0]); y0 = Math.min(y0, v.bbox[1]); x1 = Math.max(x1, v.bbox[2]); y1 = Math.max(y1, v.bbox[3]); }
+  const m = 0.06 * Math.max(x1 - x0, y1 - y0);
+  return [x0 - m, y0 - m, x1 - x0 + 2 * m, y1 - y0 + 2 * m];
+}
+
+function px() { return 1 / svg.getScreenCTM().a; }  // one screen pixel in SVG units
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  parent.appendChild(e);
+  return e;
+}
+
+function drawOverlays() {
+  if (!svg) return;
+  const g = svg.querySelector("#ov");
+  g.innerHTML = "";
+  const p = px();
+  for (const o of overlays) {
+    const color = o.ok === true ? "#1e7b3a" : o.ok === false ? "#c0392b" : "#6b6b66";
+    const sel = selected === o.name;
+    o.lines.forEach((l, i) => el("line", { x1: l[0], y1: l[1], x2: l[2], y2: l[3], stroke: color, "stroke-width": (i ? 1 : sel ? 4 : 2.5) * p, "stroke-dasharray": i ? `${3 * p} ${3 * p}` : "none", opacity: sel || !selected ? 0.9 : 0.35 }, g));
+    if (o.lines.length) {
+      const l = o.lines[0];
+      for (const [x, y] of [[l[0], l[1]], [l[2], l[3]]]) el("circle", { cx: x, cy: y, r: 3 * p, fill: color }, g);
+    }
+    if (sel || !selected) {
+      const t = el("text", { x: o.label_at[0], y: o.label_at[1] - 5 * p, "font-size": (sel ? 13 : 11) * p, fill: color, "text-anchor": "middle", "font-family": "sans-serif", "font-weight": sel ? 700 : 400, "paint-order": "stroke", stroke: "#fff", "stroke-width": 3 * p }, g);
+      t.textContent = sel ? `${o.name}: ${o.text}` : o.text;
+    }
+  }
+}
+
+function drawCandidate(g, c, color, width) {
+  const p = px();
+  for (const l of c.lines || []) el("line", { x1: l[0], y1: l[1], x2: l[2], y2: l[3], stroke: color, "stroke-width": width * p, "stroke-linecap": "round", opacity: 0.85 }, g);
+  for (const q of c.points || []) el("circle", { cx: q[0], cy: q[1], r: 5 * p, fill: "none", stroke: color, "stroke-width": 2.5 * p }, g);
+  if (c.outline) el("polygon", { points: c.outline.map((q) => q.join(",")).join(" "), fill: color, "fill-opacity": 0.15, stroke: color, "stroke-width": 2 * p }, g);
+}
+
+function drawPicks() {
+  if (!svg) return;
+  const g = svg.querySelector("#hl");
+  g.innerHTML = "";
+  if (hover && mode) {
+    const c = mode === "len" ? { outline: hover.member_outline } : hover.primary || { outline: hover.member_outline };
+    drawCandidate(g, c, "#1f5fbf", 5);
+  }
+  picks.forEach((c, i) => drawCandidate(g, c, i === 0 ? "#e8590c" : "#7b2cbf", 6));
+}
+
+function svgPoint(evt) {
+  const pt = svg.createSVGPoint();
+  pt.x = evt.clientX; pt.y = evt.clientY;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+// Pan / zoom
+let drag = null;
+$("viewer").addEventListener("wheel", (e) => {
+  if (!svg) return;
+  e.preventDefault();
+  const p = svgPoint(e);
+  const f = Math.exp(e.deltaY * 0.0015);
+  viewBox = [p.x - (p.x - viewBox[0]) * f, p.y - (p.y - viewBox[1]) * f, viewBox[2] * f, viewBox[3] * f];
+  svg.setAttribute("viewBox", viewBox.join(" "));
+  drawOverlays(); drawPicks();
+}, { passive: false });
+$("viewer").addEventListener("mousedown", (e) => { if (svg) drag = { x: e.clientX, y: e.clientY, vb: viewBox.slice(), moved: false }; });
+window.addEventListener("mouseup", (e) => {
+  const d = drag; drag = null;
+  if (d && !d.moved && svg && e.target.closest("#viewer")) onClick(e);
+});
+$("viewer").addEventListener("dblclick", () => { viewBox = fitViews(); svg.setAttribute("viewBox", viewBox.join(" ")); drawOverlays(); drawPicks(); });
+$("viewer").addEventListener("mousemove", (e) => {
+  if (!svg) return;
+  if (drag) {
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    if (drag.moved) {
+      const s = px();
+      viewBox = [drag.vb[0] - dx * s, drag.vb[1] - dy * s, drag.vb[2], drag.vb[3]];
+      svg.setAttribute("viewBox", viewBox.join(" "));
+      return;
+    }
+  }
+  const p = svgPoint(e);
+  requestPick({ sheet, x: p.x, y: p.y, radius: 10 * px() }, e);
+});
+$("viewer").addEventListener("mouseleave", () => { hover = null; $("tip").style.display = "none"; drawPicks(); });
+
+// Hover picking, at most one request in flight.
+function requestPick(req, evt) {
+  queued = { req, x: evt.clientX, y: evt.clientY };
+  if (!pending) sendPick();
+}
+async function sendPick() {
+  if (!queued) return;
+  const q = queued; queued = null; pending = true;
+  try {
+    hover = await api("/api/pick", q.req);
+  } finally { pending = false; }
+  const tip = $("tip");
+  if (hover) {
+    const label = mode === "len" ? `member: ${hover.member_label}` : hover.primary ? hover.primary.label : `member: ${hover.member_label}`;
+    tip.textContent = label;
+    const r = $("viewer").getBoundingClientRect();
+    tip.style.display = "block";
+    // Keep the tooltip inside the viewer.
+    const left = Math.min(q.x - r.left + 14, r.width - tip.offsetWidth - 6);
+    const top = q.y - r.top + 14 + tip.offsetHeight > r.height ? q.y - r.top - tip.offsetHeight - 10 : q.y - r.top + 14;
+    tip.style.left = `${Math.max(4, left)}px`; tip.style.top = `${top}px`;
+  } else tip.style.display = "none";
+  drawPicks();
+  if (queued) sendPick();
+}
+
+// ----- measurement workflow ------------------------------------------------
+function startMode(m) {
+  mode = m; picks = []; choice = [];
+  $("btnCancel").hidden = false;
+  $("form").hidden = true;
+  msg("");
+  renderSteps();
+}
+function cancel() { mode = null; picks = []; choice = []; $("btnCancel").hidden = true; $("form").hidden = true; renderSteps(); drawPicks(); }
+$("btnDist").onclick = () => startMode("dist");
+$("btnLen").onclick = () => startMode("len");
+$("btnCancel").onclick = cancel;
+
+function onClick() {
+  if (!mode || !hover) return;
+  if (mode === "len") {
+    picks = [{ member: hover.member, label: `member ${hover.member_label}`, outline: hover.member_outline }];
+    choice = [[]];
+  } else {
+    const opts = [hover.primary, ...hover.alternatives].filter(Boolean);
+    if (!opts.length) { msg("Pick a face, corner or centreline (hover until one highlights).", true); return; }
+    if (picks.length >= 2) { picks = []; choice = []; }
+    picks.push(opts[0]);
+    choice.push(opts);
+  }
+  renderSteps(); drawPicks();
+  if ((mode === "len" && picks.length === 1) || (mode === "dist" && picks.length === 2)) showForm();
+}
+
+function renderSteps() {
+  const s = $("steps");
+  s.innerHTML = "";
+  if (!mode) return;
+  const need = mode === "len" ? 1 : 2;
+  for (let i = 0; i < need; i++) {
+    const d = document.createElement("div");
+    d.className = "step " + (i === 0 ? "a" : "b") + (picks[i] ? "" : " waiting");
+    if (!picks[i]) {
+      d.textContent = mode === "len" ? "Click a member on the drawing" : `Click ${i === 0 ? "the first" : "the second"} feature: a face, corner or centreline`;
+    } else {
+      d.innerHTML = `<div class=k>${mode === "len" ? "Member" : i === 0 ? "From" : "To"}</div>`;
+      const opts = choice[i] || [];
+      if (opts.length > 1) {
+        opts.forEach((o, k) => {
+          const lab = document.createElement("label");
+          lab.innerHTML = `<input type=radio name=c${i} ${o === picks[i] ? "checked" : ""}> ${esc(o.label)}`;
+          lab.querySelector("input").onchange = () => { picks[i] = o; drawPicks(); if (!$("form").hidden) showForm(); };
+          d.appendChild(lab);
+        });
+      } else d.appendChild(document.createTextNode(picks[i].label));
+    }
+    s.appendChild(d);
+  }
+}
+
+function quantity() {
+  const k = $("kind").value;
+  if (mode === "len") return { kind: "length", member: picks[0].member, how: k };
+  return { kind: k, a: picks[0].feature, b: picks[1].feature };
+}
+
+async function showForm() {
+  const kind = $("kind");
+  const keep = kind.value;
+  kind.innerHTML = mode === "len"
+    ? `<option value=long>lumber length (long point to long point)</option><option value=centreline>along the centreline, between the end cuts</option>`
+    : `<option value=horizontal>horizontal distance</option><option value=vertical>vertical distance</option>`;
+  if ([...kind.options].some((o) => o.value === keep)) kind.value = keep;
+  $("form").hidden = false;
+  await updatePreview();
+}
+$("kind").onchange = updatePreview;
+async function updatePreview() {
+  const r = await api("/api/preview", { quantity: quantity() });
+  const mv = $("modelValue");
+  if (r.error) { mv.innerHTML = `<span style="color:var(--bad)">${esc(r.error)}</span>`; $("btnSave").disabled = true; return; }
+  mv.innerHTML = `Model currently: <b>${esc(r.text)}</b><code>${esc(r.code)}</code>`;
+  $("btnSave").disabled = false;
+}
+let parseTimer = null;
+$("value").oninput = () => {
+  clearTimeout(parseTimer);
+  parseTimer = setTimeout(async () => {
+    const t = $("value").value.trim();
+    if (!t) { $("valuePreview").textContent = ""; return; }
+    const r = await api("/api/parse", { text: t });
+    $("valuePreview").innerHTML = r.error ? `<span style="color:var(--bad)">${esc(r.error)}</span>` : `= ${esc(r.text)}`;
+  }, 150);
+};
+$("btnSave").onclick = async () => {
+  const r = await api("/api/measure", { name: $("name").value, quantity: quantity(), value: $("value").value, note: $("note").value || null });
+  if (r.error) { msg(r.error, true); return; }
+  msg(`Saved to ${r.file}:\n${r.line}`, false);
+  $("name").value = ""; $("value").value = ""; $("note").value = ""; $("valuePreview").textContent = "";
+  cancel();
+};
+
+function msg(text, isErr) {
+  const m = $("msg");
+  m.className = text ? (isErr ? "err" : "ok") : "";
+  m.textContent = text;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
+
+poll();
+</script>
+</body>
+</html>

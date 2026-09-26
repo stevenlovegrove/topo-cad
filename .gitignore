@@ -2,3 +2,5 @@
 # Rendered drawing sets (regenerate with `topo run` / `topo example`)
 /out
 /out-*/
+# Local tool config (machine-specific paths)
+/.claude/

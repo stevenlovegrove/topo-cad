@@ -7,6 +7,7 @@ schedules and the analytical model are derived. See [DESIGN.md](DESIGN.md).
 ```bash
 cargo test --workspace
 cargo run --release -p topo-cli -- run examples/garage-as-built.ts out   # TypeScript model
+cargo run --release -p topo-cli -- serve examples/garage-truss.ts        # web UI: http://127.0.0.1:8765
 cargo run --release -p topo-cli -- example garage out                    # built-in Rust example
 cargo run --release -p topo-cli -- render out/model.json out2            # JSON IR
 cargo build -p topo-wasm --target wasm32-unknown-unknown --release

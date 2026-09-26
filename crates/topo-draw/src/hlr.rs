@@ -57,6 +57,12 @@ struct Item<'a> {
 
 const EPS: f64 = 1e-7;
 
+/// Whether `q` lies inside convex CCW polygon `poly`.
+pub fn point_in_convex(q: Vec2, poly: &[Vec2]) -> bool {
+    let n = poly.len();
+    n >= 3 && (0..n).all(|i| (poly[(i + 1) % n] - poly[i]).cross(q - poly[i]) >= 0.0)
+}
+
 /// Parameter interval of segment `a→b` inside convex CCW polygon `poly`
 /// shrunk by `EPS` (so shared boundaries do not hide).
 fn clip_inside(a: Vec2, b: Vec2, poly: &[Vec2]) -> Option<(f64, f64)> {

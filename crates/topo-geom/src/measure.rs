@@ -64,44 +64,47 @@ fn member_geom<'a>(model: &Model, geom: &'a Geometry, path: &str) -> Result<&'a 
     Ok(geom.member(model.find_member(path)?))
 }
 
+/// Face sides that can be named, in picking order.
+pub const SIDES: [&str; 6] = ["top", "bottom", "front", "back", "start", "end"];
+
+/// The named face plane of a member solid (outward normal).
+pub fn face_plane(g: &MemberGeom, side: &str) -> Result<Plane, String> {
+    let target = match side {
+        "start" => return Ok(g.start.plane),
+        "end" => return Ok(g.end.plane),
+        "top" => Vec2::new(0.0, 1.0),
+        "bottom" => Vec2::new(0.0, -1.0),
+        "back" => Vec2::new(1.0, 0.0),
+        "front" => Vec2::new(-1.0, 0.0),
+        s => return Err(format!("unknown face \"{s}\" (use top, bottom, front, back, start or end)")),
+    };
+    let h = &g.place.hull;
+    let n = h.len();
+    // The envelope side whose outward normal best matches the requested side.
+    let score = |k: usize| {
+        let e = h[(k + 1) % n] - h[k];
+        Vec2::new(e.y, -e.x).normalized().dot(target)
+    };
+    let i = (0..n).max_by(|&i, &j| score(i).total_cmp(&score(j))).unwrap();
+    Ok(Plane::new(g.place.at(h[i], 0.0), g.place.side_normal(h[i], h[(i + 1) % n])))
+}
+
+/// Mid-plane of a member across its `depth` (normal v) or `width` (normal u).
+pub fn mid_plane(g: &MemberGeom, axis: &str) -> Result<Plane, String> {
+    let (lo, hi) = g.place.hull.iter().fold((Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
+    let mid = (lo + hi) * 0.5;
+    match axis {
+        "depth" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.v)),
+        "width" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.u)),
+        a => Err(format!("unknown mid-plane axis \"{a}\" (use depth or width)")),
+    }
+}
+
 /// The plane named by `r`, with an outward normal for faces.
 pub fn plane(model: &Model, geom: &Geometry, r: &PlaneRef) -> Result<Plane, String> {
     match r {
-        PlaneRef::Face { member, side } => {
-            let g = member_geom(model, geom, member)?;
-            let target = match side.as_str() {
-                "start" => return Ok(g.start.plane),
-                "end" => return Ok(g.end.plane),
-                "top" => Vec2::new(0.0, 1.0),
-                "bottom" => Vec2::new(0.0, -1.0),
-                "back" => Vec2::new(1.0, 0.0),
-                "front" => Vec2::new(-1.0, 0.0),
-                s => return Err(format!("unknown face \"{s}\" (use top, bottom, front, back, start or end)")),
-            };
-            let h = &g.place.hull;
-            let n = h.len();
-            // The envelope side whose outward normal best matches the requested side.
-            let i = (0..n)
-                .max_by(|&i, &j| {
-                    let score = |k: usize| {
-                        let e = h[(k + 1) % n] - h[k];
-                        Vec2::new(e.y, -e.x).normalized().dot(target)
-                    };
-                    score(i).total_cmp(&score(j))
-                })
-                .unwrap();
-            Ok(Plane::new(g.place.at(h[i], 0.0), g.place.side_normal(h[i], h[(i + 1) % n])))
-        }
-        PlaneRef::Mid { member, axis } => {
-            let g = member_geom(model, geom, member)?;
-            let (lo, hi) = g.place.hull.iter().fold((Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
-            let mid = (lo + hi) * 0.5;
-            match axis.as_str() {
-                "depth" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.v)),
-                "width" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.u)),
-                a => Err(format!("unknown mid-plane axis \"{a}\" (use depth or width)")),
-            }
-        }
+        PlaneRef::Face { member, side } => face_plane(member_geom(model, geom, member)?, side),
+        PlaneRef::Mid { member, axis } => mid_plane(member_geom(model, geom, member)?, axis),
     }
 }
 

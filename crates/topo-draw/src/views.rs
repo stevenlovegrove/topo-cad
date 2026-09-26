@@ -17,6 +17,10 @@ pub struct View {
     pub scale_label: String,
     /// In the view plane: model metres (or paper metres when `scale == 1`).
     pub drawing: Drawing,
+    /// Projection of model views (for picking); `None` for paper-space views.
+    pub proj: Option<Projector>,
+    /// Members drawn as solids in this view.
+    pub members: Vec<MemberId>,
 }
 
 impl View {
@@ -27,7 +31,7 @@ impl View {
     }
     /// A paper-space view (tables, legends) with content already in paper metres.
     pub fn paper(title: &str, drawing: Drawing) -> View {
-        View { title: title.into(), subtitle: None, scale: 1.0, scale_label: String::new(), drawing }
+        View { title: title.into(), subtitle: None, scale: 1.0, scale_label: String::new(), drawing, proj: None, members: vec![] }
     }
 }
 
@@ -155,7 +159,7 @@ fn tag_members(d: &mut Drawing, ctx: &Ctx, members: &[MemberId], scene: &[&Membe
 fn finish(mut d: Drawing, title: &str, subtitle: Option<String>, scale: f64, scale_label: String, st: &Style) -> View {
     let bb = d.bbox();
     annot::view_title(&mut d, v2(bb.min.x, bb.min.y - st.m(0.45)), title, subtitle.as_deref(), &scale_label, st);
-    View { title: title.into(), subtitle, scale, scale_label, drawing: d }
+    View { title: title.into(), subtitle, scale, scale_label, drawing: d, proj: None, members: vec![] }
 }
 
 /// Framing elevation of a wall group, viewed from the exterior.
@@ -176,7 +180,7 @@ pub fn group_elevation(ctx: &Ctx, g: GroupId, title: &str, scale: (f64, String))
     tag_members(&mut d, ctx, &members, &geoms, &proj, &st);
     group_annotations(&mut d, ctx, g, &proj, &st);
     let sub = group.props.get("framing").cloned();
-    finish(d, title, sub, scale.0, scale.1, &st)
+    View { proj: Some(proj), members, ..finish(d, title, sub, scale.0, scale.1, &st) }
 }
 
 /// Framing plan of a floor group; `below` members (e.g. wall top plates) are
@@ -206,7 +210,7 @@ pub fn framing_plan(ctx: &Ctx, g: GroupId, below: &[MemberId], scale: (f64, Stri
         d.text(mid + out * st.m(1.3) - v2(0.0, st.text_h() * 0.5), label, st.text_h(), Align::Middle, Layer::Text);
     }
     let sub = Some("Bearing walls below shown dashed".to_string());
-    finish(d, &format!("{} plan", ctx.model.group(g).name), sub, scale.0, scale.1, &st)
+    View { proj: Some(proj), members: all, ..finish(d, &format!("{} plan", ctx.model.group(g).name), sub, scale.0, scale.1, &st) }
 }
 
 /// Axonometric view of `members` from the south-west, hidden lines removed.
@@ -216,7 +220,7 @@ pub fn isometric(ctx: &Ctx, members: &[MemberId], title: &str, scale: f64) -> Vi
     let geoms: Vec<&MemberGeom> = members.iter().map(|&m| ctx.geom.member(m)).collect();
     let mut d = Drawing::default();
     let _ = draw_members(&mut d, &geoms, &proj, &[]);
-    finish(d, title, None, scale, "NOT TO SCALE".into(), &st)
+    View { proj: Some(proj), members: members.to_vec(), ..finish(d, title, None, scale, "NOT TO SCALE".into(), &st) }
 }
 
 pub fn iso_projector() -> Projector {

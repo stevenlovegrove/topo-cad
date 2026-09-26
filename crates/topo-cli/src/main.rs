@@ -1,5 +1,6 @@
 //! `topo example <name> <out-dir>` — build an example model and render it.
 //! `topo run <model.ts> <out-dir>` — run a TypeScript model and render it.
+//! `topo serve <model.ts> [port]` — web UI: inspect the model, add field measurements.
 //! `topo render <model.json> <out-dir>` — render a model from its JSON IR.
 
 use std::fs;
@@ -10,7 +11,7 @@ use topo_script::solve::SolveReport;
 use topo_geom::Geometry;
 
 fn usage() -> ! {
-    eprintln!("usage:\n  topo example <garage|garage-as-built> <out-dir>\n  topo run <model.ts> <out-dir>\n  topo render <model.json> <out-dir>");
+    eprintln!("usage:\n  topo example <garage|garage-as-built> <out-dir>\n  topo run <model.ts> <out-dir>\n  topo serve <model.ts> [port]\n  topo render <model.json> <out-dir>");
     std::process::exit(2);
 }
 
@@ -30,6 +31,14 @@ fn main() {
                 }
             }
         }
+        ["serve", path] | ["serve", path, _] => {
+            let port = args.get(2).and_then(|p| p.parse().ok()).unwrap_or(8765);
+            if let Err(e) = serve::serve(Path::new(path), port) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
         ["render", path, out] => {
             let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
             let model: Model = serde_json::from_str(&text).unwrap_or_else(|e| panic!("parsing {path}: {e}"));
@@ -43,8 +52,20 @@ fn main() {
     }
 }
 
+mod serve;
+
+/// Every validation, geometry and load-path issue for a built model.
+pub(crate) fn all_issues(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<topo_core::Issue> {
+    let mut issues = validate(model, topo);
+    issues.extend(geom.issues.iter().cloned());
+    issues.extend(geom.clash_issues());
+    issues.extend(geom.bearing_issues(model));
+    issues.extend(topo_analysis::load_path_issues(model, topo, geom));
+    issues
+}
+
 /// Cover-sheet tables for a measurement fit.
-fn fit_tables(fit: &SolveReport) -> Vec<View> {
+pub(crate) fn fit_tables(fit: &SolveReport) -> Vec<View> {
     use topo_draw::schedule::table;
     use topo_draw::Align::*;
     vec![
@@ -60,11 +81,7 @@ fn render(model: &Model, out: &Path, fit: Option<&SolveReport>) -> std::io::Resu
     fs::create_dir_all(out.join("dxf"))?;
     let topo = Topology::build(model);
     let geom = Geometry::build(model, &topo);
-    let mut issues = validate(model, &topo);
-    issues.extend(geom.issues.iter().cloned());
-    issues.extend(geom.clash_issues());
-    issues.extend(geom.bearing_issues(model));
-    issues.extend(topo_analysis::load_path_issues(model, &topo, &geom));
+    let issues = all_issues(model, &topo, &geom);
 
     fs::write(out.join("model.json"), serde_json::to_string_pretty(model).unwrap())?;
     fs::write(out.join("model.obj"), topo_geom::to_obj(model, &geom, model.units.drawing_unit()))?;

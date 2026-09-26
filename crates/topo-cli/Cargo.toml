@@ -17,3 +17,5 @@ topo-draw.workspace = true
 topo-timber.workspace = true
 topo-analysis.workspace = true
 topo-script.workspace = true
+tiny_http = "0.12"
+serde = { workspace = true }

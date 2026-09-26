@@ -21,3 +21,4 @@ oxc_span = "0.151"
 
 [dev-dependencies]
 topo-analysis.workspace = true
+topo-draw.workspace = true
