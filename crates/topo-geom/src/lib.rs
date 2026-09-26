@@ -1,5 +1,6 @@
 //! Derived geometry: exact member solids from topology + properties.
 
+pub mod measure;
 mod mesh;
 mod resolve;
 mod solid;

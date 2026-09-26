@@ -219,6 +219,10 @@ export class Perimeter {
     const p = this.push(this.start, side);
     return new Perimeter(p.name, p.start, p.z, p.segments, true);
   }
+  /** A member of one of this perimeter's walls, e.g. `wallMember("Wall A", "cap_plate")`. */
+  wallMember(wall: string, name: string): MemberRef {
+    return new MemberRef(`${this.name}/${wall}/${name}`);
+  }
   /** The same footprint translated (plan offset, plus optional height change). */
   moved(d: Point | Point3): Perimeter {
     const mv = (p: Point): Point => [p[0] + d[0], p[1] + d[1]];
@@ -536,6 +540,10 @@ export class TrussRoof {
   get name(): string {
     return this.spec.name;
   }
+  /** A member of the `i`-th truss (1-based; 1 and the last are the gable ends), by its shape name. */
+  trussMember(i: number, name: string): MemberRef {
+    return new MemberRef(`${this.spec.name}/T${i}/${name}`);
+  }
   /** Plan offset (a z component is ignored: height follows the bearing walls). */
   moved(d: Point | Point3): TrussRoof {
     return new TrussRoof({ ...this.spec, origin: [this.spec.origin[0] + d[0], this.spec.origin[1] + d[1]] });
@@ -695,6 +703,79 @@ export function repeat<T extends Placeable<T>>(item: T, count: number, step: Poi
   return Array.from({ length: count }, (_, i) => item.moved([step[0] * i, step[1] * i, step[2] * i]).named(`${item.name} #${i + 1}`));
 }
 
+// ----- unknowns and field measurements --------------------------------------
+
+interface UnknownSpec {
+  readonly name: string;
+  readonly guess: number;
+  readonly unit: "length" | "ratio";
+  readonly min?: number;
+  readonly max?: number;
+}
+const unknownRegistry: UnknownSpec[] = [];
+
+/**
+ * A parameter to be fitted to field measurements. Returns the solver's
+ * current value while solving, otherwise `guess`. Use it like any number.
+ */
+export function unknown(name: string, guess: number, o: { unit?: "length" | "ratio"; min?: number; max?: number } = {}): number {
+  if (unknownRegistry.some((u) => u.name === name)) throw new Error(`unknown "${name}" declared twice`);
+  unknownRegistry.push({ name, guess, unit: o.unit ?? "ratio", min: o.min, max: o.max });
+  const params = (globalThis as { __topo_params?: Record<string, number> }).__topo_params;
+  return params && name in params ? params[name] : guess;
+}
+
+/** One plane of a member solid, named through the member's stable path. */
+export type PlaneRef =
+  | { readonly kind: "face"; readonly member: string; readonly side: FaceSide }
+  | { readonly kind: "mid"; readonly member: string; readonly axis: "depth" | "width" };
+/** `top`/`bottom` (depth direction), `front`/`back` (width), `start`/`end` (cut ends along the path). */
+export type FaceSide = "top" | "bottom" | "front" | "back" | "start" | "end";
+/** Intersection of 1–3 planes: a face, an edge/corner line, or a point. */
+export interface Feature {
+  readonly planes: readonly PlaneRef[];
+}
+
+/** A member, by the `/`-separated tail of its path (e.g. `"T2/bottom_chord.F-H1"`). */
+export class MemberRef {
+  constructor(readonly path: string) {}
+  face(side: FaceSide): PlaneRef {
+    return { kind: "face", member: this.path, side };
+  }
+  /** Mid-plane across the member's depth or width (e.g. a wall centreline). */
+  mid(axis: "depth" | "width"): PlaneRef {
+    return { kind: "mid", member: this.path, axis };
+  }
+}
+export const member = (path: string): MemberRef => new MemberRef(path);
+/** Where faces meet: two faces make an edge/corner line, three a point. */
+export const meet = (...planes: PlaneRef[]): Feature => ({ planes });
+const asFeature = (f: Feature | PlaneRef): Feature => ("planes" in f ? f : { planes: [f] });
+
+export type Quantity =
+  | { readonly kind: "horizontal"; readonly a: Feature; readonly b: Feature }
+  | { readonly kind: "vertical"; readonly a: Feature; readonly b: Feature }
+  | { readonly kind: "length"; readonly member: string; readonly how: "long" | "centreline" };
+export const horizontal = (a: Feature | PlaneRef, b: Feature | PlaneRef): Quantity => ({ kind: "horizontal", a: asFeature(a), b: asFeature(b) });
+export const vertical = (a: Feature | PlaneRef, b: Feature | PlaneRef): Quantity => ({ kind: "vertical", a: asFeature(a), b: asFeature(b) });
+/** `long`: lumber length (long point to long point); `centreline`: between the end cuts along its centreline. */
+export const lengthOf = (m: MemberRef, how: "long" | "centreline"): Quantity => ({ kind: "length", member: m.path, how });
+
+export interface Measurement {
+  readonly name: string;
+  readonly quantity: Quantity;
+  readonly value: Length;
+  readonly tolerance?: Length;
+  readonly note?: string;
+}
+/** A tape reading of `quantity`. `tolerance` (default 1/16") weights it in the fit. */
+export const measured = (name: string, quantity: Quantity, value: Length, o: { tolerance?: Length; note?: string } = {}): Measurement => ({
+  name,
+  quantity,
+  value,
+  ...o,
+});
+
 // ----- building ------------------------------------------------------------
 
 export interface Info {
@@ -711,19 +792,28 @@ export type Item = Perimeter | TrussRoof | Assembly;
 
 /** The whole model: what a script exports as its default. */
 export class Building {
-  private constructor(readonly name: string, readonly info_: Partial<Info>, readonly items: readonly Item[]) {}
+  private constructor(
+    readonly name: string,
+    readonly info_: Partial<Info>,
+    readonly items: readonly Item[],
+    readonly measurements: readonly Measurement[],
+  ) {}
 
   static named(name: string): Building {
-    return new Building(name, {}, []);
+    return new Building(name, {}, [], []);
   }
   info(i: Partial<Info>): Building {
-    return new Building(this.name, { ...this.info_, ...i }, this.items);
+    return new Building(this.name, { ...this.info_, ...i }, this.items, this.measurements);
   }
   /** Add items (arrays, e.g. from `repeat`, are flattened). */
   add(...items: (Item | readonly Item[])[]): Building {
-    return new Building(this.name, this.info_, [...this.items, ...items.flat()]);
+    return new Building(this.name, this.info_, [...this.items, ...items.flat()], this.measurements);
+  }
+  /** Field measurements; `unknown`s are fitted to them when the model is run. */
+  measure(...ms: (Measurement | readonly Measurement[])[]): Building {
+    return new Building(this.name, this.info_, this.items, [...this.measurements, ...ms.flat()]);
   }
   toJSON() {
-    return { name: this.name, info: this.info_, items: this.items };
+    return { name: this.name, info: this.info_, items: this.items, measurements: this.measurements, unknowns: unknownRegistry };
   }
 }

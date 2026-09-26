@@ -89,6 +89,10 @@ pub struct Member {
     pub depth_dir: Option<Vec3>,
     pub anchor: Anchor,
     pub group: Option<GroupId>,
+    /// Stable name within its group (e.g. `bottom_chord.F-H1`, `cap_plate`),
+    /// used to refer to it from measurements; see `Model::member_path`.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl Member {
@@ -111,6 +115,7 @@ pub struct MemberSpec {
     pub anchor: Anchor,
     pub mark: Option<String>,
     pub group: Option<GroupId>,
+    pub name: Option<String>,
 }
 
 impl MemberSpec {
@@ -124,7 +129,12 @@ impl MemberSpec {
             anchor: Anchor::CENTER,
             mark: None,
             group: None,
+            name: None,
         }
+    }
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = Some(name.into());
+        self
     }
     pub fn priority(mut self, p: i32) -> Self {
         self.priority = p;
@@ -478,6 +488,7 @@ impl Model {
             depth_dir: spec.depth_dir,
             anchor: spec.anchor,
             group: spec.group,
+            name: spec.name.clone(),
         });
         if let Some(g) = spec.group {
             self.groups[g.idx()].members.push(id);
@@ -634,6 +645,53 @@ impl Model {
             })
             .map(|c| c.id)
             .collect()
+    }
+
+    /// Full stable path of a member: its group chain then its name (or
+    /// `role#k`, k counting that role within the group), e.g.
+    /// `Structure/Existing trusses/T2/bottom_chord.F-H1`.
+    pub fn member_path(&self, id: MemberId) -> String {
+        let m = self.member(id);
+        let local = m.name.clone().unwrap_or_else(|| {
+            let siblings: Vec<MemberId> = match m.group {
+                Some(g) => self.groups[g.idx()].members.clone(),
+                None => self.members.iter().filter(|x| x.group.is_none()).map(|x| x.id).collect(),
+            };
+            let k = siblings.iter().filter(|&&s| self.member(s).role == m.role).position(|&s| s == id).unwrap_or(0);
+            format!("{}#{}", m.role, k + 1)
+        });
+        let mut parts = vec![local];
+        let mut g = m.group;
+        while let Some(id) = g {
+            parts.push(self.groups[id.idx()].name.clone());
+            g = self.groups[id.idx()].parent;
+        }
+        parts.reverse();
+        parts.join("/")
+    }
+
+    /// Finds the member whose path ends with the `/`-separated `selector`
+    /// (e.g. `T2/bottom_chord.F-H1`). Errors if none or several match.
+    pub fn find_member(&self, selector: &str) -> Result<MemberId, String> {
+        let want: Vec<&str> = selector.split('/').filter(|s| !s.is_empty()).collect();
+        let hits: Vec<MemberId> = self
+            .members
+            .iter()
+            .map(|m| m.id)
+            .filter(|&id| {
+                let path = self.member_path(id);
+                let have: Vec<&str> = path.split('/').collect();
+                have.len() >= want.len() && have[have.len() - want.len()..] == want[..]
+            })
+            .collect();
+        match hits.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(format!("no member matches \"{selector}\"")),
+            many => Err(format!(
+                "\"{selector}\" is ambiguous: {}",
+                many.iter().take(4).map(|&id| self.member_path(id)).collect::<Vec<_>>().join(", ")
+            )),
+        }
     }
 
     /// Members of `g` and all its subgroups.

@@ -279,8 +279,9 @@ impl Wall {
         segs.push((x, len));
         let mut parts = WallParts { group: g, ..Default::default() };
         let mut seg_members = vec![];
-        for &(a, bx) in &segs {
-            let id = m.add_member_between(w(a, 0.0), w(bx, 0.0), &bottom);
+        for (k, &(a, bx)) in segs.iter().enumerate() {
+            let name = if segs.len() == 1 { "bottom_plate".to_string() } else { format!("bottom_plate#{}", k + 1) };
+            let id = m.add_member_between(w(a, 0.0), w(bx, 0.0), &bottom.clone().named(&name));
             seg_members.push((a, bx, id));
             parts.bottom_plates.push(id);
         }
@@ -290,14 +291,16 @@ impl Wall {
         // Double top plate as two members: lower ply (axis on its top face)
         // and cap plate(s) above, face-nailed together.
         let ht = h - b;
-        parts.top_plate = m.add_member_between(w(0.0, ht), w(len, ht), &top);
+        parts.top_plate = m.add_member_between(w(0.0, ht), w(len, ht), &top.clone().named("top_plate"));
         let cap = MemberSpec { role: "cap_plate".into(), ..top.clone() };
         let c_dbl = m.add_connection(fx::double_top_plate());
         let mut breaks: Vec<f64> = self.cap_breaks.iter().copied().filter(|&x| x > 1e-6 && x < len - 1e-6).collect();
         breaks.sort_by(f64::total_cmp);
         let mut x0 = 0.0;
-        for x1 in breaks.into_iter().chain([len]) {
-            let id = m.add_member_between(w(x0, h), w(x1, h), &cap);
+        let n_caps = breaks.len() + 1;
+        for (k, x1) in breaks.into_iter().chain([len]).enumerate() {
+            let name = if n_caps == 1 { "cap_plate".to_string() } else { format!("cap_plate#{}", k + 1) };
+            let id = m.add_member_between(w(x0, h), w(x1, h), &cap.clone().named(&name));
             m.bond(id, parts.top_plate, c_dbl);
             parts.cap_plates.push(id);
             x0 = x1;
@@ -356,6 +359,7 @@ impl Wall {
             let header = m.add_member(
                 &[hn0, hn1],
                 &MemberSpec::new("header", hdr_sec, hdr_mat)
+                    .named(&format!("header.{}", o.label))
                     .priority(20)
                     .depth_dir(Vec3::Z)
                     .anchor(Anchor::body_toward(&hax, v_side, Some(Vec3::Z)))

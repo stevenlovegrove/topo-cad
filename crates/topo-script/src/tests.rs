@@ -360,3 +360,85 @@ fn relative_imports_resolve_against_the_importing_file() {
     assert!(e.contains("relative imports"), "{e}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The generic solver, working only from measurements between named solid
+/// features, must agree with the closed-form derivation of the same truss.
+#[test]
+fn fitted_truss_matches_closed_form_derivation() {
+    use topo_core::units::{ft, inch};
+    let src = std::fs::read_to_string(GARAGE_TRUSS).unwrap();
+    let (_, fit) = run_solved(&src, GARAGE_TRUSS).unwrap_or_else(|e| panic!("{e}"));
+    let fit = fit.expect("model has unknowns");
+    let get = |n: &str| fit.unknowns.iter().find(|u| u.name == n).unwrap().value;
+
+    // Closed form: centre clear height Vc = k·L/2 − d_bc; the outer corner
+    // s₀ = (d_bc − d_tc·√(1+k²))/k; lumber = flat_measured − s₀ + L.
+    let (db, dt) = (inch(5.5), inch(3.5));
+    let (lumber, flat_meas, vc) = (ft(28.0), inch(42.3), inch(52.5));
+    let mut k: f64 = 0.4;
+    let mut l = 0.0;
+    for _ in 0..200 {
+        let s0 = (db - dt * (1.0 + k * k).sqrt()) / k;
+        l = lumber - flat_meas + s0;
+        k = 2.0 * (vc + db) / l;
+    }
+    assert!((get("pitch") - k).abs() < 1e-6, "pitch {} vs {k}", get("pitch"));
+    assert!((get("span") - l).abs() < 1e-5, "span {} vs {l}", get("span"));
+    let s0 = (db - dt * (1.0 + k * k).sqrt()) / k;
+    assert!((get("leftWall") - s0).abs() < 1e-5, "left wall under the outer corner");
+    assert!((get("rightWall") - (l - inch(9.0))).abs() < 1e-5);
+    assert!(fit.rms < 1e-3, "exactly determined: rms {}", fit.rms);
+    assert_eq!(fit.redundancy, 0);
+    assert!(fit.undetermined().is_empty());
+    assert!(fit.measurements.iter().all(|m| m.misfit().unwrap().abs() < 1e-3));
+}
+
+const FIT_MODEL: &str = r#"
+    import { Assembly, Building, DFL, ft, horizontal, inch, lengthOf, measured, member, unknown } from "topo-cad";
+    const w = unknown("width", ft(9), { unit: "length", min: ft(1) });
+    const h = unknown("height", ft(7), { unit: "length", min: ft(1) });
+    const spare = unknown("spare", 1.0);   // used by nothing measured
+    const frame = Assembly.named("frame")
+      .point("a", [0, 0, 0]).point("b", [0, 0, h]).point("c", [w, 0, h]).point("d", [w, 0, 0])
+      .member("post", ["a", "b"], { size: [4, 4], grade: DFL.No2 })
+      .member("post", ["d", "c"], { size: [4, 4], grade: DFL.No2 })
+      .member("beam", ["b", "c"], { size: [4, 6], grade: DFL.No2, anchor: [0, -0.5], priority: 10 })
+      .supportedAt("a", "d")
+      .moved([spare * 0, 0, 0]);
+    const post1 = member("frame/post#1"), post2 = member("frame/post#2"), beam = member("frame/beam#1");
+    export default Building.named("t").add(frame).measure(
+      measured("beam", lengthOf(beam, "long"), ft(10) + inch(3.5)),
+      measured("post", lengthOf(post1, "long"), ft(8)),
+      measured("clear", horizontal(post1.face("back"), post2.face("front")), EXTRA),
+    );
+"#;
+
+#[test]
+fn fit_reports_conflicts_and_undetermined_unknowns() {
+    use topo_core::units::{ft, inch};
+    // Consistent redundant measurement: clear width between posts = 10' − 3.5".
+    let ok = FIT_MODEL.replace("EXTRA", "ft(10) - inch(3.5)");
+    let (_, fit) = run_solved(&ok, "t.ts").unwrap_or_else(|e| panic!("{e}"));
+    let fit = fit.unwrap();
+    let get = |n: &str| fit.unknowns.iter().find(|u| u.name == n).unwrap().clone();
+    assert!((get("width").value - ft(10.0)).abs() < 1e-6, "{}", get("width").value);
+    assert!((get("height").value - ft(8.0)).abs() < 1e-6, "{}", get("height").value);
+    assert_eq!(fit.undetermined(), vec!["spare"]);
+    assert!(fit.rms < 1e-3);
+    assert!(fit.measurement_rows().iter().all(|r| r[4] == "ok"));
+
+    // A conflicting measurement (off by 1") shows up as misfits, not silently absorbed.
+    let bad = FIT_MODEL.replace("EXTRA", "ft(10) - inch(3.5) + inch(1)");
+    let (_, fit) = run_solved(&bad, "t.ts").unwrap();
+    let fit = fit.unwrap();
+    assert!(fit.rms > 1.0, "rms {}", fit.rms);
+    assert!(fit.measurement_rows().iter().any(|r| r[4] == "CHECK"));
+    let _ = inch(0.0);
+}
+
+#[test]
+fn fit_errors_name_the_measurement() {
+    let src = FIT_MODEL.replace("EXTRA", "ft(9)").replace("frame/post#2", "frame/post#9");
+    let e = run_solved(&src, "t.ts").unwrap_err().to_string();
+    assert!(e.contains("measurement \"clear\"") && e.contains("post#9"), "{e}");
+}

@@ -5,7 +5,8 @@
 use std::fs;
 use std::path::Path;
 use topo_core::{validate, Model, Topology};
-use topo_draw::DrawingSet;
+use topo_draw::{DrawingSet, View};
+use topo_script::solve::SolveReport;
 use topo_geom::Geometry;
 
 fn usage() -> ! {
@@ -15,14 +16,14 @@ fn usage() -> ! {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (model, out) = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["example", "garage", out] => (topo_timber::examples::garage_studio(), out.to_string()),
-        ["example", "garage-as-built", out] => (topo_timber::examples::garage_as_built(), out.to_string()),
-        ["example", "l-shaped", out] => (topo_timber::examples::l_shaped_perimeter(), out.to_string()),
+    let (model, out, fit) = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["example", "garage", out] => (topo_timber::examples::garage_studio(), out.to_string(), None),
+        ["example", "garage-as-built", out] => (topo_timber::examples::garage_as_built(), out.to_string(), None),
+        ["example", "l-shaped", out] => (topo_timber::examples::l_shaped_perimeter(), out.to_string(), None),
         ["run", path, out] => {
             let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
-            match topo_script::run(&text, path) {
-                Ok(model) => (model, out.to_string()),
+            match topo_script::run_solved(&text, path) {
+                Ok((model, fit)) => (model, out.to_string(), fit),
                 Err(e) => {
                     eprintln!("{e}");
                     std::process::exit(1);
@@ -32,17 +33,30 @@ fn main() {
         ["render", path, out] => {
             let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
             let model: Model = serde_json::from_str(&text).unwrap_or_else(|e| panic!("parsing {path}: {e}"));
-            (model, out.to_string())
+            (model, out.to_string(), None)
         }
         _ => usage(),
     };
-    if let Err(e) = render(&model, Path::new(&out)) {
+    if let Err(e) = render(&model, Path::new(&out), fit.as_ref()) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
 
-fn render(model: &Model, out: &Path) -> std::io::Result<()> {
+/// Cover-sheet tables for a measurement fit.
+fn fit_tables(fit: &SolveReport) -> Vec<View> {
+    use topo_draw::schedule::table;
+    use topo_draw::Align::*;
+    vec![
+        View::paper(
+            "Field measurements",
+            table("Field measurements", &["Measurement", "Measured", "Model", "Diff", ""], &[2.6, 1.0, 1.0, 0.7, 0.6], &[Start, End, End, End, Middle], &fit.measurement_rows()),
+        ),
+        View::paper("Fitted unknowns", table("Fitted unknowns", &["Unknown", "Value", "± 1σ"], &[1.4, 1.6, 1.3], &[Start, End, End], &fit.unknown_rows())),
+    ]
+}
+
+fn render(model: &Model, out: &Path, fit: Option<&SolveReport>) -> std::io::Result<()> {
     fs::create_dir_all(out.join("dxf"))?;
     let topo = Topology::build(model);
     let geom = Geometry::build(model, &topo);
@@ -55,7 +69,10 @@ fn render(model: &Model, out: &Path) -> std::io::Result<()> {
     fs::write(out.join("model.json"), serde_json::to_string_pretty(model).unwrap())?;
     fs::write(out.join("model.obj"), topo_geom::to_obj(model, &geom, model.units.drawing_unit()))?;
 
-    let set = DrawingSet::build(model, &topo, &geom);
+    let set = DrawingSet::build_with(model, &topo, &geom, fit.map(fit_tables).unwrap_or_default());
+    if let Some(f) = fit {
+        fs::write(out.join("fit.json"), serde_json::to_string_pretty(f).unwrap())?;
+    }
     let mut links = String::new();
     for (i, s) in set.sheets.iter().enumerate() {
         let name = format!("{}.svg", s.number);
@@ -92,6 +109,9 @@ fn render(model: &Model, out: &Path) -> std::io::Result<()> {
         analysis.elements.len(),
         analysis.supports.len()
     ));
+    if let Some(f) = fit {
+        report.push_str(&f.text());
+    }
     report.push_str(&format!("issues: {}\n", issues.len()));
     for i in &issues {
         report.push_str(&format!("  {i}\n"));

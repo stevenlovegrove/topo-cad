@@ -60,11 +60,18 @@ pub struct ShapeMember {
     /// Nominal size override, e.g. (2, 6).
     #[serde(default)]
     pub size: Option<(u32, u32)>,
+    /// Stable name (default `role.first-last`, e.g. `bottom_chord.H0-H1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl ShapeMember {
+    /// The member's stable name within its truss.
+    pub fn local_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| format!("{}.{}-{}", self.role.role(), self.path[0], self.path.last().unwrap()))
+    }
     pub fn new(role: ShapeRole, path: &[&str]) -> ShapeMember {
-        ShapeMember { role, path: path.iter().map(|s| s.to_string()).collect(), priority: None, anchor: None, size: None }
+        ShapeMember { role, path: path.iter().map(|s| s.to_string()).collect(), priority: None, anchor: None, size: None, name: None }
     }
 }
 
@@ -169,7 +176,7 @@ impl Sym {
         b.sort_by(|a, c| pos(a).total_cmp(&pos(c)));
         bottom.extend(b);
         bottom.push("H1".into());
-        let m = |role, p: Vec<String>| ShapeMember { role, path: p, priority: None, anchor: None, size: None };
+        let m = |role, p: Vec<String>| ShapeMember { role, path: p, priority: None, anchor: None, size: None, name: None };
         vec![m(ShapeRole::TopChord, left), m(ShapeRole::TopChord, right), m(ShapeRole::BottomChord, bottom)]
     }
 }
@@ -305,11 +312,11 @@ impl TrussShape {
                 top.push("E".into());
                 bottom.push("H1".into());
                 let mut members = vec![
-                    ShapeMember { role: ShapeRole::TopChord, path: top, priority: None, anchor: None, size: None },
-                    ShapeMember { role: ShapeRole::BottomChord, path: bottom, priority: None, anchor: None, size: None },
+                    ShapeMember { role: ShapeRole::TopChord, path: top, priority: None, anchor: None, size: None, name: None },
+                    ShapeMember { role: ShapeRole::BottomChord, path: bottom, priority: None, anchor: None, size: None, name: None },
                     // End post: outer face flush with the high end; runs past the
                     // top chord (priority between the chords) and sits on the bottom chord.
-                    ShapeMember { role: ShapeRole::Web, path: vec!["H1".into(), "E".into()], priority: Some(25), anchor: Some(0.5), size: None },
+                    ShapeMember { role: ShapeRole::Web, path: vec!["H1".into(), "E".into()], priority: Some(25), anchor: Some(0.5), size: None, name: None },
                 ];
                 let top_at = |i: usize| if i == n { "E".to_string() } else { format!("T{i}") };
                 for i in 1..n {
@@ -443,7 +450,12 @@ impl Truss {
                 ShapeRole::Web if vertical => 6,
                 ShapeRole::Web => 5,
             });
-            let spec = MemberSpec::new(sm.role.role(), sec, self.material).priority(prio).depth_dir(depth).anchor(anchor).group(g);
+            let spec = MemberSpec::new(sm.role.role(), sec, self.material)
+                .priority(prio)
+                .depth_dir(depth)
+                .anchor(anchor)
+                .group(g)
+                .named(&sm.local_name());
             let id = m.add_member(&path, &spec);
             placed.push((id, sm.role));
             match sm.role {

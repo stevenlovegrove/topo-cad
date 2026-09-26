@@ -6,6 +6,7 @@
 //! export (a `Building`) is serialized to a [`SceneSpec`] and expanded into a
 //! [`Model`](topo_core::Model) by the Rust generators.
 
+pub mod solve;
 pub mod spec;
 
 pub use spec::{build_scene, SceneSpec};
@@ -117,8 +118,30 @@ impl Loader for ModelLoader {
 /// Evaluates a TypeScript model and returns its default export as JSON.
 /// `file` names the module; relative imports resolve against its directory.
 pub fn run_to_json(source: &str, file: &str) -> Result<String, ScriptError> {
-    let api = strip_types(API_TS, "topo-cad.ts")?;
-    let js = strip_types(source, file)?;
+    Script::compile(source, file)?.eval(None)
+}
+
+/// A model script with types stripped once, evaluated as often as needed
+/// (e.g. by the solver, with different values for its `unknown`s).
+pub struct Script {
+    api_js: String,
+    js: String,
+    file: String,
+}
+
+impl Script {
+    pub fn compile(source: &str, file: &str) -> Result<Script, ScriptError> {
+        Ok(Script { api_js: strip_types(API_TS, "topo-cad.ts")?, js: strip_types(source, file)?, file: file.into() })
+    }
+
+    /// Default export as JSON; `params` override `unknown(...)` values.
+    pub fn eval(&self, params: Option<&std::collections::BTreeMap<String, f64>>) -> Result<String, ScriptError> {
+        eval_js(&self.api_js, &self.js, &self.file, params)
+    }
+}
+
+fn eval_js(api: &str, js: &str, file: &str, params: Option<&std::collections::BTreeMap<String, f64>>) -> Result<String, ScriptError> {
+    let api = api.to_string();
     let rt = Runtime::new().map_err(|e| ScriptError::Runtime(e.to_string()))?;
     rt.set_loader(ModelResolver, ModelLoader { api_js: api });
     let ctx = Context::full(&rt).map_err(|e| ScriptError::Runtime(e.to_string()))?;
@@ -126,11 +149,15 @@ pub fn run_to_json(source: &str, file: &str) -> Result<String, ScriptError> {
         // Native helpers the API calls (see `declare const __topo` in topo-cad.ts).
         let native = || -> rquickjs::Result<()> {
             let truss = rquickjs::Function::new(ctx.clone(), |req: String| -> String { standard_truss_json(&req) })?;
-            ctx.globals().set("__topo_truss_standard", truss)
+            ctx.globals().set("__topo_truss_standard", truss)?;
+            if let Some(p) = params {
+                ctx.eval::<(), _>(format!("globalThis.__topo_params = {};", serde_json::to_string(p).unwrap()))?;
+            }
+            Ok(())
         };
         native().map_err(|e| ScriptError::Runtime(e.to_string()))?;
         let run = || -> rquickjs::Result<Option<String>> {
-            let (module, promise) = Module::declare(ctx.clone(), file, js.as_str())?.eval()?;
+            let (module, promise) = Module::declare(ctx.clone(), file, js)?.eval()?;
             promise.finish::<()>()?;
             let default: Value = module.get("default")?;
             if default.is_undefined() {
@@ -166,11 +193,21 @@ fn standard_truss_json(req: &str) -> String {
     }
 }
 
-/// Evaluates a TypeScript model and builds it.
+/// Evaluates a TypeScript model and builds it (fitting any `unknown`s to its
+/// measurements first).
 pub fn run(source: &str, file: &str) -> Result<Model, ScriptError> {
-    let json = run_to_json(source, file)?;
-    let spec: SceneSpec = serde_json::from_str(&json).map_err(|e| ScriptError::Spec(format!("{e} in exported scene")))?;
-    build_scene(&spec).map_err(ScriptError::Spec)
+    Ok(run_solved(source, file)?.0)
+}
+
+/// Like [`run`], also returning the fit report when the model has unknowns
+/// or measurements.
+pub fn run_solved(source: &str, file: &str) -> Result<(Model, Option<solve::SolveReport>), ScriptError> {
+    let script = Script::compile(source, file)?;
+    solve::solve(&script)
+}
+
+pub(crate) fn parse_spec(json: &str) -> Result<SceneSpec, ScriptError> {
+    serde_json::from_str(json).map_err(|e| ScriptError::Spec(format!("{e} in exported scene")))
 }
 
 #[cfg(test)]

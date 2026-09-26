@@ -16,6 +16,22 @@ pub struct SceneSpec {
     pub info: InfoSpec,
     #[serde(default)]
     pub items: Vec<ItemSpec>,
+    #[serde(default)]
+    pub measurements: Vec<topo_geom::measure::Measurement>,
+    #[serde(default)]
+    pub unknowns: Vec<UnknownSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct UnknownSpec {
+    pub name: String,
+    pub guess: f64,
+    /// `length` or `ratio` (for reporting).
+    pub unit: String,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]

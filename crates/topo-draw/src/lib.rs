@@ -78,6 +78,11 @@ pub struct DrawingSet {
 
 impl DrawingSet {
     pub fn build(model: &Model, topo: &Topology, geom: &Geometry) -> DrawingSet {
+        DrawingSet::build_with(model, topo, geom, vec![])
+    }
+
+    /// As [`build`](Self::build), with extra paper-space views (tables) on the cover sheet.
+    pub fn build_with(model: &Model, topo: &Topology, geom: &Geometry, cover_extras: Vec<View>) -> DrawingSet {
         let marks = Marks::assign(model, geom);
         let ctx = Ctx { model, topo, geom, marks: &marks };
         let area = Sheet::area(sheet::ARCH_D);
@@ -180,6 +185,7 @@ impl DrawingSet {
             cover_views.push(View::paper("Load path review", text_block("Load path review", &items, 7.0)));
         }
         cover_views.push(View::paper("Junctions", schedule::junction_table(topo)));
+        cover_views.extend(cover_extras);
         let mut index: Vec<Vec<String>> = vec![vec!["G-001".into(), "General notes, index, 3D view".into()]];
         index.extend(sheets.iter().map(|s| vec![s.number.clone(), s.title.clone()]));
         cover_views.push(View::paper(
