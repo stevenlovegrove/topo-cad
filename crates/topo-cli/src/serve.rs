@@ -392,6 +392,23 @@ fn mesh(b: &Built) -> Value {
     json!({ "version_name": b.model.info.name, "members": members })
 }
 
+/// Exact hidden-line view of the whole model from a compass bearing `az`
+/// (degrees, the viewer's direction from the model) and elevation `el`:
+/// visible edge segments in view-plane coordinates (m), as
+/// `[member index, x0, y0, x1, y1]`, plus the time taken.
+fn view3d(b: &Built, az: f64, el: f64) -> Value {
+    let (a, e) = (az.to_radians(), el.clamp(-89.9, 89.9).to_radians());
+    let toward = topo_core::Vec3::new(a.sin() * e.cos(), a.cos() * e.cos(), e.sin());
+    let proj = topo_draw::hlr::Projector::new(toward, topo_core::Vec3::Z);
+    let start = std::time::Instant::now();
+    let geoms: Vec<&topo_geom::MemberGeom> = b.geom.members.iter().collect();
+    let segs = topo_draw::hlr::hidden_lines(&geoms, &proj);
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    let r = |v: f64| (v * 100_000.0).round() / 100_000.0;
+    let visible: Vec<[f64; 5]> = segs.iter().filter(|s| !s.hidden).map(|s| [s.member.0 as f64, r(s.a.x), r(s.a.y), r(s.b.x), r(s.b.y)]).collect();
+    json!({ "az": az, "el": el, "ms": ms, "segments": visible })
+}
+
 /// Highest ratio per member (by path) for a colour-by mode and combination.
 fn ratios(b: &Built, mode: &str, combo: &str) -> Value {
     let rs = member_ratios(b, mode, combo);
@@ -566,6 +583,11 @@ fn handle(app: &mut App, mut req: Request) {
         (Method::Get, "/api/mesh") => {
             let Ok(b) = &app.built else { return err(req, "model does not build".into()) };
             json_reply(req, mesh(b))
+        }
+        (Method::Get, u) if u.starts_with("/api/view3d") => {
+            let Ok(b) = &app.built else { return err(req, "model does not build".into()) };
+            let num = |k: &str, d: f64| query(u, k).parse::<f64>().unwrap_or(d);
+            json_reply(req, view3d(b, num("az", 225.0), num("el", 30.0)))
         }
         (Method::Get, u) if u.starts_with("/api/ratios") => {
             let Ok(b) = &app.built else { return json_reply(req, json!({})) };

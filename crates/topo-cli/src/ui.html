@@ -330,8 +330,15 @@ function drawHeat() {
   const g = svg.querySelector("#heat");
   if (!g) return;
   g.innerHTML = "";
-  if ($("heatMode").value === "off") return;
   const p = px();
+  if ($("heatMode").value === "off") {
+    // Still outline the member being inspected.
+    for (const h of heatData.filter((x) => x.path === inspected)) {
+      const poly = el("polygon", { points: h.outline.map((q) => q.join(",")).join(" "), fill: "#1f5fbf", "fill-opacity": 0.12, stroke: "#111", "stroke-width": 2.5 * p }, g);
+      poly.style.pointerEvents = "none";
+    }
+    return;
+  }
   for (const h of heatData) {
     const poly = el("polygon", { points: h.outline.map((q) => q.join(",")).join(" "), fill: heatColor(h.ratio), "fill-opacity": 0.6, stroke: h.path === inspected ? "#111" : "none", "stroke-width": 2.5 * p }, g);
     poly.style.pointerEvents = "none";
@@ -449,36 +456,70 @@ function fit3d() {
   cam.pan = [-(x0 + x1) / 2 * cam.scale, (y0 + y1) / 2 * cam.scale];
 }
 
+// Rendering: while the view direction changes, a faint wireframe of every
+// face edge (no hidden-line removal); once it settles, the server's exact
+// hidden-line render for that direction (the same one the sheets use).
+let exact3d = null, inflight3d = false;
+function exactValid() { return exact3d && Math.abs(exact3d.az - cam.az) < 1e-9 && Math.abs(exact3d.el - cam.el) < 1e-9 && exact3d.version === state.version; }
+async function requestExact() {
+  if (inflight3d || !state || state.error) return;
+  const az = cam.az, el = cam.el, version = state.version;
+  inflight3d = true;
+  try {
+    const r = await api(`/api/view3d?az=${az}&el=${el}`);
+    if (!r.error) exact3d = { az, el, version, segs: r.segments, ms: r.ms };
+  } finally { inflight3d = false; }
+  // Draw it if the camera is still there; otherwise chase the camera.
+  if (exactValid()) draw3d(); else if (!drag3dActive) requestExact(); else draw3d();
+}
+let drag3dActive = false;
+
 function draw3d() {
   if (view !== "3d" || !mesh3d) return;
   const { c, w, h, dpr } = canvasSize();
   const g = c.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.fillStyle = "#f7f7f3"; g.fillRect(0, 0, w, h);
+  g.fillStyle = "#fbfbf8"; g.fillRect(0, 0, w, h);
   const { t, r, u } = basis3d();
-  const proj = (p) => {
-    const q = [p[0] - center3d[0], p[1] - center3d[1], p[2] - center3d[2]];
-    return [w / 2 + cam.pan[0] + dot3(q, r) * cam.scale, h / 2 + cam.pan[1] - dot3(q, u) * cam.scale];
-  };
-  // Painter's algorithm: far faces first.
-  const order = faces3d.map((f, i) => [dot3(f.c, t), i]).sort((a, b) => a[0] - b[0]);
-  drawn3d = [];
+  const cr = dot3(center3d, r), cu = dot3(center3d, u);
+  const X = (sx) => w / 2 + cam.pan[0] + (sx - cr) * cam.scale;
+  const Y = (sy) => h / 2 + cam.pan[1] - (sy - cu) * cam.scale;
   const heatOn = $("heatMode").value !== "off";
-  g.lineJoin = "round";
-  for (const [, i] of order) {
-    const f = faces3d[i], m = mesh3d.members[f.mi];
-    const pts = f.pts.map(proj);
-    const rt = ratios3d[m.path];
-    let fill = heatOn ? (rt ? heatColor(rt.ratio) : "#e4e4de") : "#ffffff";
-    if (m.path === hover3d) fill = "#cfe0ff";
-    g.beginPath();
-    pts.forEach((p, k) => (k ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])));
-    g.closePath();
-    g.fillStyle = fill; g.fill();
-    g.strokeStyle = m.path === inspected ? "#111" : "#3a3a36";
-    g.lineWidth = m.path === inspected ? 1.8 : 0.6;
-    g.stroke();
-    drawn3d.push({ mi: f.mi, pts });
+  const colour = (m) => { const rt = ratios3d[m.path]; return heatOn ? (rt ? heatColor(rt.ratio) : "#9a9a92") : "#222"; };
+  g.lineCap = "round";
+  drawn3d = [];
+  if (exactValid()) {
+    // Exact visible edges, grouped by member so highlights draw on top.
+    const special = [];
+    for (const [mi, x0, y0, x1, y1] of exact3d.segs) {
+      const m = mesh3d.members[mi];
+      const seg = [mi, X(x0), Y(y0), X(x1), Y(y1)];
+      drawn3d.push(seg);
+      if (m.path === hover3d || m.path === inspected) { special.push(seg); continue; }
+      g.strokeStyle = colour(m); g.lineWidth = heatOn ? 1.6 : 0.8;
+      g.beginPath(); g.moveTo(seg[1], seg[2]); g.lineTo(seg[3], seg[4]); g.stroke();
+    }
+    for (const seg of special) {
+      const m = mesh3d.members[seg[0]];
+      g.strokeStyle = m.path === hover3d ? "#1f5fbf" : heatOn ? colour(m) : "#000";
+      g.lineWidth = 2.6;
+      g.beginPath(); g.moveTo(seg[1], seg[2]); g.lineTo(seg[3], seg[4]); g.stroke();
+    }
+    $("hint3d").textContent = `exact hidden lines (${exact3d.ms.toFixed(0)} ms) · drag to orbit · shift/right-drag to pan · scroll to zoom · click a member for its checks · double-click to fit`;
+  } else {
+    // Proxy: every face edge, faint.
+    g.lineWidth = 0.5;
+    g.globalAlpha = 0.35;
+    for (const f of faces3d) {
+      const m = mesh3d.members[f.mi];
+      g.strokeStyle = colour(m);
+      g.beginPath();
+      f.pts.forEach((p, k) => { const x = X(dot3(p, r)), y = Y(dot3(p, u)); k ? g.lineTo(x, y) : g.moveTo(x, y); });
+      g.closePath(); g.stroke();
+    }
+    g.globalAlpha = 1;
+    $("hint3d").textContent = "preview (hidden lines not removed) — release to render exactly";
+    if (!drag3dActive) requestExact();
   }
   drawCompass(r, u, t);
 }
@@ -509,16 +550,16 @@ function drawCompass(r, u, t) {
   svgc.innerHTML = html;
 }
 
+/// The member whose visible edge is nearest the cursor (within 7 px).
 function pick3d(x, y) {
-  for (let i = drawn3d.length - 1; i >= 0; i--) {
-    const pts = drawn3d[i].pts;
-    let inside = false;
-    for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
-      if ((pts[a][1] > y) !== (pts[b][1] > y) && x < ((pts[b][0] - pts[a][0]) * (y - pts[a][1])) / (pts[b][1] - pts[a][1]) + pts[a][0]) inside = !inside;
-    }
-    if (inside) return mesh3d.members[drawn3d[i].mi];
+  let best = null, bd = 7;
+  for (const [mi, x0, y0, x1, y1] of drawn3d) {
+    const dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
+    const k = l2 > 0 ? Math.max(0, Math.min(1, ((x - x0) * dx + (y - y0) * dy) / l2)) : 0;
+    const d = Math.hypot(x - (x0 + k * dx), y - (y0 + k * dy));
+    if (d < bd) { bd = d; best = mi; }
   }
-  return null;
+  return best === null ? null : mesh3d.members[best];
 }
 
 (() => {
@@ -528,11 +569,13 @@ function pick3d(x, y) {
   el.addEventListener("mousedown", (e) => {
     if (e.target.closest("#bar3d")) return;
     drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2, moved: false, az: cam.az, elv: cam.el, p: cam.pan.slice() };
+    drag3dActive = !drag.pan;
     el.classList.add("dragging");
   });
   window.addEventListener("mouseup", (e) => {
     if (!drag) return;
     const d = drag; drag = null; el.classList.remove("dragging");
+    if (drag3dActive) { drag3dActive = false; draw3d(); }
     if (!d.moved && view === "3d") {
       const rect = $("canvas3d").getBoundingClientRect();
       const m = pick3d(e.clientX - rect.left, e.clientY - rect.top);
@@ -892,6 +935,10 @@ function drawPicks() {
   if (hover && mode) {
     const c = mode === "len" ? { outline: hover.member_outline } : hover.primary || { outline: hover.member_outline };
     drawCandidate(g, c, "#1f5fbf", 5);
+    drawAxes(g, hover.member_axes || []);
+  } else if (hover) {
+    // Not measuring: highlight the member under the cursor (click inspects it).
+    drawCandidate(g, { outline: hover.member_outline }, "#1f5fbf", 2);
     drawAxes(g, hover.member_axes || []);
   }
   picks.forEach((c, i) => drawCandidate(g, c, i === 0 ? "#e8590c" : "#7b2cbf", 6));
