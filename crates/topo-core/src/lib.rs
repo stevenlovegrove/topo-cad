@@ -5,6 +5,7 @@
 //! groups and analysis inputs. See `DESIGN.md` at the repository root.
 
 pub mod connection;
+pub mod frames;
 pub mod ids;
 pub mod loads;
 pub mod material;
@@ -16,6 +17,7 @@ pub mod units;
 pub mod validate;
 
 pub use connection::*;
+pub use frames::{axis_direction, nearest_axis, WORLD_DIRECTIONS};
 pub use ids::*;
 pub use loads::*;
 pub use material::Material;

@@ -45,11 +45,39 @@ solid geometry, drawings, schedules and (Milestone 2) structural calcs are all
 
 ### Member placement
 
-Member local frame: `x` = axis (first→last path node); `v` = depth direction
-(`depth_dir` projected ⊥ x; default global Z, or global Y for vertical members);
-`u = v × x`. The section lives in `(u, v)`. `Anchor(u, v) ∈ [-½, ½]²` names the
-point of the section's bounding box that lies **on** the axis, so
-`Anchor(0, -½)` puts the axis on the bottom face and the body above it.
+### Frames and directions
+
+Everything is placed through an explicit tree of frames:
+
+* **World**: canonical, +x east, +y north, +z up. Compass names (`east`,
+  `west`, `north`, `south`, `up`, `down`) always resolve here.
+* **Building**: a convenience frame placed in the world by an origin and the
+  compass bearing of its +x axis (`Building.placed({ origin, xBearing })`).
+  A `Site` holds several peer buildings; each is built in its own frame and
+  then placed, so buildings never share nodes by accident. The building is
+  the root group of its members' paths (`Garage/T2/bottom_chord.F-H1`).
+* **Groups** (walls, trusses, roofs, floors, assemblies) have frames within
+  their building, and may **name directions** in their frame: a wall's
+  `inside`/`outside`/`along`, a truss's `span`/`normal`, a roof's
+  `ridge`/`span`, a floor's `joists`/`across`, or any building direction set
+  with `Building.direction("street", [0, -1, 0])`. A name resolves in a group,
+  then up through its ancestors, then as a compass name; axis names `±x/±y/±z`
+  are always that frame's axes.
+* **Members** have a canonical frame: `x` with the grain (first → last path
+  node), `z` the depth direction (`depth_dir` projected ⊥ x; by default the
+  parent group's z, or its y for a member parallel to that z), `y = z × x`
+  across the thickness. The section lives in `(y, z)` (also called `(u, v)`).
+  `Anchor(u, v) ∈ [-½, ½]²` names the point of the section's bounding box that
+  lies **on** the axis, so `Anchor(0, -½)` puts the axis on the −z face and
+  the body toward +z.
+
+Faces are named in the member frame: `±x` the cut ends, `±y` the wide faces,
+`±z` the narrow edges (the legacy `start/end`, `front/back`, `bottom/top` are
+aliases). Names never depend on which way is up; `facing(m, "north")` or
+`facing(stud, "inside", { in: "Wall A" })` selects the face whose outward
+normal is closest (within 45°) to a direction named in any frame. The UI
+labels faces canonically with a gloss (`+z edge of T2/bottom_chord (up)`) and
+draws the member's axes (x red, y green, z blue) on hover.
 
 **Convention for framing: axes lie on contact/reference surfaces.** Wall
 nodes lie on the exterior face of framing at the bottom of the bottom plate and
@@ -216,11 +244,13 @@ variants (existing vs. proposed) are functions of each other.
 
 Measurements relate *physical features* rather than topology nodes (which
 are often not measurable). A feature is the intersection of 1–3 named planes
-of member solids — faces (`top`, `bottom`, `front`, `back`), cut ends
-(`start`, `end`) or mid-planes — so "where the top chord's top face meets the
-bottom chord's top face" is a precise, stable reference. Quantities:
-horizontal/vertical distance (direction inferred from the features; an error
-if ambiguous) and member length (lumber or centreline).
+of member solids — faces (`±x` ends, `±y` wide faces, `±z` edges, or
+`facing` a named direction) or mid-planes — so "where the top chord's upper
+edge meets the bottom chord's upper edge" is a precise, stable reference.
+Quantities: horizontal/vertical distance (direction inferred from the
+features; an error if ambiguous), distance `along` a named direction in any
+frame, member length (lumber or centreline), and `riseOver` a horizontal run
+(a level held on a sloped member).
 
 A script declares `unknown(...)` parameters and `measured(...)` readings;
 `topo run` fits the unknowns by Levenberg–Marquardt, re-evaluating the script

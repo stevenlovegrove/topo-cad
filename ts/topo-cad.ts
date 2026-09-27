@@ -244,7 +244,7 @@ export const lerp = (a: Point, b: Point, t: number): Point => [a[0] + (b[0] - a[
 /** Point on the line through `a` and `b` at first coordinate `x` (e.g. a chord at a given s). */
 export const atX = (a: Point, b: Point, x: number): Point => lerp(a, b, (x - a[0]) / (b[0] - a[0]));
 /** Point on the line through `a` and `b` at distance `d` from `a`. */
-export const along = (a: Point, b: Point, d: number): Point => lerp(a, b, d / Math.hypot(b[0] - a[0], b[1] - a[1]));
+export const pointAlong = (a: Point, b: Point, d: number): Point => lerp(a, b, d / Math.hypot(b[0] - a[0], b[1] - a[1]));
 /** Intersection of lines a1–a2 and b1–b2 (throws if parallel). */
 export function intersect(a1: Point, a2: Point, b1: Point, b2: Point): Point {
   const [dx1, dy1, dx2, dy2] = [a2[0] - a1[0], a2[1] - a1[1], b2[0] - b1[0], b2[1] - b1[1]];
@@ -725,12 +725,35 @@ export function unknown(name: string, guess: number, o: { unit?: "length" | "rat
   return params && name in params ? params[name] : guess;
 }
 
+/**
+ * A direction: a name (`"north"`, `"up"`, a group's `"inside"`/`"span"`/…,
+ * or an axis `"+x"`…`"-z"`) or a vector, in the frame of a group or member
+ * (`in`, a path tail such as `"Garage"` or `"T2"`; default the world, where
+ * +x is east, +y north and +z up).
+ */
+export interface DirRef {
+  readonly name?: string;
+  readonly vector?: Point3;
+  readonly in?: string;
+}
+const dirRef = (d: string | Point3, o: { in?: string } = {}): DirRef =>
+  typeof d === "string" ? { name: d, ...o } : { vector: d, ...o };
+
+/**
+ * A face in the member's canonical frame: x runs with the grain (first node
+ * to last), y across the thickness, z across the depth. `±x` are the cut
+ * ends, `±y` the wide faces, `±z` the narrow edges.
+ */
+export type Axis = "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+/** @deprecated aliases: top/bottom = ±z, back/front = ±y, end/start = ±x. */
+export type LegacyFaceSide = "top" | "bottom" | "front" | "back" | "start" | "end";
+export type FaceSide = Axis | LegacyFaceSide;
+
 /** One plane of a member solid, named through the member's stable path. */
 export type PlaneRef =
   | { readonly kind: "face"; readonly member: string; readonly side: FaceSide }
-  | { readonly kind: "mid"; readonly member: string; readonly axis: "depth" | "width" };
-/** `top`/`bottom` (depth direction), `front`/`back` (width), `start`/`end` (cut ends along the path). */
-export type FaceSide = "top" | "bottom" | "front" | "back" | "start" | "end";
+  | { readonly kind: "mid"; readonly member: string; readonly axis: "y" | "z" | "depth" | "width" }
+  | { readonly kind: "facing"; readonly member: string; readonly direction: DirRef };
 /** Intersection of 1–3 planes: a face, an edge/corner line, or a point. */
 export interface Feature {
   readonly planes: readonly PlaneRef[];
@@ -739,15 +762,30 @@ export interface Feature {
 /** A member, by the `/`-separated tail of its path (e.g. `"T2/bottom_chord.F-H1"`). */
 export class MemberRef {
   constructor(readonly path: string) {}
+  /** A face by canonical axis, e.g. `face("+z")`. */
   face(side: FaceSide): PlaneRef {
     return { kind: "face", member: this.path, side };
   }
-  /** Mid-plane across the member's depth or width (e.g. a wall centreline). */
-  mid(axis: "depth" | "width"): PlaneRef {
+  /** Mid-plane across the member's z (depth) or y (thickness), e.g. a wall centreline. */
+  mid(axis: "y" | "z" | "depth" | "width"): PlaneRef {
     return { kind: "mid", member: this.path, axis };
+  }
+  /** The face whose outward normal is closest to a direction (see `facing`). */
+  facing(dir: string | Point3, o: { in?: string } = {}): PlaneRef {
+    return facing(this, dir, o);
   }
 }
 export const member = (path: string): MemberRef => new MemberRef(path);
+/**
+ * The face of `m` whose outward normal points closest to a direction (within
+ * 45°): `facing(member("Wall A/cap_plate"), "up")`, `facing(stud, "inside",
+ * { in: "Wall A" })`, `facing(post, "north")`.
+ */
+export const facing = (m: MemberRef, dir: string | Point3, o: { in?: string } = {}): PlaneRef => ({
+  kind: "facing",
+  member: m.path,
+  direction: dirRef(dir, o),
+});
 /** Where faces meet: two faces make an edge/corner line, three a point. */
 export const meet = (...planes: PlaneRef[]): Feature => ({ planes });
 const asFeature = (f: Feature | PlaneRef): Feature => ("planes" in f ? f : { planes: [f] });
@@ -755,11 +793,22 @@ const asFeature = (f: Feature | PlaneRef): Feature => ("planes" in f ? f : { pla
 export type Quantity =
   | { readonly kind: "horizontal"; readonly a: Feature; readonly b: Feature }
   | { readonly kind: "vertical"; readonly a: Feature; readonly b: Feature }
-  | { readonly kind: "length"; readonly member: string; readonly how: "long" | "centreline" };
+  | { readonly kind: "length"; readonly member: string; readonly how: "long" | "centreline" }
+  | { readonly kind: "along"; readonly a: Feature; readonly b: Feature; readonly direction: DirRef }
+  | { readonly kind: "rise"; readonly member: string; readonly run: Length };
 export const horizontal = (a: Feature | PlaneRef, b: Feature | PlaneRef): Quantity => ({ kind: "horizontal", a: asFeature(a), b: asFeature(b) });
 export const vertical = (a: Feature | PlaneRef, b: Feature | PlaneRef): Quantity => ({ kind: "vertical", a: asFeature(a), b: asFeature(b) });
 /** `long`: lumber length (long point to long point); `centreline`: between the end cuts along its centreline. */
 export const lengthOf = (m: MemberRef, how: "long" | "centreline"): Quantity => ({ kind: "length", member: m.path, how });
+/** Distance between two features along a named direction, e.g. `along(a, b, "north")` or `along(a, b, "span", { in: "T2" })`. */
+export const along = (a: Feature | PlaneRef, b: Feature | PlaneRef, dir: string | Point3, o: { in?: string } = {}): Quantity => ({
+  kind: "along",
+  a: asFeature(a),
+  b: asFeature(b),
+  direction: dirRef(dir, o),
+});
+/** Rise of a sloped member over a horizontal `run` (e.g. a level held on a rafter: `riseOver(member("T2/top_chord.L"), inch(12))`). */
+export const riseOver = (m: MemberRef, run: Length): Quantity => ({ kind: "rise", member: m.path, run });
 
 export interface Measurement {
   readonly name: string;
@@ -790,30 +839,88 @@ export interface Info {
 
 export type Item = Perimeter | TrussRoof | Assembly;
 
-/** The whole model: what a script exports as its default. */
+/**
+ * Where a building sits in the world: its origin, and the compass bearing of
+ * its +x axis in degrees clockwise from north (90, the default, is east).
+ */
+export interface BuildingPlacement {
+  readonly origin?: Point3;
+  readonly xBearing?: number;
+}
+
+/** A building, in its own frame; a script exports one, or a `Site` of several. */
 export class Building {
   private constructor(
     readonly name: string,
     readonly info_: Partial<Info>,
     readonly items: readonly Item[],
     readonly measurements: readonly Measurement[],
+    readonly placement_: BuildingPlacement | undefined,
+    readonly directions_: Readonly<Record<string, Point3>>,
   ) {}
 
   static named(name: string): Building {
-    return new Building(name, {}, [], []);
+    return new Building(name, {}, [], [], undefined, {});
+  }
+  private with(o: Partial<{ info_: Partial<Info>; items: readonly Item[]; measurements: readonly Measurement[]; placement_: BuildingPlacement; directions_: Record<string, Point3> }>): Building {
+    const v = { ...this, ...o };
+    return new Building(this.name, v.info_, v.items, v.measurements, v.placement_, v.directions_);
   }
   info(i: Partial<Info>): Building {
-    return new Building(this.name, { ...this.info_, ...i }, this.items, this.measurements);
+    return this.with({ info_: { ...this.info_, ...i } });
   }
   /** Add items (arrays, e.g. from `repeat`, are flattened). */
   add(...items: (Item | readonly Item[])[]): Building {
-    return new Building(this.name, this.info_, [...this.items, ...items.flat()], this.measurements);
+    return this.with({ items: [...this.items, ...items.flat()] });
   }
   /** Field measurements; `unknown`s are fitted to them when the model is run. */
   measure(...ms: (Measurement | readonly Measurement[])[]): Building {
-    return new Building(this.name, this.info_, this.items, [...this.measurements, ...ms.flat()]);
+    return this.with({ measurements: [...this.measurements, ...ms.flat()] });
+  }
+  /** Places the building in the world (+x east, +y north, +z up); items stay in building coordinates. */
+  placed(p: BuildingPlacement): Building {
+    return this.with({ placement_: { ...this.placement_, ...p } });
+  }
+  /** Names a direction in the building frame, e.g. `.direction("street", [0, -1, 0])`, usable as `facing(m, "street")`. */
+  direction(name: string, v: Point3): Building {
+    return this.with({ directions_: { ...this.directions_, [name]: v } });
   }
   toJSON() {
-    return { name: this.name, info: this.info_, items: this.items, measurements: this.measurements, unknowns: unknownRegistry };
+    const p = this.placement_;
+    return {
+      name: this.name,
+      info: this.info_,
+      items: this.items,
+      measurements: this.measurements,
+      unknowns: unknownRegistry,
+      placement: p ? { origin: p.origin ?? [0, 0, 0], x_bearing: p.xBearing ?? 90 } : undefined,
+      directions: this.directions_,
+    };
+  }
+}
+
+/** Several buildings placed in one world (e.g. a house and a detached garage). */
+export class Site {
+  private constructor(
+    readonly name: string,
+    readonly info_: Partial<Info>,
+    readonly buildings: readonly Building[],
+    readonly measurements: readonly Measurement[],
+  ) {}
+  static named(name: string): Site {
+    return new Site(name, {}, [], []);
+  }
+  info(i: Partial<Info>): Site {
+    return new Site(this.name, { ...this.info_, ...i }, this.buildings, this.measurements);
+  }
+  add(...b: Building[]): Site {
+    return new Site(this.name, this.info_, [...this.buildings, ...b], this.measurements);
+  }
+  /** Measurements between buildings (each building's own are included too). */
+  measure(...ms: (Measurement | readonly Measurement[])[]): Site {
+    return new Site(this.name, this.info_, this.buildings, [...this.measurements, ...ms.flat()]);
+  }
+  toJSON() {
+    return { type: "site", name: this.name, info: this.info_, buildings: this.buildings, measurements: this.measurements, unknowns: unknownRegistry };
   }
 }

@@ -20,6 +20,15 @@ see [examples/garage-as-built.ts](examples/garage-as-built.ts),
 repeated assemblies) and [examples/truss-gallery.ts](examples/truss-gallery.ts). Every builder
 method returns a new value, so templates are shared and specialised freely.
 
+Frames are explicit: the world is +x east, +y north, +z up; a `Building` is
+placed in it (`.placed({ origin, xBearing })`, several make a `Site`); groups
+and members have their own frames. Member faces are named canonically (`±x`
+ends along the grain, `±y` wide faces, `±z` edges), or picked by direction:
+`facing(member("Wall A/cap_plate"), "up")`, `facing(stud, "inside", { in: "Wall A" })`.
+Field measurements (`horizontal`, `vertical`, `along(a, b, "north")`,
+`lengthOf`, `riseOver`) fit `unknown(...)` parameters; see
+[examples/garage-truss.ts](examples/garage-truss.ts).
+
 `out/` gets: sheet SVGs (`G-001`, `S-101`, `S-201`, …) + `index.html`, DXF per
 sheet (paper space) and per view (full-size model space), `model.json` (the IR),
 `model.obj`, `analysis-model.json`, and `report.txt` (junction census + issues).

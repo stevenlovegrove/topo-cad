@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use topo_core::units::{INCH, MM};
 use topo_core::Model;
-use topo_geom::measure::{Feature, PlaneRef, Quantity};
+use topo_geom::measure::{DirRef, Feature, PlaneRef, Quantity};
 
 /// `garage.ts` → `garage.measured.ts`.
 pub fn sidecar_path(model_file: &Path) -> PathBuf {
@@ -20,7 +20,7 @@ pub fn import_hint(model_file: &Path) -> String {
 }
 
 const TEMPLATE: &str = "// Field measurements, added with `topo serve`. Plain TypeScript: edit freely.
-import { type Measurement, horizontal, inch, lengthOf, meet, measured, member, vertical } from \"topo-cad\";
+import { type Measurement, along, facing, horizontal, inch, lengthOf, meet, measured, member, riseOver, vertical } from \"topo-cad\";
 
 export const fieldMeasurements: Measurement[] = [
 ];
@@ -93,10 +93,26 @@ fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap()
 }
 
+fn dir_ts(d: &DirRef) -> String {
+    let dir = match (&d.name, d.vector) {
+        (Some(n), _) => js_str(n),
+        (None, Some(v)) => format!("[{}, {}, {}]", v[0], v[1], v[2]),
+        (None, None) => "\"up\"".into(),
+    };
+    match &d.frame {
+        Some(f) => format!("{dir}, {{ in: {} }}", js_str(f)),
+        None => dir,
+    }
+}
+
 fn plane_ts(model: &Model, p: &PlaneRef) -> String {
     match p {
-        PlaneRef::Face { member, side } => format!("member({}).face({})", js_str(&short_selector(model, member)), js_str(side)),
+        PlaneRef::Face { member, side } => {
+            let side = topo_geom::measure::canonical_side(side).unwrap_or(side);
+            format!("member({}).face({})", js_str(&short_selector(model, member)), js_str(side))
+        }
         PlaneRef::Mid { member, axis } => format!("member({}).mid({})", js_str(&short_selector(model, member)), js_str(axis)),
+        PlaneRef::Facing { member, direction } => format!("facing(member({}), {})", js_str(&short_selector(model, member)), dir_ts(direction)),
     }
 }
 
@@ -113,6 +129,8 @@ pub fn quantity_ts(model: &Model, q: &Quantity) -> String {
         Quantity::Horizontal { a, b } => format!("horizontal({}, {})", feature_ts(model, a), feature_ts(model, b)),
         Quantity::Vertical { a, b } => format!("vertical({}, {})", feature_ts(model, a), feature_ts(model, b)),
         Quantity::Length { member, how } => format!("lengthOf(member({}), {})", js_str(&short_selector(model, member)), js_str(how)),
+        Quantity::Along { a, b, direction } => format!("along({}, {}, {})", feature_ts(model, a), feature_ts(model, b), dir_ts(direction)),
+        Quantity::Rise { member, run } => format!("riseOver(member({}), {})", js_str(&short_selector(model, member)), value_ts(*run)),
     }
 }
 

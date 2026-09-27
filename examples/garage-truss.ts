@@ -110,18 +110,18 @@ const bc = T("bottom_chord.F-H1");
 const leftTop = T("top_chord.H0-P");
 const rightTop = T("top_chord.X1-P");
 /** Where the top face of the left top chord meets the top of the bottom chord. */
-const outerCorner = meet(leftTop.face("top"), bc.face("top"));
-/** The bottom chord's right end (its long point, on the bottom face). */
-const chordEnd = meet(bc.face("end"), bc.face("bottom"));
-const leftWallCL = leftWalls.wallMember("Left bearing wall", "cap_plate").mid("depth");
-const rightWallCL = rightWalls.wallMember("Right bearing wall", "cap_plate").mid("depth");
+const outerCorner = meet(leftTop.facing("up"), bc.facing("up"));
+/** The bottom chord's right end (+x: its grain runs left to right) at its long point, on the bottom face. */
+const chordEnd = meet(bc.face("+x"), bc.facing("down"));
+const leftWallCL = leftWalls.wallMember("Left bearing wall", "cap_plate").mid("z");
+const rightWallCL = rightWalls.wallMember("Right bearing wall", "cap_plate").mid("z");
 
 export const measurements = [
   measured("bottom chord lumber", lengthOf(bc, "long"), ft(28)),
-  measured("flat: chord end to outer corner", horizontal(bc.face("start"), outerCorner), inch(42.3)),
+  measured("flat: chord end to outer corner", horizontal(bc.face("-x"), outerCorner), inch(42.3)),
   measured("centre vertical, clear", lengthOf(T("web.P-C"), "centreline"), inch(52.5)),
   measured("right vertical, clear", lengthOf(T("web.T1'-B3"), "centreline"), inch(26)),
-  measured("eave tail past chord end", horizontal(chordEnd, rightTop.face("start")), inch(25.25)),
+  measured("eave tail past chord end", horizontal(chordEnd, rightTop.face("-x")), inch(25.25)),
   measured("right wall ℄ in from chord end", horizontal(rightWallCL, chordEnd), inch(9)),
   measured("left wall ℄ under outer corner", horizontal(leftWallCL, outerCorner), 0),
 ];

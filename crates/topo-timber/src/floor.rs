@@ -67,6 +67,8 @@ impl Floor {
         let p = |a: f64, b: f64| frame.to_world(v3(a, b, 0.0));
         let (len, wid) = (self.length, self.width);
         let g = m.add_group(&self.name, "floor", frame, self.parent);
+        m.name_direction(g, "joists", Vec3::X);
+        m.name_direction(g, "across", Vec3::Y);
         let sec = m.add_section(sawn(self.joist.0, self.joist.1));
         let b = m.section(sec).props.width;
         let c_rim = m.add_connection(fx::rim_to_joist());

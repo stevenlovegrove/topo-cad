@@ -1,5 +1,11 @@
 //! Field measurements between physical features of member solids.
 //!
+//! Faces are named in the member's canonical frame: `±x` are the cut ends
+//! (x runs with the grain, first node to last), `±y` the wide faces (across
+//! the thickness), `±z` the narrow edges (across the depth). Names never
+//! depend on which way is up; use `PlaneRef::Facing` to select a face by a
+//! direction named in any frame (`north`, a wall's `inside`, …).
+//!
 //! A *feature* is the intersection of one to three named planes of member
 //! solids — a face, an edge/corner line, or a point — e.g. "where the top face
 //! of the top chord meets the top face of the bottom chord". Features are
@@ -17,11 +23,53 @@ use topo_core::{Model, Plane, Vec2, Vec3};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PlaneRef {
-    /// `top`/`bottom` (±depth), `front`/`back` (∓/± width), or the cut ends
-    /// `start`/`end` (first/last node of the member's path).
+    /// A face by canonical name: `+x`/`-x` (ends), `±y` (wide faces), `±z`
+    /// (edges). Deprecated aliases: `end`/`start`, `back`/`front`, `top`/`bottom`.
     Face { member: String, side: String },
-    /// Mid-plane across the member's `depth` or `width` (e.g. a wall centreline).
+    /// Mid-plane across the member's `z` (depth) or `y` (thickness), e.g. a
+    /// wall centreline. Aliases: `depth`, `width`.
     Mid { member: String, axis: String },
+    /// The face whose outward normal points closest to `direction`.
+    Facing { member: String, direction: DirRef },
+}
+
+/// A direction: a name (`north`, `up`, `inside`, `+x`…) or a vector, in the
+/// frame of a group or member (`in`; default the world).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DirRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<[f64; 3]>,
+    #[serde(default, rename = "in", skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
+}
+
+/// World unit vector of a direction reference.
+pub fn resolve_direction(model: &Model, d: &DirRef) -> Result<Vec3, String> {
+    // A named frame is a group, or failing that a member (its canonical frame).
+    let (group, member_frame) = match &d.frame {
+        None => (None, None),
+        Some(sel) => match model.find_group(sel) {
+            Ok(g) => (Some(g), None),
+            Err(ge) => match model.find_member(sel) {
+                Ok(m) => (model.member(m).group, Some(model.member_axes(m).frame())),
+                Err(_) => return Err(ge),
+            },
+        },
+    };
+    let frame = member_frame.or(group.map(|g| model.group(g).frame));
+    match (&d.name, d.vector) {
+        (Some(n), _) => match (member_frame, topo_core::axis_direction(n)) {
+            (Some(f), Some(v)) => Ok(f.dir_to_world(v)),
+            _ => model.direction(n, group),
+        },
+        (None, Some(v)) => {
+            let v = Vec3::new(v[0], v[1], v[2]);
+            Ok(frame.map(|f| f.dir_to_world(v)).unwrap_or(v).try_normalized().ok_or("zero direction vector")?)
+        }
+        (None, None) => Err("a direction needs a name or a vector".into()),
+    }
 }
 
 /// Intersection of planes: 1 → a plane, 2 → a line, 3 → a point.
@@ -41,6 +89,10 @@ pub enum Quantity {
     /// Length of a member: `long` (long point to long point — the lumber
     /// length) or `centreline` (between the end cuts along the centreline).
     Length { member: String, how: String },
+    /// Distance between two features along a direction.
+    Along { a: Feature, b: Feature, direction: DirRef },
+    /// Rise of a sloped member over a horizontal `run` (e.g. 12" for pitch).
+    Rise { member: String, run: f64 },
 }
 
 fn default_tolerance() -> f64 {
@@ -64,19 +116,40 @@ fn member_geom<'a>(model: &Model, geom: &'a Geometry, path: &str) -> Result<&'a 
     Ok(geom.member(model.find_member(path)?))
 }
 
-/// Face sides that can be named, in picking order.
-pub const SIDES: [&str; 6] = ["top", "bottom", "front", "back", "start", "end"];
+/// Canonical face names, in picking order.
+pub const SIDES: [&str; 6] = ["+z", "-z", "+y", "-y", "-x", "+x"];
+
+/// Canonical name for a face name or deprecated alias.
+pub fn canonical_side(side: &str) -> Result<&'static str, String> {
+    Ok(match side {
+        "+x" | "end" => "+x",
+        "-x" | "start" => "-x",
+        "+y" | "back" => "+y",
+        "-y" | "front" => "-y",
+        "+z" | "top" => "+z",
+        "-z" | "bottom" => "-z",
+        s => return Err(format!("unknown face \"{s}\" (use +x/-x for the ends, ±y for the wide faces, ±z for the edges)")),
+    })
+}
+
+/// What a canonical face is, in lumber terms: `end`, `face` or `edge`.
+pub fn side_kind(side: &str) -> &'static str {
+    match side {
+        "+x" | "-x" => "end",
+        "+y" | "-y" => "face",
+        _ => "edge",
+    }
+}
 
 /// The named face plane of a member solid (outward normal).
 pub fn face_plane(g: &MemberGeom, side: &str) -> Result<Plane, String> {
-    let target = match side {
-        "start" => return Ok(g.start.plane),
-        "end" => return Ok(g.end.plane),
-        "top" => Vec2::new(0.0, 1.0),
-        "bottom" => Vec2::new(0.0, -1.0),
-        "back" => Vec2::new(1.0, 0.0),
-        "front" => Vec2::new(-1.0, 0.0),
-        s => return Err(format!("unknown face \"{s}\" (use top, bottom, front, back, start or end)")),
+    let target = match canonical_side(side)? {
+        "-x" => return Ok(g.start.plane),
+        "+x" => return Ok(g.end.plane),
+        "+z" => Vec2::new(0.0, 1.0),
+        "-z" => Vec2::new(0.0, -1.0),
+        "+y" => Vec2::new(1.0, 0.0),
+        _ => Vec2::new(-1.0, 0.0),
     };
     let h = &g.place.hull;
     let n = h.len();
@@ -89,14 +162,25 @@ pub fn face_plane(g: &MemberGeom, side: &str) -> Result<Plane, String> {
     Ok(Plane::new(g.place.at(h[i], 0.0), g.place.side_normal(h[i], h[(i + 1) % n])))
 }
 
+/// The canonical face of a member whose outward normal is closest to `dir`
+/// (within 45°).
+pub fn facing_side(g: &MemberGeom, dir: Vec3) -> Result<&'static str, String> {
+    let scored: Vec<(f64, &'static str)> = SIDES.iter().filter_map(|&s| face_plane(g, s).ok().map(|p| (p.normal.dot(dir), s))).collect();
+    let (c, s) = scored.into_iter().max_by(|a, b| a.0.total_cmp(&b.0)).ok_or("member has no faces")?;
+    if c < std::f64::consts::FRAC_1_SQRT_2 {
+        return Err(format!("no face points within 45° of that direction (closest: {s}, {:.0}° off)", c.clamp(-1.0, 1.0).acos().to_degrees()));
+    }
+    Ok(s)
+}
+
 /// Mid-plane of a member across its `depth` (normal v) or `width` (normal u).
 pub fn mid_plane(g: &MemberGeom, axis: &str) -> Result<Plane, String> {
     let (lo, hi) = g.place.hull.iter().fold((Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
     let mid = (lo + hi) * 0.5;
     match axis {
-        "depth" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.v)),
-        "width" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.u)),
-        a => Err(format!("unknown mid-plane axis \"{a}\" (use depth or width)")),
+        "z" | "depth" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.v)),
+        "y" | "width" => Ok(Plane::new(g.place.at(mid, 0.0), g.place.u)),
+        a => Err(format!("unknown mid-plane axis \"{a}\" (use z for the depth or y for the thickness)")),
     }
 }
 
@@ -105,6 +189,10 @@ pub fn plane(model: &Model, geom: &Geometry, r: &PlaneRef) -> Result<Plane, Stri
     match r {
         PlaneRef::Face { member, side } => face_plane(member_geom(model, geom, member)?, side),
         PlaneRef::Mid { member, axis } => mid_plane(member_geom(model, geom, member)?, axis),
+        PlaneRef::Facing { member, direction } => {
+            let g = member_geom(model, geom, member)?;
+            face_plane(g, facing_side(g, resolve_direction(model, direction)?)?)
+        }
     }
 }
 
@@ -215,6 +303,22 @@ pub fn evaluate(model: &Model, geom: &Geometry, q: &Quantity) -> Result<f64, Str
                 }
                 h => Err(format!("unknown length \"{h}\" (use long or centreline)")),
             }
+        }
+        Quantity::Along { a, b, direction } => {
+            let (fa, fb) = (feature(model, geom, a)?, feature(model, geom, b)?);
+            let d = resolve_direction(model, direction)?;
+            if fa.dirs.iter().chain(&fb.dirs).any(|v| v.dot(d).abs() > 1e-6) {
+                return Err("a distance along this direction is not well defined: pick features square to it".into());
+            }
+            Ok((fb.point - fa.point).dot(d).abs())
+        }
+        Quantity::Rise { member, run } => {
+            let x = member_geom(model, geom, member)?.place.x;
+            let horizontal = (x.x * x.x + x.y * x.y).sqrt();
+            if horizontal < 1e-9 {
+                return Err("a vertical member has no rise over a horizontal run".into());
+            }
+            Ok(run * x.z.abs() / horizontal)
         }
     }
 }

@@ -241,6 +241,9 @@ impl Wall {
         };
 
         let g = m.add_group(&self.name, "wall", frame, self.parent);
+        m.name_direction(g, "along", Vec3::X);
+        m.name_direction(g, "inside", Vec3::Y);
+        m.name_direction(g, "outside", -Vec3::Y);
         let stud_sec = m.add_section(sawn(self.stud.0, self.stud.1));
         let mat = self.material;
         let hdr_mat = self.header_material.unwrap_or(mat);

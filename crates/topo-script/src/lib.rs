@@ -10,7 +10,7 @@ pub mod measfile;
 pub mod solve;
 pub mod spec;
 
-pub use spec::{build_scene, SceneSpec};
+pub use spec::{build_scene, BuildingSpec, PlacementSpec, SceneSpec};
 
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{CatchResultExt, Context, Ctx, Module, Runtime, Value};
@@ -167,7 +167,7 @@ fn eval_js(api: &str, js: &str, file: &str, params: Option<&std::collections::BT
         };
         match run().catch(&ctx) {
             Ok(Some(json)) => Ok(json),
-            Ok(None) => Err(ScriptError::Runtime(format!("{file} has no default export (export default a Building)"))),
+            Ok(None) => Err(ScriptError::Runtime(format!("{file} has no default export (export default a Building or Site)"))),
             Err(e) => Err(ScriptError::Runtime(e.to_string())),
         }
     })
@@ -207,7 +207,7 @@ pub fn run_solved(source: &str, file: &str) -> Result<(Model, Option<solve::Solv
 }
 
 pub(crate) fn parse_spec(json: &str) -> Result<SceneSpec, ScriptError> {
-    serde_json::from_str(json).map_err(|e| ScriptError::Spec(format!("{e} in exported scene")))
+    SceneSpec::from_json(json).map_err(|e| ScriptError::Spec(format!("{e} in exported scene")))
 }
 
 #[cfg(test)]

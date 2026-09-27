@@ -248,6 +248,31 @@ function drawCandidate(g, c, color, width) {
   if (c.outline) el("polygon", { points: c.outline.map((q) => q.join(",")).join(" "), fill: color, "fill-opacity": 0.15, stroke: color, "stroke-width": 2 * p }, g);
 }
 
+// The hovered member's canonical frame: x (grain) red, y green, z blue.
+// An axis pointing into the page is drawn as a dot.
+const AXIS_COLORS = { x: "#d62828", y: "#2b9348", z: "#1d4ed8" };
+function drawAxes(g, axes) {
+  const p = px();
+  // Fixed on-screen size (the longest axis 40px), keeping foreshortening.
+  const lens = axes.map((a) => Math.hypot(a.to[0] - a.from[0], a.to[1] - a.from[1]));
+  const k = (40 * p) / Math.max(...lens, 1e-9);
+  axes.forEach((a, i) => {
+    const color = AXIS_COLORS[a.name] || "#333";
+    const len = lens[i] * k;
+    if (len < 8 * p) {
+      el("circle", { cx: a.from[0], cy: a.from[1], r: 3.5 * p, fill: "none", stroke: color, "stroke-width": 1.5 * p }, g);
+      return;
+    }
+    const [ux, uy] = [(a.to[0] - a.from[0]) / lens[i], (a.to[1] - a.from[1]) / lens[i]], h = 7 * p;
+    const to = [a.from[0] + ux * len, a.from[1] + uy * len];
+    el("line", { x1: a.from[0], y1: a.from[1], x2: to[0], y2: to[1], stroke: color, "stroke-width": 2 * p }, g);
+    const tip = [to, [to[0] - h * ux + 0.5 * h * uy, to[1] - h * uy - 0.5 * h * ux], [to[0] - h * ux - 0.5 * h * uy, to[1] - h * uy + 0.5 * h * ux]];
+    el("polygon", { points: tip.map((q) => q.join(",")).join(" "), fill: color }, g);
+    const t = el("text", { x: to[0] + 6 * p * ux - 3 * p, y: to[1] + 6 * p * uy + 4 * p, "font-size": 11 * p, fill: color, "font-family": "sans-serif", "font-weight": 700, "paint-order": "stroke", stroke: "#fff", "stroke-width": 3 * p }, g);
+    t.textContent = a.name;
+  });
+}
+
 function drawPicks() {
   if (!svg) return;
   const g = svg.querySelector("#hl");
@@ -255,6 +280,7 @@ function drawPicks() {
   if (hover && mode) {
     const c = mode === "len" ? { outline: hover.member_outline } : hover.primary || { outline: hover.member_outline };
     drawCandidate(g, c, "#1f5fbf", 5);
+    drawAxes(g, hover.member_axes || []);
   }
   picks.forEach((c, i) => drawCandidate(g, c, i === 0 ? "#e8590c" : "#7b2cbf", 6));
 }

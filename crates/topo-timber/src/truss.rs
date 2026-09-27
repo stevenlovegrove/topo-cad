@@ -420,6 +420,8 @@ impl Truss {
         let n = Vec3::Z.cross(s);
         let frame = Frame { origin: self.heel, x: s, y: n, z: Vec3::Z };
         let g = m.add_group(&self.name, "truss", frame, self.parent);
+        m.name_direction(g, "span", Vec3::X);
+        m.name_direction(g, "normal", Vec3::Y);
         let plate = m.add_connection(fx::truss_plate());
         let nodes: Vec<(String, NodeId)> = self
             .shape
@@ -595,6 +597,8 @@ impl TrussRoof {
         let run = self.run_dir.normalized();
         let frame = Frame { origin: self.origin, x: run, y: self.span_dir, z: run.cross(self.span_dir) };
         let g = m.add_group(&self.name, "roof", frame, None);
+        m.name_direction(g, "ridge", Vec3::X);
+        m.name_direction(g, "span", Vec3::Y);
         let b = inch(1.5);
         let mut stations = vec![(0.0, Some(run))];
         stations.extend(

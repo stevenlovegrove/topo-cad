@@ -44,8 +44,8 @@ fn templates_are_immutable_values() {
         export default Building.named("t").add(p);
     "#;
     let json = run_to_json(src, "t.ts").unwrap();
-    let spec: SceneSpec = serde_json::from_str(&json).unwrap();
-    let spec::ItemSpec::Perimeter(p) = &spec.items[0] else { panic!() };
+    let spec = SceneSpec::from_json(&json).unwrap();
+    let spec::ItemSpec::Perimeter(p) = &spec.buildings[0].items[0] else { panic!() };
     let counts: Vec<usize> = p.segments.iter().map(|s| s.side.as_ref().unwrap().openings.len()).collect();
     assert_eq!(counts, vec![1, 0, 0, 0]);
     run(src, "t.ts").unwrap();
@@ -394,7 +394,7 @@ fn fitted_truss_matches_closed_form_derivation() {
 }
 
 const FIT_MODEL: &str = r#"
-    import { Assembly, Building, DFL, ft, horizontal, inch, lengthOf, measured, member, unknown } from "topo-cad";
+    import { Assembly, Building, DFL, facing, ft, horizontal, inch, lengthOf, measured, member, unknown } from "topo-cad";
     const w = unknown("width", ft(9), { unit: "length", min: ft(1) });
     const h = unknown("height", ft(7), { unit: "length", min: ft(1) });
     const spare = unknown("spare", 1.0);   // used by nothing measured
@@ -409,7 +409,7 @@ const FIT_MODEL: &str = r#"
     export default Building.named("t").add(frame).measure(
       measured("beam", lengthOf(beam, "long"), ft(10) + inch(3.5)),
       measured("post", lengthOf(post1, "long"), ft(8)),
-      measured("clear", horizontal(post1.face("back"), post2.face("front")), EXTRA),
+      measured("clear", horizontal(post1.facing("east"), facing(post2, "west")), EXTRA),
     );
 "#;
 
@@ -456,7 +456,7 @@ fn picking_the_outer_corner_on_the_truss_sheet() {
     let set = topo_draw::DrawingSet::build(&m, &topo, &g);
     let bc = m.find_member("T2/bottom_chord.F-H1").unwrap();
     let face = |mm: &str, side: &str| PlaneRef::Face { member: m.member_path(m.find_member(mm).unwrap()), side: side.into() };
-    let corner = Feature { planes: vec![face("T2/top_chord.H0-P", "top"), face("T2/bottom_chord.F-H1", "top")] };
+    let corner = Feature { planes: vec![face("T2/top_chord.H0-P", "+z"), face("T2/bottom_chord.F-H1", "+z")] };
     let at = measure::feature(&m, &g, &corner).unwrap().point;
     // The typical-truss sheet shows T2.
     let sheet = set.sheets.iter().find(|s| locate(s, bc, at).is_some() && s.title.contains("Truss")).expect("truss sheet");
@@ -471,7 +471,7 @@ fn picking_the_outer_corner_on_the_truss_sheet() {
     assert_eq!(p.alternatives.len(), 2, "the two faces are offered too");
 
     // A measurement made from the pick reproduces the tape reading.
-    let start = Feature { planes: vec![face("T2/bottom_chord.F-H1", "start")] };
+    let start = Feature { planes: vec![face("T2/bottom_chord.F-H1", "-x")] };
     let q = Quantity::Horizontal { a: start, b: picked };
     let v = measure::evaluate(&m, &g, &q).unwrap();
     assert!((v - topo_core::units::inch(42.3)).abs() < 1e-6, "{}", v / topo_core::units::inch(1.0));
@@ -481,7 +481,9 @@ fn picking_the_outer_corner_on_the_truss_sheet() {
     let svg2 = locate(sheet, bc, mid).unwrap();
     let p2 = pick(&m, &g, sheet, svg2, 0.06).expect("face picked");
     assert_eq!(p2.kind, "face", "{p2:#?}");
-    assert!(p2.primary.unwrap().label.contains("top face of T2/bottom_chord.F-H1"));
+    let label = p2.primary.unwrap().label;
+    assert_eq!(label, "+z edge of T2/bottom_chord.F-H1 (up)", "canonical name plus a direction gloss");
+    assert_eq!(p2.member_axes.iter().map(|a| a.name).collect::<Vec<_>>(), vec!["x", "y", "z"]);
 
     // Overlays: every fitted measurement that involves T2 is drawn on the sheet.
     let fit = fit.unwrap();
@@ -525,9 +527,9 @@ fn sidecar_round_trip() {
     let (m, fit) = run_solved(model_src, file).unwrap();
     assert!(fit.unwrap().measurements.is_empty());
     let face = |mm: &str, side: &str| PlaneRef::Face { member: m.member_path(m.find_member(mm).unwrap()), side: side.into() };
-    let q = Quantity::Horizontal { a: Feature { planes: vec![face("post#1", "back")] }, b: Feature { planes: vec![face("post#2", "front")] } };
+    let q = Quantity::Horizontal { a: Feature { planes: vec![face("post#1", "+y")] }, b: Feature { planes: vec![face("post#2", "-y")] } };
     let line = measfile::append(&model_path, &m, "clear between posts", &q, ft(10.0) - inch(3.5), Some("at floor level")).unwrap();
-    assert!(line.contains("horizontal(member(\"post#1\").face(\"back\"), member(\"post#2\").face(\"front\"))"), "{line}");
+    assert!(line.contains("horizontal(member(\"post#1\").face(\"+y\"), member(\"post#2\").face(\"-y\"))"), "{line}");
 
     let (_, fit) = run_solved(model_src, file).unwrap_or_else(|e| panic!("{e}"));
     let fit = fit.unwrap();
@@ -535,4 +537,122 @@ fn sidecar_round_trip() {
     let w = fit.unknowns.iter().find(|u| u.name == "width").unwrap().value;
     assert!((w - ft(10.0)).abs() < 1e-6, "fitted width {}", w / inch(1.0));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Placing a building elsewhere in the world (moved and turned to a compass
+/// bearing) changes nothing about it: same fit, same cut lengths, and every
+/// measurement (horizontal distances, canonical faces) means the same thing.
+#[test]
+fn rotated_building_is_congruent() {
+    use topo_geom::measure::{self, Quantity};
+    let src = std::fs::read_to_string(GARAGE_TRUSS).unwrap();
+    let placed = src.replace("export default Building", "const b = Building")
+        + "\nexport default b.placed({ origin: [12, -7, 0.5], xBearing: 30 }).direction(\"street\", [0, -1, 0]);\n";
+    let (m0, f0) = run_solved(&src, GARAGE_TRUSS).unwrap_or_else(|e| panic!("{e}"));
+    let (m1, f1) = run_solved(&placed, GARAGE_TRUSS).unwrap_or_else(|e| panic!("{e}"));
+    let (f0, f1) = (f0.unwrap(), f1.unwrap());
+    for (a, b) in f0.unknowns.iter().zip(&f1.unknowns) {
+        assert!((a.value - b.value).abs() < 1e-6, "{}: {} vs {}", a.name, a.value, b.value);
+    }
+    let lengths = |m: &topo_core::Model| {
+        let g = Geometry::build(m, &Topology::build(m));
+        let mut v: Vec<(String, i64)> = (0..m.members.len())
+            .map(|i| {
+                let id = topo_core::MemberId(i as u32);
+                let q = Quantity::Length { member: m.member_path(id), how: "long".into() };
+                (m.member_path(id), (measure::evaluate(m, &g, &q).unwrap() * 1e6).round() as i64)
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(lengths(&m0), lengths(&m1));
+    assert_eq!(m1.groups[0].name, "Existing garage truss", "the root group is the building");
+
+    // Named directions follow the building: its +x is 30° east of north, and
+    // "street" (building −y) is 30° south of east… turned: bearing 120°.
+    let root = m1.find_group("Existing garage truss").unwrap();
+    let x = m1.direction("+x", Some(root)).unwrap();
+    assert!((x - topo_core::v3(30f64.to_radians().sin(), 30f64.to_radians().cos(), 0.0)).norm() < 1e-9, "{x:?}");
+    let street = m1.direction("street", Some(m1.find_group("Left bearing wall").unwrap())).unwrap();
+    assert!((street - topo_core::v3(120f64.to_radians().sin(), 120f64.to_radians().cos(), 0.0)).norm() < 1e-9);
+}
+
+/// `facing` picks faces by named directions in any frame; `along` measures
+/// in a named direction; `riseOver` reads a pitch off a sloped member.
+#[test]
+fn named_directions_in_measurements() {
+    use topo_core::units::inch;
+    use topo_geom::measure::{self, DirRef, Feature, PlaneRef, Quantity};
+    let (m, fit) = run_solved(&std::fs::read_to_string(GARAGE_TRUSS).unwrap(), GARAGE_TRUSS).unwrap();
+    let fit = fit.unwrap();
+    let g = Geometry::build(&m, &Topology::build(&m));
+    let dir = |name: &str, frame: Option<&str>| DirRef { name: Some(name.into()), vector: None, frame: frame.map(Into::into) };
+    let facing = |mm: &str, d: DirRef| PlaneRef::Facing { member: mm.into(), direction: d };
+    let face = |mm: &str, side: &str| PlaneRef::Face { member: mm.into(), side: side.into() };
+    let feat = |p: Vec<PlaneRef>| Feature { planes: p };
+
+    // A wall's "inside" is its +y; the cap plate's face toward it is a wide
+    // (±y) or narrow face depending on how the plate lies — resolve and check the normal.
+    let wall = m.find_group("Left bearing wall").unwrap();
+    let inside = m.direction("inside", Some(wall)).unwrap();
+    let p = measure::plane(&m, &g, &facing("Left bearing wall/cap_plate", dir("inside", Some("Left bearing wall")))).unwrap();
+    assert!(p.normal.dot(inside) > 0.999, "{:?} vs {inside:?}", p.normal);
+    // …and compass names work anywhere: the roof spans north, so the
+    // bottom chord's start (−x) faces south.
+    let south = measure::plane(&m, &g, &facing("T2/bottom_chord.F-H1", dir("south", None))).unwrap();
+    let start = measure::plane(&m, &g, &face("T2/bottom_chord.F-H1", "-x")).unwrap();
+    assert!((south.normal - start.normal).norm() < 1e-9 && (south.point - start.point).dot(start.normal).abs() < 1e-9);
+
+    // along(…, "span" in T2) and along(…, "north") both read the 42.3" flat.
+    let corner = feat(vec![facing("T2/top_chord.H0-P", dir("up", None)), facing("T2/bottom_chord.F-H1", dir("up", None))]);
+    for d in [dir("span", Some("T2")), dir("north", None), dir("+x", Some("T2/bottom_chord.F-H1"))] {
+        let q = Quantity::Along { a: feat(vec![face("T2/bottom_chord.F-H1", "-x")]), b: corner.clone(), direction: d.clone() };
+        let v = measure::evaluate(&m, &g, &q).unwrap_or_else(|e| panic!("{d:?}: {e}"));
+        assert!((v - inch(42.3)).abs() < 1e-6, "{d:?}: {}", v / inch(1.0));
+    }
+
+    // A level on the top chord: rise over 12" is the fitted pitch × 12".
+    let k = fit.unknowns.iter().find(|u| u.name == "pitch").unwrap().value;
+    let rise = measure::evaluate(&m, &g, &Quantity::Rise { member: "T2/top_chord.H0-P".into(), run: inch(12.0) }).unwrap();
+    assert!((rise - k * inch(12.0)).abs() < 1e-9, "{} vs {}", rise / inch(1.0), 12.0 * k);
+
+    // Unknown names list what is available.
+    let e = measure::plane(&m, &g, &facing("T2/bottom_chord.F-H1", dir("sideways", Some("T2")))).unwrap_err();
+    assert!(e.contains("span") && e.contains("north"), "{e}");
+}
+
+/// A site holds peer buildings, each in its own frame; identical local
+/// coordinates never merge across buildings, and measurements can span them.
+#[test]
+fn site_with_two_buildings() {
+    let src = r#"
+        import { along, Assembly, Building, DFL, facing, ft, inch, measured, member, Site } from "topo-cad";
+        const frame = Assembly.named("frame")
+          .point("a", [0, 0, 0]).point("b", [0, 0, ft(7)]).point("c", [ft(9), 0, ft(7)]).point("d", [ft(9), 0, 0])
+          .member("post", ["a", "b"], { size: [4, 4], grade: DFL.No2 })
+          .member("post", ["d", "c"], { size: [4, 4], grade: DFL.No2 })
+          .member("beam", ["b", "c"], { size: [4, 6], grade: DFL.No2, anchor: [0, -0.5], priority: 10 })
+          .supportedAt("a", "d");
+        const house = Building.named("House").add(frame);
+        const shed = Building.named("Shed").add(frame).placed({ origin: [ft(20), 0, 0], xBearing: 0 }).direction("door", [0, -1, 0]);
+        export default Site.named("Lot 7").add(house, shed).measure(
+          measured("gap", along(facing(member("House/frame/post#1"), "east"), facing(member("Shed/frame/post#1"), "west"), "east"), ft(20) - inch(3.5)),
+        );
+    "#;
+    let (m, fit) = run_solved(src, "site.ts").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(m.info.name, "Lot 7");
+    assert_eq!(m.members.len(), 6);
+    assert_eq!(m.nodes.len(), 8, "no nodes shared between buildings");
+    assert_eq!(m.supports.len(), 4);
+    let beam = m.find_member("Shed/frame/beam#1").unwrap();
+    let ax = m.member_axes(beam);
+    assert!((ax.x - topo_core::Vec3::Y).norm() < 1e-9, "the shed's +x points north: {:?}", ax.x);
+    assert!(m.find_member("frame/beam#1").unwrap_err().contains("ambiguous"));
+    let fit = fit.unwrap();
+    assert!(fit.measurements[0].misfit().unwrap().abs() < 1e-9, "{:?}", fit.measurements[0]);
+
+    // The shed's own named direction, resolved from one of its groups.
+    let door = m.direction("door", Some(m.find_group("Shed/frame").unwrap())).unwrap();
+    assert!((door - topo_core::Vec3::X).norm() < 1e-9, "shed −y is east: {door:?}");
 }

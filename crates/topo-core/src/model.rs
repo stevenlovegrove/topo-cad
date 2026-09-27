@@ -56,11 +56,20 @@ pub struct MemberAxes {
 }
 
 impl MemberAxes {
+    /// Canonical member frame: x along the grain (first → last node), z the
+    /// depth direction (`depth_dir` projected; default world up, or north for
+    /// a vertical member), y = z × x across the thickness.
     pub fn new(start: Vec3, end: Vec3, depth_dir: Option<Vec3>) -> MemberAxes {
+        MemberAxes::in_frame(start, end, depth_dir, &Frame::WORLD)
+    }
+
+    /// As [`new`](Self::new), with the default depth direction taken from a
+    /// parent frame: its z, or its y for a member parallel to that z.
+    pub fn in_frame(start: Vec3, end: Vec3, depth_dir: Option<Vec3>, parent: &Frame) -> MemberAxes {
         let d = end - start;
         let length = d.norm();
         let x = d / length;
-        let hint = depth_dir.unwrap_or(if x.dot(Vec3::Z).abs() > 0.99 { Vec3::Y } else { Vec3::Z });
+        let hint = depth_dir.unwrap_or(if x.dot(parent.z).abs() > 0.99 { parent.y } else { parent.z });
         let v = hint.reject(x).try_normalized().unwrap_or_else(|| x.any_perpendicular());
         let u = v.cross(x);
         MemberAxes { origin: start, x, u, v, length }
@@ -184,6 +193,10 @@ pub struct Group {
     pub members: Vec<MemberId>,
     pub annotations: Vec<Annotation>,
     pub props: BTreeMap<String, String>,
+    /// Named directions in this group's frame (local vectors), e.g. a wall's
+    /// `inside`; resolved by `Model::direction`.
+    #[serde(default)]
+    pub directions: BTreeMap<String, Vec3>,
 }
 
 /// Per-node override of automatic junction resolution.
@@ -348,15 +361,25 @@ impl Model {
     }
 
     /// Axes of a member from its first to last path node.
+    /// A member's canonical frame (x with the grain, y across the thickness,
+    /// z across the depth). Without an explicit depth direction it follows
+    /// the member's group frame.
     pub fn member_axes(&self, id: MemberId) -> MemberAxes {
         let m = self.member(id);
-        MemberAxes::new(self.pos(m.start()), self.pos(m.end()), m.depth_dir)
+        let parent = m.group.map(|g| self.groups[g.idx()].frame).unwrap_or(Frame::WORLD);
+        MemberAxes::in_frame(self.pos(m.start()), self.pos(m.end()), m.depth_dir, &parent)
     }
 
     /// Axes a member *would* have between two points (for computing anchors
     /// before creating it).
     pub fn axes_between(&self, a: Vec3, b: Vec3, depth_dir: Option<Vec3>) -> MemberAxes {
         MemberAxes::new(a, b, depth_dir)
+    }
+
+    /// Axes a member would have in group `g` (defaults from its frame).
+    pub fn axes_in(&self, g: Option<GroupId>, a: Vec3, b: Vec3, depth_dir: Option<Vec3>) -> MemberAxes {
+        let parent = g.map(|g| self.groups[g.idx()].frame).unwrap_or(Frame::WORLD);
+        MemberAxes::in_frame(a, b, depth_dir, &parent)
     }
 
     /// Member length between its end nodes.
@@ -366,6 +389,10 @@ impl Model {
     }
 
     // ----- nodes -----------------------------------------------------------
+
+    pub(crate) fn reset_index(&mut self) {
+        self.index = NodeIndex::default();
+    }
 
     fn ensure_index(&mut self) {
         if self.index.indexed > self.nodes.len() {
@@ -461,8 +488,14 @@ impl Model {
             members: vec![],
             annotations: vec![],
             props: BTreeMap::new(),
+            directions: BTreeMap::new(),
         });
         id
+    }
+
+    /// Names a direction (given in the group's own frame) for `facing`/`along`.
+    pub fn name_direction(&mut self, g: GroupId, name: &str, local: Vec3) {
+        self.groups[g.idx()].directions.insert(name.into(), local.normalized());
     }
 
     pub fn add_load_case(&mut self, name: &str, kind: LoadKind) -> LoadCaseId {

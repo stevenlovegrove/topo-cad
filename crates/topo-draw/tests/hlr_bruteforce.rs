@@ -48,8 +48,8 @@ fn check(members: &[&MemberGeom], proj: &Projector) -> Vec<(Seg, f64, usize)> {
             let hit = members.iter().position(|g| {
                 (0..g.place.plies.len()).any(|k| (g.member, k) != (s.member, s.ply) && blocks(g, k, p, proj.toward))
             });
-            if !s.hidden && hit.is_some() {
-                bad.push((*s, t, hit.unwrap()));
+            if let (false, Some(h)) = (s.hidden, hit) {
+                bad.push((*s, t, h));
                 break;
             }
         }

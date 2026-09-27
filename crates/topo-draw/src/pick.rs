@@ -38,6 +38,16 @@ pub struct Pick {
     pub member_label: String,
     /// Outline of that member, SVG inches.
     pub member_outline: Vec<[f64; 2]>,
+    /// That member's canonical axes as arrows from its centre (x with the
+    /// grain, y across the thickness, z across the depth), SVG inches.
+    pub member_axes: Vec<AxisArrow>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AxisArrow {
+    pub name: &'static str,
+    pub from: [f64; 2],
+    pub to: [f64; 2],
 }
 
 /// Mapping between a placed view's model plane and SVG sheet coordinates.
@@ -86,20 +96,33 @@ fn short_path(model: &Model, id: MemberId) -> String {
     parts[parts.len().saturating_sub(2)..].join("/")
 }
 
-fn describe(model: &Model, r: &PlaneRef) -> String {
+/// Label for a plane, with the canonical name and, where one applies, the
+/// named direction it faces: `+z edge of T2/bottom_chord.F-H1 (up)`.
+fn describe(model: &Model, geom: &Geometry, r: &PlaneRef) -> String {
+    let who = |member: &str| match model.find_member(member) {
+        Ok(i) => (short_path(model, i), Some(i)),
+        Err(_) => (member.to_string(), None),
+    };
     match r {
         PlaneRef::Face { member, side } => {
-            let id = model.find_member(member).ok();
-            let who = id.map(|i| short_path(model, i)).unwrap_or_else(|| member.clone());
-            match side.as_str() {
-                "start" | "end" => format!("{side} cut of {who}"),
-                _ => format!("{side} face of {who}"),
-            }
+            let side = measure::canonical_side(side).unwrap_or(side);
+            let (name, id) = who(member);
+            let gloss = id
+                .and_then(|i| measure::face_plane(geom.member(i), side).ok().map(|p| (i, p)))
+                .and_then(|(i, p)| model.describe_direction(p.normal, model.member(i).group, 30.0).into_iter().next());
+            format!("{side} {} of {name}{}", measure::side_kind(side), gloss.map(|g| format!(" ({g})")).unwrap_or_default())
         }
         PlaneRef::Mid { member, axis } => {
-            let id = model.find_member(member).ok();
-            let who = id.map(|i| short_path(model, i)).unwrap_or_else(|| member.clone());
-            format!("{axis} centreline of {who}")
+            let axis = match axis.as_str() {
+                "depth" => "z",
+                "width" => "y",
+                a => a,
+            };
+            format!("{axis} centreline of {}", who(member).0)
+        }
+        PlaneRef::Facing { member, direction } => {
+            let d = direction.name.clone().unwrap_or_else(|| format!("{:?}", direction.vector.unwrap_or_default()));
+            format!("face of {} facing {d}", who(member).0)
         }
     }
 }
@@ -183,7 +206,7 @@ pub fn pick(model: &Model, geom: &Geometry, sheet: &Sheet, svg: [f64; 2], radius
             }
         }
         let cand = |e: &EdgeOn| Candidate {
-            label: describe(model, &e.plane_ref),
+            label: describe(model, geom, &e.plane_ref),
             feature: Feature { planes: vec![e.plane_ref.clone()] },
             lines: vec![f.line(e.a, e.b)],
             points: vec![],
@@ -203,32 +226,39 @@ pub fn pick(model: &Model, geom: &Geometry, sheet: &Sheet, svg: [f64; 2], radius
         let member_of = |id: MemberId| {
             let g = geom.member(id);
             let sil = convex_hull(&g.convex().verts.iter().map(|v| f.proj.p(*v)).collect::<Vec<_>>());
-            (model.member_path(id), short_path(model, id), sil.iter().map(|p| f.to_svg(*p)).collect::<Vec<_>>())
+            // Arrows 0.35" long on paper (foreshortened when not in the view plane).
+            let c = f.proj.p(g.centroid());
+            let len = 0.35 * INCH / f.view.scale;
+            let axes = [("x", g.place.x), ("y", g.place.u), ("z", g.place.v)]
+                .into_iter()
+                .map(|(name, d)| AxisArrow { name, from: f.to_svg(c), to: f.to_svg(c + Vec2::new(d.dot(f.proj.right), d.dot(f.proj.up)) * len) })
+                .collect::<Vec<_>>();
+            (model.member_path(id), short_path(model, id), sil.iter().map(|p| f.to_svg(*p)).collect::<Vec<_>>(), axes)
         };
         // Centreline alternatives for a member (mid-planes seen edge-on).
         let mids = |id: MemberId| -> Vec<Candidate> {
             let g = geom.member(id);
-            ["depth", "width"]
+            ["z", "y"]
                 .iter()
                 .filter_map(|axis| {
                     let plane = measure::mid_plane(g, axis).ok()?;
                     let (a, b) = edge_on_segment(g, &plane, &f.proj)?;
                     let r = PlaneRef::Mid { member: model.member_path(id), axis: (*axis).into() };
-                    Some(Candidate { label: describe(model, &r), feature: Feature { planes: vec![r] }, lines: vec![f.line(a, b)], points: vec![] })
+                    Some(Candidate { label: describe(model, geom, &r), feature: Feature { planes: vec![r] }, lines: vec![f.line(a, b)], points: vec![] })
                 })
                 .collect()
         };
         if let Some((_, x, i, j)) = best_corner {
             let (a, b) = (near[i], near[j]);
             let corner = Candidate {
-                label: format!("corner: {} × {}", describe(model, &a.plane_ref), describe(model, &b.plane_ref)),
+                label: format!("corner: {} × {}", describe(model, geom, &a.plane_ref), describe(model, geom, &b.plane_ref)),
                 feature: Feature { planes: vec![a.plane_ref.clone(), b.plane_ref.clone()] },
                 lines: vec![f.line(a.a, a.b), f.line(b.a, b.b)],
                 points: vec![f.to_svg(x)],
             };
             let front = if a.depth >= b.depth { a.member } else { b.member };
-            let (path, label, outline) = member_of(front);
-            return Some(Pick { kind: "corner".into(), primary: Some(corner), alternatives: vec![cand(a), cand(b)], member: path, member_label: label, member_outline: outline });
+            let (path, label, outline, axes) = member_of(front);
+            return Some(Pick { kind: "corner".into(), primary: Some(corner), alternatives: vec![cand(a), cand(b)], member: path, member_label: label, member_outline: outline, member_axes: axes });
         }
         // Nearest face (front-most on ties).
         let face = edges
@@ -237,12 +267,12 @@ pub fn pick(model: &Model, geom: &Geometry, sheet: &Sheet, svg: [f64; 2], radius
             .filter(|(d, _)| *d < r)
             .min_by(|(d1, e1), (d2, e2)| (d1 - e1.depth * 1e-9).total_cmp(&(d2 - e2.depth * 1e-9)));
         if let Some((_, e)) = face {
-            let (path, label, outline) = member_of(e.member);
-            return Some(Pick { kind: "face".into(), primary: Some(cand(e)), alternatives: mids(e.member), member: path, member_label: label, member_outline: outline });
+            let (path, label, outline, axes) = member_of(e.member);
+            return Some(Pick { kind: "face".into(), primary: Some(cand(e)), alternatives: mids(e.member), member: path, member_label: label, member_outline: outline, member_axes: axes });
         }
         if let Some((id, _)) = body {
-            let (path, label, outline) = member_of(id);
-            return Some(Pick { kind: "member".into(), primary: None, alternatives: mids(id), member: path, member_label: label, member_outline: outline });
+            let (path, label, outline, axes) = member_of(id);
+            return Some(Pick { kind: "member".into(), primary: None, alternatives: mids(id), member: path, member_label: label, member_outline: outline, member_axes: axes });
         }
     }
     None
@@ -273,17 +303,17 @@ fn members_of(model: &Model, q: &Quantity) -> Vec<MemberId> {
         f.planes
             .iter()
             .filter_map(|p| match p {
-                PlaneRef::Face { member, .. } | PlaneRef::Mid { member, .. } => model.find_member(member).ok(),
+                PlaneRef::Face { member, .. } | PlaneRef::Mid { member, .. } | PlaneRef::Facing { member, .. } => model.find_member(member).ok(),
             })
             .collect::<Vec<_>>()
     };
     match q {
-        Quantity::Horizontal { a, b } | Quantity::Vertical { a, b } => {
+        Quantity::Horizontal { a, b } | Quantity::Vertical { a, b } | Quantity::Along { a, b, .. } => {
             let mut v = from(a);
             v.extend(from(b));
             v
         }
-        Quantity::Length { member, .. } => model.find_member(member).ok().into_iter().collect(),
+        Quantity::Length { member, .. } | Quantity::Rise { member, .. } => model.find_member(member).ok().into_iter().collect(),
     }
 }
 
@@ -301,10 +331,14 @@ pub fn overlay(model: &Model, geom: &Geometry, sheet: &Sheet, items: &[OverlayIn
             let p2 = |v: Vec3| f.proj.p(v);
             let mut lines = vec![];
             let (start, end) = match it.quantity {
-                Quantity::Horizontal { a, b } | Quantity::Vertical { a, b } => {
+                Quantity::Horizontal { a, b } | Quantity::Vertical { a, b } | Quantity::Along { a, b, .. } => {
                     let (Ok(fa), Ok(fb)) = (measure::feature(model, geom, a), measure::feature(model, geom, b)) else { continue };
                     let d = match it.quantity {
                         Quantity::Horizontal { .. } => match measure::horizontal_direction(&fa, &fb) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        },
+                        Quantity::Along { direction, .. } => match measure::resolve_direction(model, direction) {
                             Ok(d) => d,
                             Err(_) => continue,
                         },
@@ -326,7 +360,7 @@ pub fn overlay(model: &Model, geom: &Geometry, sheet: &Sheet, items: &[OverlayIn
                     }
                     (s, e)
                 }
-                Quantity::Length { member, .. } => {
+                Quantity::Length { member, .. } | Quantity::Rise { member, .. } => {
                     let Ok(id) = model.find_member(member) else { continue };
                     let g = geom.member(id);
                     if g.place.x.dot(f.proj.toward).abs() > 1e-6 {

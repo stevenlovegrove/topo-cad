@@ -9,8 +9,24 @@ use topo_timber::lumber::graded;
 use topo_timber::lumber::{built_up, sawn};
 use topo_timber::{Justify, Opening, OpeningKind, Perimeter, PerimeterParts, Side, TrussRoof, TrussShape, Wall};
 
+/// What a script exports, normalised to a site: one or more buildings, each
+/// placed in the world frame (+x east, +y north, +z up).
 #[derive(Debug, Deserialize)]
 pub struct SceneSpec {
+    pub name: String,
+    #[serde(default)]
+    pub info: InfoSpec,
+    #[serde(default)]
+    pub buildings: Vec<BuildingSpec>,
+    #[serde(default)]
+    pub measurements: Vec<topo_geom::measure::Measurement>,
+    #[serde(default)]
+    pub unknowns: Vec<UnknownSpec>,
+}
+
+/// One building: items in its own frame, placed in the world.
+#[derive(Debug, Deserialize)]
+pub struct BuildingSpec {
     pub name: String,
     #[serde(default)]
     pub info: InfoSpec,
@@ -20,6 +36,60 @@ pub struct SceneSpec {
     pub measurements: Vec<topo_geom::measure::Measurement>,
     #[serde(default)]
     pub unknowns: Vec<UnknownSpec>,
+    #[serde(default)]
+    pub placement: Option<PlacementSpec>,
+    /// Named directions in the building frame (e.g. `street`).
+    #[serde(default)]
+    pub directions: std::collections::BTreeMap<String, [f64; 3]>,
+}
+
+/// Where a building sits: its origin in the world, and the compass bearing
+/// of its +x axis (degrees clockwise from north; 90 = east, the default).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlacementSpec {
+    #[serde(default)]
+    pub origin: [f64; 3],
+    #[serde(default = "east")]
+    pub x_bearing: f64,
+}
+
+fn east() -> f64 {
+    90.0
+}
+
+impl PlacementSpec {
+    pub fn frame(&self) -> Frame {
+        let t = (90.0 - self.x_bearing).to_radians();
+        let x = v3(t.cos(), t.sin(), 0.0);
+        Frame { origin: v3(self.origin[0], self.origin[1], self.origin[2]), x, y: Vec3::Z.cross(x), z: Vec3::Z }
+    }
+}
+
+impl SceneSpec {
+    /// Parses an exported `Site` (`{"type": "site", …}`) or a single
+    /// `Building` (wrapped as a one-building site).
+    pub fn from_json(json: &str) -> Result<SceneSpec, String> {
+        let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        if v.get("type").and_then(|t| t.as_str()) == Some("site") {
+            let mut s: SceneSpec = serde_json::from_value(v).map_err(|e| e.to_string())?;
+            let mut names = std::collections::HashSet::new();
+            for b in &mut s.buildings {
+                if !names.insert(b.name.clone()) {
+                    return Err(format!("two buildings are named \"{}\"", b.name));
+                }
+                s.measurements.append(&mut b.measurements);
+            }
+            return Ok(s);
+        }
+        let mut b: BuildingSpec = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        Ok(SceneSpec {
+            name: b.name.clone(),
+            info: std::mem::take(&mut b.info),
+            measurements: std::mem::take(&mut b.measurements),
+            unknowns: std::mem::take(&mut b.unknowns),
+            buildings: vec![b],
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -398,7 +468,8 @@ impl Builder {
     }
 }
 
-/// Expands a scene spec into a model.
+/// Expands a scene spec into a model. Each building is built in its own
+/// frame (under a root group named after it) and then placed in the world.
 pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
     let mut m = Model::new(&spec.name);
     let i = &spec.info;
@@ -409,7 +480,23 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
     m.info.date = i.date.clone();
     m.info.design_basis = i.design_basis.clone();
     m.info.notes = i.notes.clone();
-    let root = m.add_group("Structure", "building", Frame::WORLD, None);
+    for bs in &spec.buildings {
+        let mut local = build_building(bs)?;
+        if let Some(p) = &bs.placement {
+            local.transform(&p.frame());
+        }
+        m.absorb(local);
+    }
+    Ok(m)
+}
+
+fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
+    let mut m = Model::new(&spec.name);
+    let root = m.add_group(&spec.name, "building", Frame::WORLD, None);
+    for (name, v) in &spec.directions {
+        let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
+        m.name_direction(root, name, d);
+    }
     let mut b = Builder { m, grades: HashMap::new(), perimeters: HashMap::new(), root };
     // Perimeters first so roofs can bear on them regardless of order.
     for item in &spec.items {

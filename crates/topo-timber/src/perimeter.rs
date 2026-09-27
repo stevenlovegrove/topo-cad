@@ -184,7 +184,7 @@ mod tests {
             .map(|(a, b, d)| format!("{} {} / {} {} : {:.1} mm", a, m.member(*a).role, b, m.member(*b).role, d * 1000.0))
             .collect();
         assert!(clashes.is_empty(), "{clashes:#?}");
-        let bearing: Vec<String> = g.bearing_issues(&m).iter().map(|i| i.message.clone()).collect();
+        let bearing: Vec<String> = g.bearing_issues(m).iter().map(|i| i.message.clone()).collect();
         assert!(bearing.is_empty(), "{bearing:#?}");
     }
 
