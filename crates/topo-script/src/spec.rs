@@ -309,6 +309,8 @@ struct Builder {
     m: Model,
     grades: HashMap<GradeSpec, MaterialId>,
     perimeters: HashMap<String, (PerimeterParts, f64)>,
+    /// Assembly members by assembly name (roofs may bear on them).
+    assemblies: HashMap<String, Vec<MemberId>>,
     root: GroupId,
 }
 
@@ -411,9 +413,19 @@ impl Builder {
         let mut plates = vec![];
         let mut height = r.height;
         for name in &r.bears_on {
-            let (parts, top) = self.perimeters.get(name).ok_or_else(|| format!("roof {}: no perimeter named {name}", r.name))?;
-            plates.extend(parts.cap_plates());
-            height = height.or(Some(*top));
+            if let Some((parts, top)) = self.perimeters.get(name) {
+                plates.extend(parts.cap_plates());
+                height = height.or(Some(*top));
+            } else if let Some(ms) = self.assemblies.get(name) {
+                // Bear on its horizontal members (beams, headers); the roof's
+                // height then comes from a perimeter or is given.
+                plates.extend(ms.iter().copied().filter(|&m| {
+                    let mm = self.m.member(m);
+                    (self.m.pos(mm.start()).z - self.m.pos(mm.end()).z).abs() < 1e-6
+                }));
+            } else {
+                return Err(format!("roof {}: nothing named {name} to bear on (a perimeter or an assembly)", r.name));
+            }
         }
         let h = height.ok_or_else(|| format!("roof {}: give a height or bearingOn(...)", r.name))?;
         let span = Vec3::new(r.span_dir.0, r.span_dir.1, 0.0).try_normalized().ok_or("roof span direction is zero")?;
@@ -517,6 +529,7 @@ impl Builder {
             }
             ids.push(self.m.add_member(&path, &spec));
         }
+        self.assemblies.insert(a.name.clone(), ids.clone());
         let conn = match &a.joints {
             JointsSpec::Kind(k) => match k.as_str() {
                 "nailed" => Some(self.m.add_connection(fx::plate_corner())),
@@ -659,18 +672,22 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
         let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
         m.name_direction(root, name, d);
     }
-    let mut b = Builder { m, grades: HashMap::new(), perimeters: HashMap::new(), root };
+    let mut b = Builder { m, grades: HashMap::new(), perimeters: HashMap::new(), assemblies: HashMap::new(), root };
     // Perimeters first so roofs can bear on them regardless of order.
     for item in &spec.items {
         if let ItemSpec::Perimeter(p) = item {
             b.perimeter(p)?;
         }
     }
+    // Then assemblies (roofs may bear on them), then roofs.
     for item in &spec.items {
-        match item {
-            ItemSpec::TrussRoof(r) => b.truss_roof(r)?,
-            ItemSpec::Assembly(a) => b.assembly(a)?,
-            ItemSpec::Perimeter(_) => {}
+        if let ItemSpec::Assembly(a) = item {
+            b.assembly(a)?;
+        }
+    }
+    for item in &spec.items {
+        if let ItemSpec::TrussRoof(r) = item {
+            b.truss_roof(r)?;
         }
     }
     Ok(b.m)

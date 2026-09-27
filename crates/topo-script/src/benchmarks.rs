@@ -264,3 +264,33 @@ fn flat_roof_loads() {
         close("w", *w, 10.0 * 47.880259 * trib, 1e-9);
     }
 }
+
+/// Trusses bear on an assembly's beam (e.g. a header continuing a wall line)
+/// wherever their bottom chords cross it, and the load goes down its posts.
+#[test]
+fn roof_bears_on_assembly_beam() {
+    let dir = format!("{}/../../examples/benchmarks", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(format!("{dir}/05-roof-takedown.ts")).unwrap()
+        .replace("import { Building,", "import { Assembly, Building,")
+        .replace("const roof = TrussRoof", r#"const beam = Assembly.named("Mid beam")
+  .point("a", [width / 2, inch(12), 0]).point("b", [width / 2, inch(12), ftIn(8, 1.125)])
+  .point("c", [width / 2, depth - inch(12), 0]).point("d", [width / 2, depth - inch(12), ftIn(8, 1.125)])
+  .member("post", ["a", "b"], { size: [4, 4], grade: DFL.No2 })
+  .member("post", ["c", "d"], { size: [4, 4], grade: DFL.No2 })
+  .member("beam", ["b", "d"], { size: [4, 10], grade: DFL.No2, anchor: [0, 0.5], priority: 10 })
+  .supportedAt("a", "c");
+const roof = TrussRoof"#)
+        .replace(".bearingOn(walls)", ".bearingOn(walls, beam)")
+        .replace(".add(walls, roof)", ".add(walls, beam, roof)");
+    let m = run(&src, &format!("{dir}/beam.ts")).unwrap_or_else(|e| panic!("{e}"));
+    let topo = Topology::build(&m);
+    let g = Geometry::build(&m, &topo);
+    let td = takedown(&m, &topo, &g);
+    assert!(td.issues.is_empty(), "{:#?}", td.issues);
+    let beam = m.find_member("Mid beam/beam#1").unwrap();
+    // Interior trusses (not the gable ends past the posts) land on the beam.
+    let on_beam = td.info[beam.idx()].behaviour;
+    assert_eq!(on_beam, topo_analysis::Behaviour::Beam);
+    let resting: usize = td.info.iter().filter(|i| i.supports.iter().any(|s| s.by == Some(beam))).count();
+    assert!(resting >= 7, "{resting} truss chords bear on the beam");
+}

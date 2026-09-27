@@ -657,8 +657,12 @@ export class TrussRoof {
   }): TrussRoof {
     return TrussRoof.of(TrussShape.fink({ span: o.span, pitch: o.pitch, overhang: o.overhang ?? inch(12) }), o);
   }
-  /** Trusses bear on the cap plates of these perimeters (sets height if not given). */
-  bearingOn(...ps: Perimeter[]): TrussRoof {
+  /**
+   * Trusses bear on the cap plates of these perimeters (which also set the
+   * height if not given) and on the horizontal members (beams, headers) of
+   * these assemblies, wherever a bottom chord crosses them.
+   */
+  bearingOn(...ps: (Perimeter | Assembly)[]): TrussRoof {
     return new TrussRoof({ ...this.spec, bears_on: [...this.spec.bears_on, ...ps.map((p) => p.name)] });
   }
   /**
