@@ -7,5 +7,5 @@
     "noEmit": true,
     "paths": { "topo-cad": ["../ts/topo-cad.ts"] }
   },
-  "include": ["*.ts"]
+  "include": ["**/*.ts"]
 }

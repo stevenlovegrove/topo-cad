@@ -37,7 +37,8 @@ them as heatmaps and a member inspector; `utilization(...)`,
 `schedule("checks")` and `schedule("reactions")` put them on sheets.
 [examples/benchmarks](examples/benchmarks) holds worked problems checked
 against hand calculations and published tables; start a site file from
-[examples/site-template.ts](examples/site-template.ts).
+[examples/site-template.ts](examples/site-template.ts), or use a ready-made
+region such as [unincorporated King County, WA](examples/sites/king-county-wa.ts).
 
 The drawing set is code too: `.sheets(standardSheets("cover"), sheet("S-102",
 "Typical truss", elevation(roof.truss(2)), detail(heel, [roof.truss(2), walls],

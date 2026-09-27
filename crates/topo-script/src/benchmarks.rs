@@ -212,3 +212,34 @@ fn roof_snow_from_site_hazards() {
     close("p_f", p / 47.880259, 21.0, 1e-9);
     assert!(label.unwrap().contains("county IRC Table R301.2(1)"), "the source travels with the load");
 }
+
+/// King County (unincorporated) snow: P_g = C_g·h (Public Rule 16-04, Table
+/// 16-V), P_f = C_e·I·P_g, never below 25 psf (KCC 16.04.410); refused above
+/// 1,000 ft, where a full snow analysis is required.
+#[test]
+fn king_county_snow() {
+    let dir = format!("{}/../../examples/benchmarks", env!("CARGO_MANIFEST_DIR"));
+    let base = std::fs::read_to_string(format!("{dir}/05-roof-takedown.ts")).unwrap();
+    let roof_snow = |location: &str, elevation: f64| -> Result<(f64, String), String> {
+        let src = base
+            .replace("import { Building,", "import { kingCounty, kingCountyRoofSnow } from \"../sites/king-county-wa\";\nimport { Building,")
+            .replace(
+                ".load(\"snow\", psf(25))",
+                &format!(".snow(kingCountyRoofSnow(kingCounty({{ location: \"{location}\", elevationFt: {elevation}, seismicDesignCategory: \"D2\", exposure: \"B\" }}), {{ elevationFt: {elevation}, ce: 1.0, importance: 1.0 }}))"),
+            );
+        let m = run(&src, &format!("{dir}/kc.ts")).map_err(|e| e.to_string())?;
+        Ok(m.loads.iter().find_map(|l| match l {
+            topo_core::Load::Area { case, pressure, label, .. } if m.load_cases[case.idx()].kind == topo_core::LoadKind::Snow => Some((pressure / 47.880259, label.clone().unwrap())),
+            _ => None,
+        }).unwrap())
+    };
+    // Issaquah, 400 ft: P_g = 0.054 × 400 = 21.6 psf → the 25 psf minimum governs.
+    let (p, label) = roof_snow("Issaquah", 400.0).unwrap();
+    close("Issaquah 400 ft", p, 25.0, 1e-9);
+    assert!(label.contains("21.6") && label.contains("minimum 25 psf governs"), "{label}");
+    // North Bend, 900 ft: P_g = 0.075 × 900 = 67.5 psf.
+    let (p, _) = roof_snow("North Bend", 900.0).unwrap();
+    close("North Bend 900 ft", p, 67.5, 1e-9);
+    // Above 1,000 ft the helper refuses.
+    assert!(roof_snow("Skykomish", 1100.0).unwrap_err().contains("above 1,000 ft"));
+}

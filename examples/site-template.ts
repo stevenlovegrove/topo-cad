@@ -1,4 +1,6 @@
 // Site design criteria — a template to fill in for your jurisdiction.
+// Ready-made regions live in examples/sites/ (e.g. king-county-wa.ts, which
+// also carries the county's own snow-load rule).
 //
 // How to fill it in (by hand, or ask your LLM helper to research it):
 //   1. Find your county or city building department's "Climatic and

@@ -74,7 +74,8 @@ export interface SiteHazards {
   /** Ultimate design wind speed (mph) and exposure category. */
   readonly windSpeed?: Sourced<number>;
   readonly exposure?: Sourced<"B" | "C" | "D">;
-  readonly seismic?: Sourced<{ readonly sds: number; readonly sd1: number; readonly sdc: string }>;
+  /** Seismic design category, and S_DS / S_D1 where looked up (USGS design maps). */
+  readonly seismic?: Sourced<{ readonly sds?: number; readonly sd1?: number; readonly sdc: string }>;
   readonly frostDepth?: Sourced<Length>;
   readonly notes?: readonly string[];
 }
