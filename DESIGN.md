@@ -295,7 +295,7 @@ members on the drawings (server-side hit testing against the exact solids),
 see the model's value, type the tape reading, and it is appended as readable
 TypeScript to `model.measured.ts`. File changes trigger a re-fit; measurements
 are drawn on the sheets coloured by fit. The tabs are the model's sheets, plus
-a **Script** tab: an editor for the model file and the local files it imports
+a **3D** tab (orthographic orbit/pan/zoom with a compass rose, view presets, members coloured by utilization, click to inspect, and "copy view" to reuse the direction as `iso(…, { from })` on a sheet), and a **Script** tab: an editor for the model file and the local files it imports
 (and its sidecar); saving rebuilds, and a syntax error marks its line. Only
 those files can be written.
 

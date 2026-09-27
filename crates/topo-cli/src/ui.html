@@ -58,7 +58,15 @@
   nav button.script { margin-left: 8px; font-family: ui-monospace, monospace; }
   nav button.script.dirty::after { content: " ●"; color: var(--pick); }
   #script { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fbfbf8; cursor: auto; }
-  #script[hidden], #hint[hidden] { display: none; }
+  #script[hidden], #hint[hidden], #view3d[hidden] { display: none; }
+  #view3d { position: absolute; inset: 0; background: #f7f7f3; cursor: grab; }
+  #view3d.dragging { cursor: grabbing; }
+  #canvas3d { width: 100%; height: 100%; display: block; }
+  #bar3d { position: absolute; left: 10px; top: 10px; display: flex; gap: 4px; flex-wrap: wrap; }
+  #bar3d button { border: 1px solid var(--line); background: #fff; padding: 3px 8px; border-radius: 4px; cursor: pointer; font: 12px inherit; }
+  #bar3d button:hover { background: #eef; }
+  #compass { position: absolute; right: 12px; top: 12px; width: 120px; height: 138px; pointer-events: none; }
+  #hint3d { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.85); padding: 2px 6px; border-radius: 4px; }
   #scriptBar { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
   #scriptBar .file { border: 1px solid var(--line); background: var(--bg); padding: 2px 8px; border-radius: 4px; cursor: pointer; font: 12px ui-monospace, monospace; }
   #scriptBar .file.on { background: var(--ink); color: #fff; border-color: var(--ink); }
@@ -122,6 +130,21 @@
         <span id="scriptStatus"></span>
       </div>
       <div id="editor"><pre id="gutter"></pre><div id="code"><pre id="srchl"></pre><textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div></div>
+    </div>
+    <div id="view3d" hidden>
+      <canvas id="canvas3d"></canvas>
+      <div id="bar3d">
+        <button data-view="top" title="Plan: looking down, north up">Top</button>
+        <button data-view="n" title="From the north">N</button>
+        <button data-view="e" title="From the east">E</button>
+        <button data-view="s" title="From the south">S</button>
+        <button data-view="w" title="From the west">W</button>
+        <button data-view="iso" title="From the south-west, above">Iso</button>
+        <button data-view="fit" title="Fit the model">Fit</button>
+        <button id="copyView" title="Copy this view direction as sheet code">Copy view</button>
+      </div>
+      <svg id="compass" viewBox="-60 -60 120 138"></svg>
+      <div id="hint3d">drag to orbit · shift/right-drag to pan · scroll to zoom · click a member for its checks · double-click to fit</div>
     </div>
   </div>
   <aside>
@@ -204,6 +227,7 @@ async function poll() {
       if (s.error && !(s.sheets || []).length && view === "sheet" && !svg) view = "script";
       renderPanel();
       if (view === "script") { $("script").hidden = false; await loadSources(false); }
+      if (view === "3d") await load3d();
       if (!s.error) await loadSheet();
     }
   } catch (e) { $("status").textContent = "server not reachable"; }
@@ -295,6 +319,7 @@ function renderStructure() {
 }
 
 async function loadHeat() {
+  if (view === "3d") { await loadRatios3d(); draw3d(); }
   const mode = $("heatMode").value;
   heatData = !svg || !state || state.error ? [] : await api(`/api/heat/${sheet}?mode=${mode === "off" ? "utilization" : mode}&combo=${encodeURIComponent($("heatCombo").value)}`);
   drawHeat();
@@ -361,6 +386,209 @@ async function inspect(path, keep) {
   if (!keep) $("inspector").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+// ----- 3D view: orthographic, orbit / pan / zoom, compass -------------------
+const cam = { az: 225, el: 30, scale: 0, pan: [0, 0] };  // az: compass bearing of the viewer
+let mesh3d = null, meshVersion = -1, ratios3d = {}, faces3d = [], drawn3d = [], hover3d = null, center3d = [0, 0, 0];
+const D2R = Math.PI / 180;
+
+function basis3d() {
+  const az = cam.az * D2R, el = cam.el * D2R;
+  const t = [Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el)];  // toward the viewer
+  let r = [-t[1], t[0], 0];
+  const n = Math.hypot(r[0], r[1]);
+  r = n < 1e-9 ? [Math.cos(az), -Math.sin(az), 0] : [r[0] / n, r[1] / n, 0];
+  const u = [t[1] * r[2] - t[2] * r[1], t[2] * r[0] - t[0] * r[2], t[0] * r[1] - t[1] * r[0]];
+  return { t, r, u };
+}
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+async function load3d(force) {
+  if (!state || state.error) return;
+  if (force || meshVersion !== state.version || !mesh3d) {
+    mesh3d = await api("/api/mesh");
+    meshVersion = state.version;
+    faces3d = [];
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    mesh3d.members.forEach((m, mi) => {
+      for (const f of m.faces) {
+        const c = [0, 0, 0];
+        for (const p of f) for (let k = 0; k < 3; k++) { c[k] += p[k] / f.length; lo[k] = Math.min(lo[k], p[k]); hi[k] = Math.max(hi[k], p[k]); }
+        faces3d.push({ mi, pts: f, c });
+      }
+    });
+    center3d = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
+    if (!cam.scale) fit3d();
+  }
+  await loadRatios3d();
+  draw3d();
+}
+
+async function loadRatios3d() {
+  const mode = $("heatMode").value;
+  ratios3d = mode === "off" || !state || state.error ? {} : await api(`/api/ratios?mode=${mode}&combo=${encodeURIComponent($("heatCombo").value)}`);
+}
+
+function canvasSize() {
+  const c = $("canvas3d"), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  return { c, w, h, dpr };
+}
+
+function fit3d() {
+  if (!faces3d.length) return;
+  const { w, h } = canvasSize();
+  const { r, u } = basis3d();
+  let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const f of faces3d) for (const p of f.pts) {
+    const q = [p[0] - center3d[0], p[1] - center3d[1], p[2] - center3d[2]];
+    const x = dot3(q, r), y = dot3(q, u);
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  }
+  cam.scale = 0.88 * Math.min((w || 800) / ((x1 - x0) || 1), (h || 600) / ((y1 - y0) || 1));
+  cam.pan = [-(x0 + x1) / 2 * cam.scale, (y0 + y1) / 2 * cam.scale];
+}
+
+function draw3d() {
+  if (view !== "3d" || !mesh3d) return;
+  const { c, w, h, dpr } = canvasSize();
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = "#f7f7f3"; g.fillRect(0, 0, w, h);
+  const { t, r, u } = basis3d();
+  const proj = (p) => {
+    const q = [p[0] - center3d[0], p[1] - center3d[1], p[2] - center3d[2]];
+    return [w / 2 + cam.pan[0] + dot3(q, r) * cam.scale, h / 2 + cam.pan[1] - dot3(q, u) * cam.scale];
+  };
+  // Painter's algorithm: far faces first.
+  const order = faces3d.map((f, i) => [dot3(f.c, t), i]).sort((a, b) => a[0] - b[0]);
+  drawn3d = [];
+  const heatOn = $("heatMode").value !== "off";
+  g.lineJoin = "round";
+  for (const [, i] of order) {
+    const f = faces3d[i], m = mesh3d.members[f.mi];
+    const pts = f.pts.map(proj);
+    const rt = ratios3d[m.path];
+    let fill = heatOn ? (rt ? heatColor(rt.ratio) : "#e4e4de") : "#ffffff";
+    if (m.path === hover3d) fill = "#cfe0ff";
+    g.beginPath();
+    pts.forEach((p, k) => (k ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])));
+    g.closePath();
+    g.fillStyle = fill; g.fill();
+    g.strokeStyle = m.path === inspected ? "#111" : "#3a3a36";
+    g.lineWidth = m.path === inspected ? 1.8 : 0.6;
+    g.stroke();
+    drawn3d.push({ mi: f.mi, pts });
+  }
+  drawCompass(r, u, t);
+}
+
+function drawCompass(r, u, t) {
+  const svgc = $("compass");
+  const R = 44;
+  const dirs = [["N", [0, 1, 0], "#d62828"], ["E", [1, 0, 0], "#333"], ["S", [0, -1, 0], "#333"], ["W", [-1, 0, 0], "#333"]];
+  let html = `<circle r="${R + 8}" fill="rgba(255,255,255,.88)" stroke="#bbb"/>`;
+  // The ground plane seen from this view: an ellipse flattened by the elevation.
+  const flat = Math.abs(Math.sin(cam.el * D2R));
+  html += `<ellipse rx="${R}" ry="${Math.max(R * flat, 1)}" fill="none" stroke="#ddd" transform="rotate(0)"/>`;
+  for (const [name, v, col] of dirs) {
+    const x = dot3(v, r) * R, y = -dot3(v, u) * R;
+    const len = Math.hypot(x, y);
+    const behind = dot3(v, t) > 0.3;  // pointing at the viewer
+    html += `<line x1="0" y1="0" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${col}" stroke-width="${name === "N" ? 3 : 1.5}" ${behind ? 'stroke-dasharray="3 2"' : ""}/>`;
+    if (name === "N") html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="${col}"/>`;
+    const k = len > 1e-6 ? (len + 10) / len : 0;
+    html += `<text x="${(x * k).toFixed(1)}" y="${(y * k + 4).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="${col}" font-family="sans-serif">${name}</text>`;
+  }
+  // Up.
+  const ux = dot3([0, 0, 1], r) * R * 0.6, uy = -dot3([0, 0, 1], u) * R * 0.6;
+  html += `<line x1="0" y1="0" x2="${ux.toFixed(1)}" y2="${uy.toFixed(1)}" stroke="#1d4ed8" stroke-width="1.5"/><text x="${ux.toFixed(1)}" y="${(uy - 4).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1d4ed8" font-family="sans-serif">up</text>`;
+  const bearing = ((cam.az % 360) + 360) % 360;
+  const names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  html += `<text x="0" y="${R + 26}" text-anchor="middle" font-size="10" fill="#555" font-family="sans-serif">from ${names[Math.round(bearing / 45) % 8]} ${bearing.toFixed(0)}°, ${cam.el.toFixed(0)}° up</text>`;
+  svgc.innerHTML = html;
+}
+
+function pick3d(x, y) {
+  for (let i = drawn3d.length - 1; i >= 0; i--) {
+    const pts = drawn3d[i].pts;
+    let inside = false;
+    for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
+      if ((pts[a][1] > y) !== (pts[b][1] > y) && x < ((pts[b][0] - pts[a][0]) * (y - pts[a][1])) / (pts[b][1] - pts[a][1]) + pts[a][0]) inside = !inside;
+    }
+    if (inside) return mesh3d.members[drawn3d[i].mi];
+  }
+  return null;
+}
+
+(() => {
+  const el = $("view3d");
+  let drag = null;
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+  el.addEventListener("mousedown", (e) => {
+    if (e.target.closest("#bar3d")) return;
+    drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2, moved: false, az: cam.az, elv: cam.el, p: cam.pan.slice() };
+    el.classList.add("dragging");
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (!drag) return;
+    const d = drag; drag = null; el.classList.remove("dragging");
+    if (!d.moved && view === "3d") {
+      const rect = $("canvas3d").getBoundingClientRect();
+      const m = pick3d(e.clientX - rect.left, e.clientY - rect.top);
+      if (m) inspect(m.path).then(draw3d);
+    }
+  });
+  el.addEventListener("mousemove", (e) => {
+    const rect = $("canvas3d").getBoundingClientRect();
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+      if (drag.pan) cam.pan = [drag.p[0] + dx, drag.p[1] + dy];
+      else { cam.az = drag.az - dx * 0.4; cam.el = Math.max(-89.9, Math.min(89.9, drag.elv + dy * 0.4)); }
+      draw3d();
+      return;
+    }
+    const m = pick3d(e.clientX - rect.left, e.clientY - rect.top);
+    const path = m ? m.path : null;
+    const tip = $("tip");
+    if (m) {
+      const rt = ratios3d[m.path];
+      tip.textContent = `${m.label}` + (rt ? ` · ${rt.ratio.toFixed(2)} ${rt.title.toLowerCase()} (${rt.combination})` : "") + " — click for checks";
+      tip.style.display = "block";
+      tip.style.left = `${e.clientX - rect.left + 14}px`; tip.style.top = `${e.clientY - rect.top + 14}px`;
+    } else tip.style.display = "none";
+    if (path !== hover3d) { hover3d = path; draw3d(); }
+  });
+  el.addEventListener("mouseleave", () => { $("tip").style.display = "none"; if (hover3d) { hover3d = null; draw3d(); } });
+  el.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = $("canvas3d").getBoundingClientRect();
+    const f = Math.exp(-e.deltaY * 0.0015);
+    // Zoom about the cursor.
+    const cx = e.clientX - rect.left - rect.width / 2, cy = e.clientY - rect.top - rect.height / 2;
+    cam.pan = [cx - (cx - cam.pan[0]) * f, cy - (cy - cam.pan[1]) * f];
+    cam.scale *= f;
+    draw3d();
+  }, { passive: false });
+  el.addEventListener("dblclick", (e) => { if (!e.target.closest("#bar3d")) { fit3d(); draw3d(); } });
+  const presets = { top: [180, 89.9], n: [0, 0], e: [90, 0], s: [180, 0], w: [270, 0], iso: [225, 30] };
+  for (const b of $("bar3d").querySelectorAll("button[data-view]")) {
+    b.onclick = () => {
+      const v = b.dataset.view;
+      if (v !== "fit") [cam.az, cam.el] = presets[v];
+      fit3d(); draw3d();
+    };
+  }
+  $("copyView").onclick = async () => {
+    const { t } = basis3d();
+    const code = `iso(undefined, { from: [${t.map((x) => x.toFixed(3)).join(", ")}] })`;
+    try { await navigator.clipboard.writeText(code); msg(`Copied: ${code} — paste into a sheet(...) in your script (a world direction toward the viewer).`, false); }
+    catch (_) { msg(`View: ${code}`, false); }
+  };
+  window.addEventListener("resize", () => draw3d());
+})();
+
 // ----- projects ------------------------------------------------------------
 async function loadProjects() {
   const r = await api("/api/projects");
@@ -407,6 +635,7 @@ function resetForProject() {
   picks = []; choice = []; hover = null; mode = null;
   files = []; current = 0; srcVersion = -1;
   inspected = null; heatData = []; $("inspector").innerHTML = "";
+  mesh3d = null; meshVersion = -1; cam.scale = 0; faces3d = [];
   $("sheet").innerHTML = "";
   if (typeof cancel === "function") cancel();
 }
@@ -424,6 +653,12 @@ function renderTabs() {
     b.onclick = () => { sheet = i; viewBox = null; showView("sheet"); loadSheet(); };
     tabs.appendChild(b);
   });
+  const b3 = document.createElement("button");
+  b3.textContent = "3D";
+  b3.title = "Orbit the model in 3D";
+  b3.className = "script" + (view === "3d" ? " on" : "");
+  b3.onclick = () => showView("3d");
+  tabs.appendChild(b3);
   const b = document.createElement("button");
   b.textContent = "Script";
   b.title = "The model's TypeScript (edit and save to rebuild)";
@@ -435,8 +670,10 @@ function renderTabs() {
 function showView(v) {
   view = v;
   $("script").hidden = v !== "script";
-  $("hint").hidden = v === "script";
+  $("view3d").hidden = v !== "3d";
+  $("hint").hidden = v !== "sheet";
   if (v === "script") loadSources(false);
+  if (v === "3d") load3d();
   renderTabs();
 }
 

@@ -375,6 +375,36 @@ fn member_detail(b: &Built, path: &str, combo: &str) -> Result<Value, String> {
     }))
 }
 
+/// Member solids for the 3D view: each member's boundary faces (outer loops,
+/// world metres rounded to 0.1 mm) with its path and label.
+fn mesh(b: &Built) -> Value {
+    let r = |v: f64| (v * 10_000.0).round() / 10_000.0;
+    let members: Vec<Value> = b
+        .model
+        .members
+        .iter()
+        .map(|m| {
+            let g = b.geom.member(m.id);
+            let faces: Vec<Vec<[f64; 3]>> = g.faces().iter().map(|f| f.outer.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
+            json!({ "path": b.model.member_path(m.id), "label": short(&b.model, m.id), "role": m.role, "faces": faces })
+        })
+        .collect();
+    json!({ "version_name": b.model.info.name, "members": members })
+}
+
+/// Highest ratio per member (by path) for a colour-by mode and combination.
+fn ratios(b: &Built, mode: &str, combo: &str) -> Value {
+    let rs = member_ratios(b, mode, combo);
+    let mut out = serde_json::Map::new();
+    for (i, r) in rs.iter().enumerate() {
+        if let Some((ratio, k)) = r {
+            let c = &b.analysis.checks[*k];
+            out.insert(b.model.member_path(topo_core::MemberId(i as u32)), json!({ "ratio": ratio, "title": c.title, "combination": c.combination }));
+        }
+    }
+    Value::Object(out)
+}
+
 /// `?a=1&b=x%20y` → value of `key`.
 fn query(url: &str, key: &str) -> String {
     let Some((_, q)) = url.split_once('?') else { return String::new() };
@@ -532,6 +562,14 @@ fn handle(app: &mut App, mut req: Request) {
             let i: usize = u.trim_start_matches("/api/heat/").split('?').next().unwrap_or("").parse().unwrap_or(usize::MAX);
             let Ok(b) = &app.built else { return json_reply(req, json!([])) };
             json_reply(req, heat(b, i, &query(u, "mode"), &query(u, "combo")))
+        }
+        (Method::Get, "/api/mesh") => {
+            let Ok(b) = &app.built else { return err(req, "model does not build".into()) };
+            json_reply(req, mesh(b))
+        }
+        (Method::Get, u) if u.starts_with("/api/ratios") => {
+            let Ok(b) = &app.built else { return json_reply(req, json!({})) };
+            json_reply(req, ratios(b, &query(u, "mode"), &query(u, "combo")))
         }
         (Method::Get, u) if u.starts_with("/api/member") => {
             let Ok(b) = &app.built else { return err(req, "model does not build".into()) };
