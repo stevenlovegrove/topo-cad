@@ -7,8 +7,8 @@
 // ends). Running the model fits the unknowns to the measurements — there is no
 // hand-derived geometry here.
 import {
-  Building, DFL, dressed, ft, horizontal, inch, lengthOf, meet, measured, type Nominal, Perimeter, type Point, psf,
-  TrussRoof, TrussShape, unknown, Wall,
+  Building, detail, DFL, dressed, elevation, ft, horizontal, inch, iso, lengthOf, meet, measured, type Nominal, notes, Perimeter, plan, type Point,
+  psf, schedule, sheet, standardSheets, TrussRoof, TrussShape, unknown, Wall,
 } from "topo-cad";
 import { fieldMeasurements } from "./garage-truss.measured";
 
@@ -133,4 +133,20 @@ export default Building.named("Existing garage truss")
     notes: ["2x6 bottom chord; 2x4 top chords and webs. Eave tail plumb cut.", "Left flat part cantilevers past the left wall. Wall height is a placeholder."],
   })
   .add(leftWalls, rightWalls, roof)
-  .measure(measurements, fieldMeasurements);
+  .measure(measurements, fieldMeasurements)
+  // The drawing set, in tab order: generated sheets and our own.
+  .sheets(
+    standardSheets("cover"),
+    sheet("S-101", "Roof framing",
+      plan(roof, { dashed: [leftWalls, rightWalls], title: "Roof framing plan" }),
+      iso([roof, leftWalls, rightWalls], { title: "Roof framing, from the south-west" }),
+    ),
+    sheet("S-102", "Typical truss",
+      elevation(roof.truss(2), { title: "Typical truss T2", scale: '1/2"' }),
+      detail(outerCorner, [roof.truss(2), leftWalls], { title: "Left heel", radius: inch(16), scale: '1-1/2"' }),
+      detail(chordEnd, [roof.truss(2), rightWalls], { title: "Right heel and eave tail", radius: inch(20), scale: '1-1/2"' }),
+      notes("Field notes", "Truss plates not recorded; verify at heels before any repair."),
+    ),
+    standardSheets("walls", "analytical"),
+    sheet("S-401", "Schedules and fit", schedule("members"), schedule("Field measurements"), schedule("Fitted unknowns")),
+  );

@@ -459,7 +459,7 @@ fn picking_the_outer_corner_on_the_truss_sheet() {
     let corner = Feature { planes: vec![face("T2/top_chord.H0-P", "+z"), face("T2/bottom_chord.F-H1", "+z")] };
     let at = measure::feature(&m, &g, &corner).unwrap().point;
     // The typical-truss sheet shows T2.
-    let sheet = set.sheets.iter().find(|s| locate(s, bc, at).is_some() && s.title.contains("Truss")).expect("truss sheet");
+    let sheet = set.sheets.iter().find(|s| locate(s, bc, at).is_some() && s.title.to_lowercase().contains("truss")).expect("truss sheet");
     let svg = locate(sheet, bc, at).unwrap();
 
     // Click a little off the corner: still within the pick radius.
@@ -493,7 +493,13 @@ fn picking_the_outer_corner_on_the_truss_sheet() {
         .map(|mm| OverlayInput { name: &mm.name, quantity: &mm.quantity, text: mm.name.clone(), ok: Some(true) })
         .collect();
     let drawn = overlay(&m, &g, sheet, &items);
-    assert_eq!(drawn.len(), fit.measurements.len(), "{:?}", drawn.iter().map(|o| &o.name).collect::<Vec<_>>());
+    let names: Vec<&String> = drawn.iter().map(|o| &o.name).collect();
+    let unique: std::collections::BTreeSet<&String> = names.iter().copied().collect();
+    assert_eq!(unique.len(), fit.measurements.len(), "{names:?}");
+    // The heel details repeat just the measurements that fit inside their circles.
+    let mut repeated: Vec<&str> = unique.iter().filter(|n| names.iter().filter(|m| m == n).count() > 1).map(|n| n.as_str()).collect();
+    repeated.sort();
+    assert_eq!(repeated, vec!["left wall ℄ under outer corner", "right wall ℄ in from chord end"]);
 }
 
 /// What the UI does when saving: append a picked quantity to the sidecar
@@ -655,4 +661,93 @@ fn site_with_two_buildings() {
     // The shed's own named direction, resolved from one of its groups.
     let door = m.direction("door", Some(m.find_group("Shed/frame").unwrap())).unwrap();
     assert!((door - topo_core::Vec3::X).norm() < 1e-9, "shed −y is east: {door:?}");
+}
+
+const SHEETS_MODEL: &str = r#"
+    import { Assembly, Building, DFL, detail, elevation, facing, ft, inch, iso, meet, member, notes, plan, schedule, sheet, standardSheets } from "topo-cad";
+    const frame = Assembly.named("frame")
+      .point("a", [0, 0, 0]).point("b", [0, 0, ft(7)]).point("c", [ft(9), 0, ft(7)]).point("d", [ft(9), 0, 0])
+      .member("post", ["a", "b"], { size: [4, 4], grade: DFL.No2 })
+      .member("post", ["d", "c"], { size: [4, 4], grade: DFL.No2 })
+      .member("beam", ["b", "c"], { size: [4, 6], grade: DFL.No2, anchor: [0, -0.5], priority: 10 })
+      .supportedAt("a", "d");
+    const corner = meet(facing(member("post#1"), "up"), facing(member("post#1"), "west"));
+    export default Building.named("Shed").add(frame).sheets(
+      sheet("A-201", "Frame", elevation(frame, { from: "south" }), iso(), plan(frame, { scale: '1/2"' })),
+      sheet("A-501", "Details", detail(corner, frame, { from: "south", radius: inch(10), scale: '3"' }), notes("Notes", "One", "Two")),
+      standardSheets("schedules"),
+      SHEETS_EXTRA
+    );
+"#;
+
+/// Sheets as code: order, numbering, views of each kind, details clipped to
+/// their circle, and problems reported (and drawn) rather than fatal.
+#[test]
+fn sheets_from_the_script() {
+    use topo_draw::{DrawingSet, Prim};
+    let m = run(&SHEETS_MODEL.replace("SHEETS_EXTRA", "[]"), "shed.ts").unwrap_or_else(|e| panic!("{e}"));
+    let g = Geometry::build(&m, &Topology::build(&m));
+    let set = DrawingSet::build(&m, &Topology::build(&m), &g);
+    assert!(set.errors.is_empty(), "{:?}", set.errors);
+    let numbers: Vec<&str> = set.sheets.iter().map(|s| s.number.as_str()).collect();
+    assert_eq!(numbers, vec!["A-201", "A-501", "S-401"], "only what is listed, in order");
+    let titles: Vec<&str> = set.sheets[0].views.iter().map(|v| v.view.title.as_str()).collect();
+    assert_eq!(titles, vec!["frame elevation", "Shed", "frame plan"]);
+    assert!(set.sheets[0].views[2].view.scale_label.starts_with("1/2\""));
+    // Elevation from the south: the frame's +x (east) runs to the right.
+    let e = &set.sheets[0].views[0].view;
+    assert!(e.proj.unwrap().right.dot(topo_core::Vec3::X) > 0.999);
+
+    // The detail keeps only what lies inside its circle.
+    let d = &set.sheets[1].views[0].view;
+    let (c, r) = d.clip.expect("a detail is clipped");
+    // (The view title and its rule sit below the circle.)
+    let mut inside = 0;
+    for p in &d.drawing.prims {
+        match p {
+            Prim::Line { a, b, .. } if a.y.max(b.y) > c.y - r => {
+                assert!(a.distance(c) <= r * 1.0001 && b.distance(c) <= r * 1.0001, "line outside: {p:?}");
+                inside += 1;
+            }
+            Prim::Text { at, .. } if at.y > c.y - r => assert!(at.distance(c) <= r, "text outside: {p:?}"),
+            _ => {}
+        }
+    }
+    assert!(inside > 4, "the detail draws something");
+    assert!(d.members.iter().all(|&id| m.member_path(id).contains("post#1") || m.member_path(id).contains("beam")), "the far post is not in the detail");
+
+    // Problems are reported per view and drawn in place; the set still builds.
+    let bad = SHEETS_MODEL
+        .replace("SHEETS_EXTRA", r#"sheet("A-601", "Bad", plan("nothing here"), elevation(frame, { scale: '5/8"' }), schedule("rafters"))"#);
+    let m = run(&bad, "shed.ts").unwrap();
+    let set = DrawingSet::build(&m, &Topology::build(&m), &g);
+    assert_eq!(set.errors.len(), 3, "{:?}", set.errors);
+    assert!(set.errors[0].contains("\"nothing here\" names no group or member"), "{}", set.errors[0]);
+    assert!(set.errors[1].contains("unknown scale") && set.errors[1].contains("1/4\""), "{}", set.errors[1]);
+    assert!(set.errors[2].contains("unknown schedule \"rafters\""), "{}", set.errors[2]);
+    assert_eq!(set.sheets.last().unwrap().views.iter().filter(|v| v.view.title == "View error").count(), 3);
+
+    // Unknown standard sets are a script error.
+    let e = run(&SHEETS_MODEL.replace("SHEETS_EXTRA", r#"standardSheets("elevations" as any)"#), "shed.ts").unwrap_err().to_string();
+    assert!(e.contains("unknown standard sheets \"elevations\"") && e.contains("walls"), "{e}");
+}
+
+/// Without `.sheets(...)` a model gets the standard set, as before.
+#[test]
+fn standard_sheets_by_default() {
+    let m = run(GARAGE_TS, "garage-as-built.ts").unwrap();
+    assert!(m.sheets.is_none());
+    let topo = Topology::build(&m);
+    let g = Geometry::build(&m, &topo);
+    let set = topo_draw::DrawingSet::build(&m, &topo, &g);
+    let numbers: Vec<&str> = set.sheets.iter().map(|s| s.number.as_str()).collect();
+    assert_eq!(numbers.first(), Some(&"G-001"));
+    assert!(numbers.contains(&"S-101") && numbers.contains(&"S-201") && numbers.contains(&"S-301") && numbers.contains(&"S-401"), "{numbers:?}");
+}
+
+/// Syntax errors point at the line, for the UI's editor.
+#[test]
+fn syntax_errors_have_a_line() {
+    let e = run("import { Building } from \"topo-cad\";\n\nconst x = (1;\nexport default Building.named(\"x\");\n", "broken.ts").unwrap_err().to_string();
+    assert!(e.contains("broken.ts:3:"), "{e}");
 }

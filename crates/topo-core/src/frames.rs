@@ -185,7 +185,8 @@ impl Model {
 
     /// Moves everything in `other` into this model (renumbering its ids, and
     /// sharing load cases by name and kind). Nodes are never merged, so peers
-    /// such as separate buildings stay topologically disjoint.
+    /// such as separate buildings stay topologically disjoint. Sheet lists
+    /// are not merged (see `sheets::merge_sheets`).
     pub fn absorb(&mut self, other: Model) {
         use crate::ids::*;
         use crate::loads::Load;

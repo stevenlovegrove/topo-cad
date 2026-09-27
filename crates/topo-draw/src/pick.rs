@@ -183,6 +183,9 @@ pub fn pick(model: &Model, geom: &Geometry, sheet: &Sheet, svg: [f64; 2], radius
         if q.x < bb.min.x - r || q.x > bb.max.x + r || q.y < bb.min.y - r || q.y > bb.max.y + r {
             continue;
         }
+        if f.view.clip.is_some_and(|(c, rad)| q.distance(c) > rad) {
+            continue;
+        }
         let mut edges: Vec<EdgeOn> = vec![];
         let mut body: Option<(MemberId, f64)> = None;
         for &id in &f.view.members {
@@ -370,6 +373,10 @@ pub fn overlay(model: &Model, geom: &Geometry, sheet: &Sheet, items: &[OverlayIn
                     (p2(g.place.at(g.place.centroid, lo)), p2(g.place.at(g.place.centroid, hi)))
                 }
             };
+            // In a detail, only measurements that fit inside its circle.
+            if f.view.clip.is_some_and(|(c, r)| start.distance(c) > r || end.distance(c) > r) {
+                continue;
+            }
             lines.insert(0, f.line(start, end));
             let mid = (start + end) * 0.5;
             out.push(Overlay { name: it.name.into(), lines, label_at: f.to_svg(mid), text: it.text.clone(), ok: it.ok });

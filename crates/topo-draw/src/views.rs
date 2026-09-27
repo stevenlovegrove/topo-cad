@@ -21,6 +21,8 @@ pub struct View {
     pub proj: Option<Projector>,
     /// Members drawn as solids in this view.
     pub members: Vec<MemberId>,
+    /// Detail views: the drawing is clipped to this circle (view plane).
+    pub clip: Option<(Vec2, f64)>,
 }
 
 impl View {
@@ -31,7 +33,7 @@ impl View {
     }
     /// A paper-space view (tables, legends) with content already in paper metres.
     pub fn paper(title: &str, drawing: Drawing) -> View {
-        View { title: title.into(), subtitle: None, scale: 1.0, scale_label: String::new(), drawing, proj: None, members: vec![] }
+        View { title: title.into(), subtitle: None, scale: 1.0, scale_label: String::new(), drawing, proj: None, members: vec![], clip: None }
     }
 }
 
@@ -46,6 +48,8 @@ pub struct Ctx<'a> {
 pub fn standard_scales(units: UnitSystem) -> Vec<(f64, String)> {
     match units {
         UnitSystem::Imperial => [
+            (3.0, "3\""),
+            (1.5, "1-1/2\""),
             (1.0, "1\""),
             (0.75, "3/4\""),
             (0.5, "1/2\""),
@@ -63,6 +67,15 @@ pub fn standard_scales(units: UnitSystem) -> Vec<(f64, String)> {
             .map(|d| (1.0 / d, format!("1:{d}")))
             .collect(),
     }
+}
+
+/// A standard scale by its label or the part before ` = ` (`1/4"`, `1:50`).
+pub fn named_scale(units: UnitSystem, name: &str) -> Result<(f64, String), String> {
+    let scales = standard_scales(units);
+    let want = name.trim();
+    scales.iter().find(|(_, l)| l == want || l.split(" = ").next() == Some(want)).cloned().ok_or_else(|| {
+        format!("unknown scale \"{want}\" (one of {})", scales.iter().map(|(_, l)| l.split(" = ").next().unwrap_or(l).to_string()).collect::<Vec<_>>().join(", "))
+    })
 }
 
 /// Largest standard scale at which a `w × h` (model m) extent fits in `aw × ah` (paper m).
@@ -93,6 +106,13 @@ fn draw_members(d: &mut Drawing, geoms: &[&MemberGeom], proj: &Projector, hidden
 }
 
 fn group_annotations(d: &mut Drawing, ctx: &Ctx, g: GroupId, proj: &Projector, st: &Style) {
+    group_annotations_where(d, ctx, g, proj, st, false);
+}
+
+/// Draws a group's annotations; with `true_length_only`, only those that lie
+/// in the view plane (dimensions and spans shown at true length, regions
+/// seen face-on), so a group can be drawn from any direction.
+fn group_annotations_where(d: &mut Drawing, ctx: &Ctx, g: GroupId, proj: &Projector, st: &Style, true_length_only: bool) {
     let group = ctx.model.group(g);
     let f = group.frame;
     let p = |q: Vec3| proj.p(f.to_world(q));
@@ -100,8 +120,15 @@ fn group_annotations(d: &mut Drawing, ctx: &Ctx, g: GroupId, proj: &Projector, s
         let w = f.dir_to_world(q);
         v2(w.dot(proj.right), w.dot(proj.up))
     };
+    let flat = |a: Vec3, b: Vec3| {
+        let (wa, wb) = (f.to_world(a), f.to_world(b));
+        !true_length_only || proj.p(wa).distance(proj.p(wb)) >= 0.999 * wa.distance(wb)
+    };
     for a in &group.annotations {
         match a {
+            Annotation::Dim { a, b, side, .. } if !flat(*a, *b) || (true_length_only && dir2(*side).norm() < 0.5) => {}
+            Annotation::Span { a, b, .. } if !flat(*a, *b) => {}
+            Annotation::Region { min, max, .. } if true_length_only && (proj.depth(f.to_world(*min)) - proj.depth(f.to_world(*max))).abs() > 1e-3 => {}
             Annotation::Dim { a, b, side, tier, text } => {
                 let t = text.clone().unwrap_or_else(|| ctx.model.units.fmt_len(a.distance(*b)));
                 annot::dim(d, p(*a), p(*b), dir2(*side), st.tier_offset(*tier), &t, st);
@@ -159,7 +186,7 @@ fn tag_members(d: &mut Drawing, ctx: &Ctx, members: &[MemberId], scene: &[&Membe
 fn finish(mut d: Drawing, title: &str, subtitle: Option<String>, scale: f64, scale_label: String, st: &Style) -> View {
     let bb = d.bbox();
     annot::view_title(&mut d, v2(bb.min.x, bb.min.y - st.m(0.45)), title, subtitle.as_deref(), &scale_label, st);
-    View { title: title.into(), subtitle, scale, scale_label, drawing: d, proj: None, members: vec![] }
+    View { title: title.into(), subtitle, scale, scale_label, drawing: d, proj: None, members: vec![], clip: None }
 }
 
 /// Framing elevation of a wall group, viewed from the exterior.
@@ -211,6 +238,72 @@ pub fn framing_plan(ctx: &Ctx, g: GroupId, below: &[MemberId], scale: (f64, Stri
     }
     let sub = Some("Bearing walls below shown dashed".to_string());
     View { proj: Some(proj), members: all, ..finish(d, &format!("{} plan", ctx.model.group(g).name), sub, scale.0, scale.1, &st) }
+}
+
+/// A general projected view: `members` drawn and tagged, `dashed` members
+/// drawn with hidden edges dashed, the annotations of `annotate` that are
+/// true length in this projection, optionally clipped to a circle (details).
+pub struct Projected {
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub members: Vec<MemberId>,
+    pub dashed: Vec<MemberId>,
+    pub proj: Projector,
+    pub scale: (f64, String),
+    pub tags: bool,
+    pub annotate: Vec<GroupId>,
+    pub clip: Option<(Vec2, f64)>,
+}
+
+pub fn projected(ctx: &Ctx, v: Projected) -> View {
+    let st = Style { scale: v.scale.0 };
+    let mut all = v.members.clone();
+    all.extend(v.dashed.iter().filter(|m| !v.members.contains(m)));
+    let geoms: Vec<&MemberGeom> = all.iter().map(|&m| ctx.geom.member(m)).collect();
+    let mut d = Drawing::default();
+    let _ = draw_members(&mut d, &geoms, &v.proj, &v.dashed);
+    match (v.tags, v.clip) {
+        (true, None) => tag_members(&mut d, ctx, &v.members, &geoms, &v.proj, &st),
+        // In a detail, tag each member where its centreline passes closest to
+        // the middle (if that is well inside the circle).
+        (true, Some((c, r))) => {
+            let gap = st.m(0.35);
+            let mut placed: Vec<Vec2> = vec![];
+            for &m in &v.members {
+                let g = ctx.geom.member(m);
+                let (lo, hi) = g.t_range();
+                let (p0, p1) = (v.proj.p(g.place.at(g.place.centroid, lo)), v.proj.p(g.place.at(g.place.centroid, hi)));
+                let d2 = p1 - p0;
+                let k = if d2.dot(d2) < 1e-18 { 0.5 } else { ((c - p0).dot(d2) / d2.dot(d2)).clamp(0.0, 1.0) };
+                // Step away from the closest point (by about a tag's width)
+                // until the tag clears those already placed.
+                let step = if d2.norm() > 1e-9 { gap / d2.norm() } else { 1.0 };
+                let spot = (0..12).flat_map(|i| [k + step * i as f64, k - step * (i + 1) as f64]).filter(|k| (0.0..=1.0).contains(k)).find_map(|k| {
+                    let at = g.place.at(g.place.centroid, lo + k * (hi - lo));
+                    let q = v.proj.p(at);
+                    (q.distance(c) < 0.8 * r && placed.iter().all(|p| p.distance(q) > gap) && !crate::hlr::is_occluded(at, m, &geoms, &v.proj)).then_some(q)
+                });
+                if let Some(q) = spot {
+                    annot::tag(&mut d, q, ctx.marks.of(m), &st);
+                    placed.push(q);
+                }
+            }
+        }
+        _ => {}
+    }
+    for &g in &v.annotate {
+        group_annotations_where(&mut d, ctx, g, &v.proj, &st, true);
+    }
+    if let Some((c, r)) = v.clip {
+        d = d.clipped_to_circle(c, r);
+        d.circle(c, r, false, Layer::Dims);
+    }
+    let (title, sub) = (v.title.clone(), v.subtitle.clone());
+    let mut view = finish(d, &title, sub, v.scale.0, v.scale.1, &st);
+    view.proj = Some(v.proj);
+    view.members = all;
+    view.clip = v.clip;
+    view
 }
 
 /// Axonometric view of `members` from the south-west, hidden lines removed.

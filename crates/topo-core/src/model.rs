@@ -310,6 +310,9 @@ pub struct Model {
     pub supports: Vec<Support>,
     pub load_cases: Vec<LoadCase>,
     pub loads: Vec<Load>,
+    /// The drawing set, in sheet order; `None` for the standard set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheets: Option<Vec<crate::sheets::SheetSpec>>,
     #[serde(skip)]
     index: NodeIndex,
 }

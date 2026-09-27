@@ -129,6 +129,9 @@ fn render(model: &Model, out: &Path, fit: Option<&SolveReport>) -> std::io::Resu
     if let Some(f) = fit {
         report.push_str(&f.text());
     }
+    for e in &set.errors {
+        report.push_str(&format!("sheet problem: {e}\n"));
+    }
     report.push_str(&format!("issues: {}\n", issues.len()));
     for i in &issues {
         report.push_str(&format!("  {i}\n"));

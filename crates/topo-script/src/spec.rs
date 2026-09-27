@@ -22,6 +22,9 @@ pub struct SceneSpec {
     pub measurements: Vec<topo_geom::measure::Measurement>,
     #[serde(default)]
     pub unknowns: Vec<UnknownSpec>,
+    /// The drawing set (sheet tabs, in order); `None` for the standard set.
+    #[serde(default)]
+    pub sheets: Option<Vec<SheetSpec>>,
 }
 
 /// One building: items in its own frame, placed in the world.
@@ -41,6 +44,8 @@ pub struct BuildingSpec {
     /// Named directions in the building frame (e.g. `street`).
     #[serde(default)]
     pub directions: std::collections::BTreeMap<String, [f64; 3]>,
+    #[serde(default)]
+    pub sheets: Option<Vec<SheetSpec>>,
 }
 
 /// Where a building sits: its origin in the world, and the compass bearing
@@ -87,6 +92,7 @@ impl SceneSpec {
             info: std::mem::take(&mut b.info),
             measurements: std::mem::take(&mut b.measurements),
             unknowns: std::mem::take(&mut b.unknowns),
+            sheets: b.sheets.take(),
             buildings: vec![b],
         })
     }
@@ -480,13 +486,34 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
     m.info.date = i.date.clone();
     m.info.design_basis = i.design_basis.clone();
     m.info.notes = i.notes.clone();
-    for bs in &spec.buildings {
+    // Sheets: the site's list if it has one (plus the buildings' own custom
+    // sheets), otherwise the buildings' lists merged.
+    let mut sheets = spec.sheets.clone();
+    for (i, bs) in spec.buildings.iter().enumerate() {
         let mut local = build_building(bs)?;
         if let Some(p) = &bs.placement {
             local.transform(&p.frame());
         }
         m.absorb(local);
+        let own = bs.sheets.clone();
+        sheets = match (&spec.sheets, i) {
+            (Some(_), _) => {
+                let mut s = sheets.unwrap_or_default();
+                s.extend(own.unwrap_or_default().into_iter().filter(|x| !matches!(x, SheetSpec::Standard { .. })));
+                Some(s)
+            }
+            (None, 0) => own,
+            (None, _) => merge_sheets(sheets, own),
+        };
     }
+    for s in sheets.iter().flatten() {
+        if let SheetSpec::Standard { which } = s {
+            if !STANDARD_SHEETS.contains(&which.as_str()) {
+                return Err(format!("unknown standard sheets \"{which}\" (one of {})", STANDARD_SHEETS.join(", ")));
+            }
+        }
+    }
+    m.sheets = sheets;
     Ok(m)
 }
 

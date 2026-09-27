@@ -52,18 +52,32 @@ pub fn strip_types(source: &str, file: &str) -> Result<String, ScriptError> {
     let alloc = Allocator::default();
     let ret = Parser::new(&alloc, source, SourceType::ts()).parse();
     if !ret.diagnostics.is_empty() {
-        let msgs: Vec<String> = ret.diagnostics.iter().map(|e| e.to_string()).collect();
-        return Err(ScriptError::Syntax(format!("{file}: {}", msgs.join("; "))));
+        let msgs: Vec<String> = ret.diagnostics.iter().map(|e| located(source, e)).collect();
+        return Err(ScriptError::Syntax(format!("{file}{}", msgs.join("; "))));
     }
     let mut program = ret.program;
     let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
     let opts = TransformOptions::default();
     let r = Transformer::new(&alloc, Path::new(file), &opts).build_with_scoping(scoping, &mut program);
     if !r.diagnostics.is_empty() {
-        let msgs: Vec<String> = r.diagnostics.iter().map(|e| e.to_string()).collect();
-        return Err(ScriptError::Syntax(format!("{file}: {}", msgs.join("; "))));
+        let msgs: Vec<String> = r.diagnostics.iter().map(|e| located(source, e)).collect();
+        return Err(ScriptError::Syntax(format!("{file}{}", msgs.join("; "))));
     }
     Ok(Codegen::new().build(&program).code)
+}
+
+/// `:line:col: message` for a diagnostic (just `: message` without a span).
+fn located(source: &str, d: &oxc_diagnostics::OxcDiagnostic) -> String {
+    match d.labels.first() {
+        Some(l) => {
+            let off = (l.offset() as usize).min(source.len());
+            let before = &source[..off];
+            let line = before.matches('\n').count() + 1;
+            let col = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
+            format!(":{line}:{col}: {d}")
+        }
+        None => format!(": {d}"),
+    }
 }
 
 /// Lexically normalizes `a/./b/../c` → `a/c` (no filesystem access).

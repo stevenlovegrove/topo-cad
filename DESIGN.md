@@ -151,6 +151,18 @@ touching faces allowed. Generators are tested to produce zero clashes.
 * **Sheets**: border + title block (project, sheet no., scale, basis of design,
   "not for construction" status) with views packed at standard architectural
   scales.
+* **Sheets as code.** The drawing set is part of the model (`Model::sheets`,
+  kept in the JSON IR): an ordered list of generated sets (`cover`, `plans`,
+  `trusses`, `walls`, `analytical`, `schedules`) and script-defined sheets of
+  views — `plan`, `elevation`, `iso`, `detail` (an enlarged region around a
+  feature, clipped to a circle), `analytical`, `schedule`, `notes` — each
+  naming what it draws by group/member path, the side it is seen from by a
+  named direction (default: the drawn group's −y, e.g. a wall's outside), and
+  optionally a standard scale. Drawn groups' dimensions appear where they are
+  true length in the view. Without a list, the standard set is drawn. View
+  problems (unknown target, scale or table) are reported and drawn in place;
+  the rest of the set still builds. In a site, the site's list comes first
+  and buildings' own custom sheets follow.
 * Backends: SVG (sheets) and DXF R12 (full-scale model-space, layered: `FRAMING`,
   `HIDDEN`, `CENTER`, `DIMS`, `TEXT`, `TITLE`).
 
@@ -261,7 +273,10 @@ script stays the source of truth: there is no separate solved state.
 members on the drawings (server-side hit testing against the exact solids),
 see the model's value, type the tape reading, and it is appended as readable
 TypeScript to `model.measured.ts`. File changes trigger a re-fit; measurements
-are drawn on the sheets coloured by fit.
+are drawn on the sheets coloured by fit. The tabs are the model's sheets, plus
+a **Script** tab: an editor for the model file and the local files it imports
+(and its sidecar); saving rebuilds, and a syntax error marks its line. Only
+those files can be written.
 
 ## 9. Roadmap
 

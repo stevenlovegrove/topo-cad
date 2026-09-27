@@ -54,6 +54,31 @@
   #banner .warn { background: #fff4d6; padding: 8px; border-radius: 6px; margin-top: 10px; font-size: 12px; }
   ul#issues { padding-left: 16px; margin: 0; font-size: 12px; }
   .muted { color: var(--muted); }
+  nav button.script { margin-left: 8px; font-family: ui-monospace, monospace; }
+  nav button.script.dirty::after { content: " ●"; color: var(--pick); }
+  #script { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fbfbf8; cursor: auto; }
+  #script[hidden], #hint[hidden] { display: none; }
+  #scriptBar { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  #scriptBar .file { border: 1px solid var(--line); background: var(--bg); padding: 2px 8px; border-radius: 4px; cursor: pointer; font: 12px ui-monospace, monospace; }
+  #scriptBar .file.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  #scriptBar .file.dirty::after { content: " ●"; color: var(--pick); }
+  #scriptStatus { font-size: 12px; color: var(--muted); margin-left: auto; }
+  #scriptStatus.err { color: var(--bad); } #scriptStatus.ok { color: var(--ok); }
+  #editor { flex: 1; position: relative; overflow: hidden; display: flex; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #gutter { margin: 0; padding: 10px 8px 10px 6px; text-align: right; color: #a3a39c; background: #f1f1ec; border-right: 1px solid var(--line); user-select: none; overflow: hidden; min-width: 44px; font: inherit; }
+  #gutter .errline { color: #fff; background: var(--bad); border-radius: 2px; }
+  #code { position: relative; flex: 1; overflow: hidden; }
+  #srchl, #src { position: absolute; inset: 0; margin: 0; padding: 10px 12px; font: inherit; white-space: pre; overflow: auto; tab-size: 2; border: 0; }
+  #srchl { pointer-events: none; color: var(--ink); overflow: hidden; }
+  #src { color: transparent; background: transparent; caret-color: var(--ink); resize: none; outline: none; }
+  #src::selection { background: rgba(31,95,191,.25); color: transparent; }
+  @media (max-width: 900px) {
+    main { flex-direction: column; height: auto; }
+    #viewer { flex: none; height: 70vh; }
+    aside { width: auto; border-left: 0; border-top: 1px solid var(--line); }
+    nav { margin-left: 0; }
+  }
+  .tk-k { color: #8a2be2; } .tk-s { color: #1e7b3a; } .tk-c { color: #8b8b84; font-style: italic; } .tk-n { color: #b35900; } .tk-f { color: #1f5fbf; }
 </style>
 </head>
 <body>
@@ -67,6 +92,15 @@
     <div id="sheet"></div>
     <div id="tip"></div>
     <div id="hint">scroll to zoom · drag to pan · double-click to fit</div>
+    <div id="script" hidden>
+      <div id="scriptBar">
+        <span id="files"></span>
+        <button class="act primary" id="btnSaveSrc" title="Save (⌘S / Ctrl+S)">Save</button>
+        <button class="act" id="btnRevert" title="Discard edits">Revert</button>
+        <span id="scriptStatus"></span>
+      </div>
+      <div id="editor"><pre id="gutter"></pre><div id="code"><pre id="srchl"></pre><textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div></div>
+    </div>
   </div>
   <aside>
     <div id="banner"></div>
@@ -120,7 +154,10 @@ async function poll() {
     const s = await api("/api/state");
     if (!state || s.version !== state.version) {
       state = s;
+      // A model that fails before any sheet exists opens on its script.
+      if (s.error && !(s.sheets || []).length && view === "sheet" && !svg) view = "script";
       renderPanel();
+      if (view === "script") { $("script").hidden = false; await loadSources(false); }
       if (!s.error) await loadSheet();
     }
   } catch (e) { $("status").textContent = "server not reachable"; }
@@ -132,10 +169,16 @@ function renderPanel() {
   $("title").textContent = s.name || "topo-cad";
   const banner = $("banner");
   banner.innerHTML = "";
+  renderTabs();
   if (s.error) {
     banner.innerHTML = `<div class="err">${esc(s.error)}</div>`;
     $("status").textContent = "model error";
+    markErrorLine();
     return;
+  }
+  markErrorLine();
+  if (s.sheet_errors && s.sheet_errors.length) {
+    banner.innerHTML += `<div class="warn"><b>Sheet problems</b><br>${s.sheet_errors.map(esc).join("<br>")}</div>`;
   }
   if (s.sidecar && s.sidecar.exists && !s.sidecar.imported) {
     banner.innerHTML = `<div class="warn">New measurements are saved to <b>${esc(s.sidecar.path)}</b>. Import it in your model to use them:<code>${esc(s.sidecar.hint)}</code></div>`;
@@ -152,16 +195,6 @@ function renderPanel() {
   } else {
     st.textContent = `${s.issues.length} issues · no measurements yet`;
   }
-  const tabs = $("tabs");
-  tabs.innerHTML = "";
-  s.sheets.forEach((sh, i) => {
-    const b = document.createElement("button");
-    b.textContent = sh.number;
-    b.title = sh.title;
-    if (i === sheet) b.className = "on";
-    b.onclick = () => { sheet = i; viewBox = null; renderPanel(); loadSheet(); };
-    tabs.appendChild(b);
-  });
   const mt = $("meas");
   mt.innerHTML = "<tr><th>Measurement</th><th class=num>Tape</th><th class=num>Model</th><th class=num>Diff</th><th></th></tr>";
   (fit ? fit.measurements : []).forEach((r, i) => {
@@ -180,6 +213,150 @@ function renderPanel() {
   });
   $("issues").innerHTML = s.issues.length ? s.issues.map((i) => `<li>${esc(i)}</li>`).join("") : "<li class=muted>none</li>";
 }
+
+// ----- tabs: sheets (from the script's .sheets(...)) and the script itself --
+let view = "sheet";   // "sheet" | "script"
+function renderTabs() {
+  const tabs = $("tabs");
+  tabs.innerHTML = "";
+  (state.sheets || []).forEach((sh, i) => {
+    const b = document.createElement("button");
+    b.textContent = sh.number;
+    b.title = sh.title;
+    if (view === "sheet" && i === sheet) b.className = "on";
+    b.onclick = () => { sheet = i; viewBox = null; showView("sheet"); loadSheet(); };
+    tabs.appendChild(b);
+  });
+  const b = document.createElement("button");
+  b.textContent = "Script";
+  b.title = "The model's TypeScript (edit and save to rebuild)";
+  b.className = "script" + (view === "script" ? " on" : "") + (files.some((f) => f.text !== f.saved) ? " dirty" : "");
+  b.onclick = () => showView("script");
+  tabs.appendChild(b);
+}
+
+function showView(v) {
+  view = v;
+  $("script").hidden = v !== "script";
+  $("hint").hidden = v === "script";
+  if (v === "script") loadSources(false);
+  renderTabs();
+}
+
+// ----- script view -----------------------------------------------------------
+let files = [], current = 0, srcVersion = -1;
+const KEYWORDS = new Set("import export from const let var function return if else for of in new class extends type interface readonly as default true false null undefined this while switch case break continue throw try catch await async typeof void".split(" "));
+
+function highlight(text) {
+  const out = [];
+  const re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|`(?:[^`\\]|\\.)*`?)|\b(\d+(?:\.\d+)?)\b|([A-Za-z_$][\w$]*)(?=\s*\()|([A-Za-z_$][\w$]*)/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    out.push(esc(text.slice(last, m.index)));
+    const [t, c, str, num, fn, word] = m;
+    if (c) out.push(`<span class="tk-c">${esc(c)}</span>`);
+    else if (str) out.push(`<span class="tk-s">${esc(str)}</span>`);
+    else if (num) out.push(`<span class="tk-n">${num}</span>`);
+    else if (fn) out.push(KEYWORDS.has(fn) ? `<span class="tk-k">${fn}</span>` : `<span class="tk-f">${fn}</span>`);
+    else out.push(KEYWORDS.has(word) ? `<span class="tk-k">${word}</span>` : esc(word));
+    last = m.index + t.length;
+  }
+  out.push(esc(text.slice(last)));
+  return out.join("") + "\n";
+}
+
+function renderEditor() {
+  const f = files[current];
+  const src = $("src");
+  if (!f) { src.value = ""; $("srchl").innerHTML = ""; $("gutter").textContent = ""; return; }
+  if (src.value !== f.text) src.value = f.text;
+  paintEditor();
+  $("files").innerHTML = "";
+  files.forEach((g, i) => {
+    const b = document.createElement("button");
+    b.className = "file" + (i === current ? " on" : "") + (g.text !== g.saved ? " dirty" : "");
+    b.textContent = g.name;
+    b.title = g.path;
+    b.onclick = () => { current = i; renderEditor(); };
+    $("files").appendChild(b);
+  });
+}
+
+function paintEditor() {
+  const f = files[current];
+  const text = $("src").value;
+  $("srchl").innerHTML = highlight(text);
+  const n = text.split("\n").length;
+  const bad = errorLine(f);
+  $("gutter").innerHTML = Array.from({ length: n }, (_, i) => (i + 1 === bad ? `<span class="errline">${i + 1}</span>` : String(i + 1))).join("\n") + "\n";
+  syncScroll();
+}
+
+function syncScroll() {
+  const src = $("src");
+  $("srchl").scrollTop = src.scrollTop; $("srchl").scrollLeft = src.scrollLeft;
+  $("gutter").scrollTop = src.scrollTop;
+}
+
+// Line of the current model error in file `f`, if the message names one (`name.ts:12:5`).
+function errorLine(f) {
+  if (!f || !state || !state.error) return 0;
+  const base = f.name.split("/").pop().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = state.error.match(new RegExp(base + ":(\\d+)")) || (current === 0 && state.error.match(/line (\d+)/));
+  return m ? Number(m[1]) : 0;
+}
+function markErrorLine() { if (view === "script" && files.length) paintEditor(); }
+
+async function loadSources(force) {
+  if (!force && srcVersion === state.version && files.length) { renderEditor(); return; }
+  const r = await api("/api/sources");
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  files = r.files.map((f) => {
+    const old = byPath.get(f.path);
+    // Keep unsaved edits; take the disk version otherwise.
+    if (old && old.text !== old.saved && !force) return { ...f, saved: f.text, text: old.text, stale: old.saved !== f.text };
+    return { ...f, saved: f.text };
+  });
+  current = Math.min(current, files.length - 1);
+  srcVersion = state.version;
+  const stale = files.filter((f) => f.stale).map((f) => f.name);
+  if (stale.length) scriptStatus(`${stale.join(", ")} changed on disk; Save overwrites, Revert reloads`, "err");
+  renderEditor();
+}
+
+function scriptStatus(text, cls) { const e = $("scriptStatus"); e.textContent = text; e.className = cls || ""; }
+
+async function saveSource() {
+  const f = files[current];
+  if (!f) return;
+  scriptStatus("saving…");
+  const r = await api("/api/source", { path: f.path, text: f.text });
+  if (r.error) { scriptStatus(r.error, "err"); return; }
+  f.saved = f.text; f.stale = false;
+  scriptStatus(r.model_error ? "saved · model error (see panel)" : "saved · rebuilt", r.model_error ? "err" : "ok");
+  renderEditor(); renderTabs();
+}
+
+$("src").addEventListener("input", () => {
+  const f = files[current];
+  if (!f) return;
+  const wasDirty = f.text !== f.saved;
+  f.text = $("src").value;
+  paintEditor();
+  if (wasDirty !== (f.text !== f.saved)) { renderEditor(); renderTabs(); }
+});
+$("src").addEventListener("scroll", syncScroll);
+$("src").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); saveSource(); return; }
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const t = e.target, a = t.selectionStart;
+    t.setRangeText("  ", a, t.selectionEnd, "end");
+    t.dispatchEvent(new Event("input"));
+  }
+});
+$("btnSaveSrc").onclick = saveSource;
+$("btnRevert").onclick = () => { loadSources(true); renderTabs(); };
 
 // ----- sheet view ----------------------------------------------------------
 async function loadSheet() {
@@ -293,7 +470,7 @@ function svgPoint(evt) {
 
 // Pan / zoom
 let drag = null;
-$("viewer").addEventListener("wheel", (e) => {
+$("sheet").addEventListener("wheel", (e) => {
   if (!svg) return;
   e.preventDefault();
   const p = svgPoint(e);
@@ -302,13 +479,13 @@ $("viewer").addEventListener("wheel", (e) => {
   svg.setAttribute("viewBox", viewBox.join(" "));
   drawOverlays(); drawPicks();
 }, { passive: false });
-$("viewer").addEventListener("mousedown", (e) => { if (svg) drag = { x: e.clientX, y: e.clientY, vb: viewBox.slice(), moved: false }; });
+$("sheet").addEventListener("mousedown", (e) => { if (svg) drag = { x: e.clientX, y: e.clientY, vb: viewBox.slice(), moved: false }; });
 window.addEventListener("mouseup", (e) => {
   const d = drag; drag = null;
   if (d && !d.moved && svg && e.target.closest("#viewer")) onClick(e);
 });
-$("viewer").addEventListener("dblclick", () => { viewBox = fitViews(); svg.setAttribute("viewBox", viewBox.join(" ")); drawOverlays(); drawPicks(); });
-$("viewer").addEventListener("mousemove", (e) => {
+$("sheet").addEventListener("dblclick", () => { viewBox = fitViews(); svg.setAttribute("viewBox", viewBox.join(" ")); drawOverlays(); drawPicks(); });
+$("sheet").addEventListener("mousemove", (e) => {
   if (!svg) return;
   if (drag) {
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -323,7 +500,7 @@ $("viewer").addEventListener("mousemove", (e) => {
   const p = svgPoint(e);
   requestPick({ sheet, x: p.x, y: p.y, radius: 10 * px() }, e);
 });
-$("viewer").addEventListener("mouseleave", () => { hover = null; $("tip").style.display = "none"; drawPicks(); });
+$("sheet").addEventListener("mouseleave", () => { hover = null; $("tip").style.display = "none"; drawPicks(); });
 
 // Hover picking, at most one request in flight.
 function requestPick(req, evt) {

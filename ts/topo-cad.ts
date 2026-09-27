@@ -219,6 +219,10 @@ export class Perimeter {
     const p = this.push(this.start, side);
     return new Perimeter(p.name, p.start, p.z, p.segments, true);
   }
+  /** One of this perimeter's walls as a drawing target, e.g. `elevation(p.wall("Wall A"))`. */
+  wall(name: string): string {
+    return `${this.name}/${name}`;
+  }
   /** A member of one of this perimeter's walls, e.g. `wallMember("Wall A", "cap_plate")`. */
   wallMember(wall: string, name: string): MemberRef {
     return new MemberRef(`${this.name}/${wall}/${name}`);
@@ -540,6 +544,10 @@ export class TrussRoof {
   get name(): string {
     return this.spec.name;
   }
+  /** The `i`-th truss (1-based) as a drawing target, e.g. `elevation(roof.truss(2))`. */
+  truss(i: number): string {
+    return `${this.spec.name}/T${i}`;
+  }
   /** A member of the `i`-th truss (1-based; 1 and the last are the gable ends), by its shape name. */
   trussMember(i: number, name: string): MemberRef {
     return new MemberRef(`${this.spec.name}/T${i}/${name}`);
@@ -825,6 +833,93 @@ export const measured = (name: string, quantity: Quantity, value: Length, o: { t
   ...o,
 });
 
+// ----- drawings: sheets and views as code ----------------------------------
+
+/** What a view draws: a group or member path tail (`"Left wall"`, `"T2"`), an item, or a member. */
+export type Target = string | { readonly name: string } | MemberRef;
+const targetPath = (t: Target): string => (typeof t === "string" ? t : t instanceof MemberRef ? t.path : t.name);
+const targets = (t: Target | readonly Target[] | undefined): string[] =>
+  t === undefined ? [] : Array.isArray(t) ? (t as readonly Target[]).map(targetPath) : [targetPath(t as Target)];
+
+export interface ViewOptions {
+  readonly title?: string;
+  readonly subtitle?: string;
+  /** A standard scale: `'1/4"'`, `'1-1/2"'`, `"1:50"`; default the largest that fits. */
+  readonly scale?: string;
+  /** Direction toward the viewer: a name (`"south"`, a wall's `"outside"`, …) or vector. */
+  readonly from?: string | Point3;
+  /** Direction drawn up the page. */
+  readonly up?: string | Point3;
+  /** Frame (group or member path) that `from`/`up` names and vectors are in; default the drawn group. */
+  readonly in?: string;
+  /** Also drawn, with hidden edges dashed (e.g. walls below a roof plan). */
+  readonly dashed?: Target | readonly Target[];
+  /** Piece-mark tags (default true). */
+  readonly tags?: boolean;
+  /** The drawn groups' dimensions and notes that are true length in this view (default true). */
+  readonly dims?: boolean;
+}
+
+export type ViewKind = "plan" | "elevation" | "iso" | "detail" | "analytical" | "schedule" | "notes";
+export interface ViewSpec {
+  readonly kind: ViewKind;
+  readonly [k: string]: unknown;
+}
+export type SheetSpec =
+  | { readonly kind: "standard"; readonly which: StandardSheets }
+  | { readonly kind: "sheet"; readonly number: string; readonly title: string; readonly views: readonly ViewSpec[] };
+/** The generated sheet sets, in their default order. */
+export type StandardSheets = "cover" | "plans" | "trusses" | "walls" | "analytical" | "schedules";
+const STANDARD: readonly StandardSheets[] = ["cover", "plans", "trusses", "walls", "analytical", "schedules"];
+
+function projectedView(kind: ViewKind, of: Target | readonly Target[] | undefined, o: ViewOptions & { radius?: Length; at?: Feature }): ViewSpec {
+  const dir = (d: string | Point3 | undefined) => (d === undefined ? undefined : dirRef(d, o.in === undefined ? {} : { in: o.in }));
+  return {
+    kind,
+    title: o.title,
+    subtitle: o.subtitle,
+    of: targets(of),
+    dashed: targets(o.dashed),
+    from: dir(o.from),
+    up: dir(o.up),
+    scale: o.scale,
+    tags: o.tags ?? true,
+    dims: o.dims ?? true,
+    radius: o.radius,
+    at: o.at,
+  };
+}
+
+/** A plan (looking down, building +y up the page) of groups or members; all if omitted. */
+export const plan = (of?: Target | readonly Target[], o: ViewOptions = {}): ViewSpec => projectedView("plan", of, o);
+/** An elevation, looking from `from` (default: the group's −y, e.g. a wall's outside or a truss's face). */
+export const elevation = (of?: Target | readonly Target[], o: ViewOptions = {}): ViewSpec => projectedView("elevation", of, o);
+/** An axonometric view (default from the building's south-west, above; untagged unless `tags: true`). */
+export const iso = (of?: Target | readonly Target[], o: ViewOptions = {}): ViewSpec => projectedView("iso", of, { tags: false, ...o });
+/**
+ * An enlarged view around a feature, clipped to a circle of `radius`
+ * (default 12"): `detail(meet(bc.facing("up"), top.facing("up")), roof.truss(2), { scale: '1-1/2"' })`.
+ */
+export const detail = (at: Feature | PlaneRef, of?: Target | readonly Target[], o: ViewOptions & { radius?: Length } = {}): ViewSpec =>
+  projectedView("detail", of, { ...o, at: asFeature(at) });
+/** The centre-line model with junction symbols. */
+export const analytical = (of?: Target | readonly Target[], o: ViewOptions = {}): ViewSpec => projectedView("analytical", of, o);
+/** A table: `"members"`, `"connections"`, `"junctions"`, or a tool table such as `"Field measurements"`. */
+export const schedule = (table: string, o: { title?: string } = {}): ViewSpec => ({ kind: "schedule", table, title: o.title });
+/** A block of notes. */
+export const notes = (title: string, ...lines: string[]): ViewSpec => ({ kind: "notes", title, lines });
+
+/** A sheet (a tab in `topo serve`); views are packed in order, continuing on `S-502`… if needed. */
+export const sheet = (number: string, title: string, ...views: (ViewSpec | readonly ViewSpec[])[]): SheetSpec => ({
+  kind: "sheet",
+  number,
+  title,
+  views: views.flat() as ViewSpec[],
+});
+/** Generated sheet sets, by name (all six, in the default order, if none named). */
+export const standardSheets = (...which: StandardSheets[]): SheetSpec[] =>
+  (which.length ? which : STANDARD).map((w) => ({ kind: "standard", which: w }));
+
 // ----- building ------------------------------------------------------------
 
 export interface Info {
@@ -857,14 +952,25 @@ export class Building {
     readonly measurements: readonly Measurement[],
     readonly placement_: BuildingPlacement | undefined,
     readonly directions_: Readonly<Record<string, Point3>>,
+    readonly sheets_: readonly SheetSpec[] | undefined,
   ) {}
 
   static named(name: string): Building {
-    return new Building(name, {}, [], [], undefined, {});
+    return new Building(name, {}, [], [], undefined, {}, undefined);
   }
-  private with(o: Partial<{ info_: Partial<Info>; items: readonly Item[]; measurements: readonly Measurement[]; placement_: BuildingPlacement; directions_: Record<string, Point3> }>): Building {
+  private with(
+    o: Partial<{ info_: Partial<Info>; items: readonly Item[]; measurements: readonly Measurement[]; placement_: BuildingPlacement; directions_: Record<string, Point3>; sheets_: readonly SheetSpec[] }>,
+  ): Building {
     const v = { ...this, ...o };
-    return new Building(this.name, v.info_, v.items, v.measurements, v.placement_, v.directions_);
+    return new Building(this.name, v.info_, v.items, v.measurements, v.placement_, v.directions_, v.sheets_);
+  }
+  /**
+   * The drawing set, in tab order. Without this, the standard sets are drawn;
+   * with it, only what is listed: `.sheets(standardSheets("cover"), sheet("S-501", "Details", …), standardSheets("schedules"))`.
+   * Repeated calls append.
+   */
+  sheets(...s: (SheetSpec | readonly SheetSpec[])[]): Building {
+    return this.with({ sheets_: [...(this.sheets_ ?? []), ...(s.flat() as SheetSpec[])] });
   }
   info(i: Partial<Info>): Building {
     return this.with({ info_: { ...this.info_, ...i } });
@@ -895,6 +1001,7 @@ export class Building {
       unknowns: unknownRegistry,
       placement: p ? { origin: p.origin ?? [0, 0, 0], x_bearing: p.xBearing ?? 90 } : undefined,
       directions: this.directions_,
+      sheets: this.sheets_,
     };
   }
 }
@@ -906,21 +1013,26 @@ export class Site {
     readonly info_: Partial<Info>,
     readonly buildings: readonly Building[],
     readonly measurements: readonly Measurement[],
+    readonly sheets_: readonly SheetSpec[] | undefined = undefined,
   ) {}
   static named(name: string): Site {
     return new Site(name, {}, [], []);
   }
   info(i: Partial<Info>): Site {
-    return new Site(this.name, { ...this.info_, ...i }, this.buildings, this.measurements);
+    return new Site(this.name, { ...this.info_, ...i }, this.buildings, this.measurements, this.sheets_);
   }
   add(...b: Building[]): Site {
-    return new Site(this.name, this.info_, [...this.buildings, ...b], this.measurements);
+    return new Site(this.name, this.info_, [...this.buildings, ...b], this.measurements, this.sheets_);
   }
   /** Measurements between buildings (each building's own are included too). */
   measure(...ms: (Measurement | readonly Measurement[])[]): Site {
-    return new Site(this.name, this.info_, this.buildings, [...this.measurements, ...ms.flat()]);
+    return new Site(this.name, this.info_, this.buildings, [...this.measurements, ...ms.flat()], this.sheets_);
+  }
+  /** The site's drawing set (as `Building.sheets`); the buildings' own custom sheets follow. */
+  sheets(...s: (SheetSpec | readonly SheetSpec[])[]): Site {
+    return new Site(this.name, this.info_, this.buildings, this.measurements, [...(this.sheets_ ?? []), ...(s.flat() as SheetSpec[])]);
   }
   toJSON() {
-    return { type: "site", name: this.name, info: this.info_, buildings: this.buildings, measurements: this.measurements, unknowns: unknownRegistry };
+    return { type: "site", name: this.name, info: this.info_, buildings: this.buildings, measurements: this.measurements, unknowns: unknownRegistry, sheets: this.sheets_ };
   }
 }

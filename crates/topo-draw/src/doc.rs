@@ -143,6 +143,51 @@ impl Drawing {
         b
     }
 
+    /// The parts inside the circle `(c, r)`: lines and outlines are cut at
+    /// the circle; fills, circles and text are kept if their anchor is inside.
+    pub fn clipped_to_circle(&self, c: Vec2, r: f64) -> Drawing {
+        let inside = |p: Vec2| p.distance(c) <= r;
+        let seg = |a: Vec2, b: Vec2| -> Option<(Vec2, Vec2)> {
+            // Solve |a + t(b−a) − c| = r for the chord within t ∈ [0, 1].
+            let d = b - a;
+            let f = a - c;
+            let (qa, qb, qc) = (d.dot(d), 2.0 * f.dot(d), f.dot(f) - r * r);
+            if qa < 1e-18 {
+                return inside(a).then_some((a, b));
+            }
+            let disc = qb * qb - 4.0 * qa * qc;
+            if disc <= 0.0 {
+                return None;
+            }
+            let s = disc.sqrt();
+            let (t0, t1) = (((-qb - s) / (2.0 * qa)).max(0.0), ((-qb + s) / (2.0 * qa)).min(1.0));
+            (t1 > t0).then(|| (a + d * t0, a + d * t1))
+        };
+        let mut out = Drawing::default();
+        for p in &self.prims {
+            match p {
+                Prim::Line { a, b, layer } => {
+                    if let Some((a, b)) = seg(*a, *b) {
+                        out.line(a, b, *layer);
+                    }
+                }
+                Prim::Poly { pts, closed, fill: false, layer } => {
+                    let n = pts.len();
+                    let edges = if *closed { n } else { n.saturating_sub(1) };
+                    for i in 0..edges {
+                        if let Some((a, b)) = seg(pts[i], pts[(i + 1) % n]) {
+                            out.line(a, b, *layer);
+                        }
+                    }
+                }
+                Prim::Poly { pts, .. } if pts.iter().all(|q| inside(*q)) => out.prims.push(p.clone()),
+                Prim::Circle { c: cc, .. } | Prim::Text { at: cc, .. } if inside(*cc) => out.prims.push(p.clone()),
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// Applies `p ↦ p·scale + offset` to every primitive (text heights scale too).
     pub fn transformed(&self, scale: f64, offset: Vec2) -> Drawing {
         let f = |p: Vec2| p * scale + offset;

@@ -29,6 +29,11 @@ Field measurements (`horizontal`, `vertical`, `along(a, b, "north")`,
 `lengthOf`, `riseOver`) fit `unknown(...)` parameters; see
 [examples/garage-truss.ts](examples/garage-truss.ts).
 
+The drawing set is code too: `.sheets(standardSheets("cover"), sheet("S-102",
+"Typical truss", elevation(roof.truss(2)), detail(heel, [roof.truss(2), walls],
+{ scale: '1-1/2"' })), standardSheets("walls"))` — the sheets are the tabs in
+`topo serve`, which also has a Script tab for editing the model in place.
+
 `out/` gets: sheet SVGs (`G-001`, `S-101`, `S-201`, …) + `index.html`, DXF per
 sheet (paper space) and per view (full-size model space), `model.json` (the IR),
 `model.obj`, `analysis-model.json`, and `report.txt` (junction census + issues).

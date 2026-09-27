@@ -63,6 +63,62 @@ fn stamp(dir: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
     out
 }
 
+/// The model file and the local files it imports (recursively, `./` and
+/// `../` specifiers), plus its measurements sidecar if present: the files
+/// the Script view shows and may write.
+fn local_sources(file: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = vec![];
+    let mut todo = vec![file.to_path_buf()];
+    while let Some(f) = todo.pop() {
+        let Ok(f) = f.canonicalize() else { continue };
+        if out.contains(&f) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        out.push(f.clone());
+        for spec in import_specifiers(&text) {
+            if spec.starts_with("./") || spec.starts_with("../") {
+                let name = if spec.ends_with(".ts") { spec } else { format!("{spec}.ts") };
+                todo.push(f.parent().unwrap_or(Path::new(".")).join(name));
+            }
+        }
+    }
+    let sidecar = measfile::sidecar_path(file);
+    if let Ok(sc) = sidecar.canonicalize() {
+        if !out.contains(&sc) {
+            out.push(sc);
+        }
+    }
+    out
+}
+
+/// Module specifiers in `… from "x"` and `import "x"` (a plain scan; a
+/// specifier-like string elsewhere at worst adds a file to the list).
+fn import_specifiers(text: &str) -> Vec<String> {
+    let mut out = vec![];
+    for kw in ["from", "import"] {
+        let mut rest = text;
+        while let Some(i) = rest.find(kw) {
+            let before_ok = i == 0 || !rest.as_bytes()[i - 1].is_ascii_alphanumeric();
+            let after = &rest[i + kw.len()..];
+            if before_ok && after.starts_with(char::is_whitespace) {
+                if let Some(q) = quoted(after) {
+                    out.push(q);
+                }
+            }
+            rest = after;
+        }
+    }
+    out
+}
+
+fn quoted(s: &str) -> Option<String> {
+    let s = s.trim_start();
+    let q = s.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let end = s[1..].find(q)?;
+    Some(s[1..1 + end].to_string())
+}
+
 fn build(file: &Path) -> Result<Built, String> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("reading {}: {e}", file.display()))?;
     let (model, fit) = topo_script::run_solved(&text, &file.to_string_lossy()).map_err(|e| e.to_string())?;
@@ -119,6 +175,7 @@ impl App {
                     "names": f.measurements.iter().map(|m| &m.name).collect::<Vec<_>>(),
                 })),
                 "issues": b.issues,
+                "sheet_errors": b.set.errors,
                 "sidecar": sidecar_info,
             }),
         }
@@ -144,6 +201,12 @@ struct MeasureReq {
     quantity: Quantity,
     value: String,
     note: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SourceReq {
+    path: String,
+    text: String,
 }
 
 #[derive(Deserialize)]
@@ -199,6 +262,34 @@ fn handle(app: &mut App, mut req: Request) {
                 })
                 .collect();
             json_reply(req, serde_json::to_value(overlay(&b.model, &b.geom, sheet, &items)).unwrap())
+        }
+        (Method::Get, "/api/sources") => {
+            let base = app.file.canonicalize().ok().and_then(|f| f.parent().map(Path::to_path_buf)).unwrap_or_default();
+            let files: Vec<Value> = local_sources(&app.file)
+                .iter()
+                .map(|p| {
+                    let name = p.strip_prefix(&base).map(|r| r.display().to_string()).unwrap_or_else(|_| p.display().to_string());
+                    json!({ "path": p.display().to_string(), "name": name, "text": std::fs::read_to_string(p).unwrap_or_default() })
+                })
+                .collect();
+            json_reply(req, json!({ "files": files }))
+        }
+        (Method::Post, "/api/source") => {
+            let text = body(&mut req);
+            let Ok(p) = serde_json::from_str::<SourceReq>(&text) else { return err(req, "bad request".into()) };
+            // Only the model's own files may be written.
+            let target = PathBuf::from(&p.path);
+            if !local_sources(&app.file).contains(&target) {
+                return err(req, format!("{} is not one of this model's files", p.path));
+            }
+            match std::fs::write(&target, p.text) {
+                Ok(()) => {
+                    app.refresh();
+                    let error = app.built.as_ref().err().cloned();
+                    json_reply(req, json!({ "saved": p.path, "version": app.version, "model_error": error }))
+                }
+                Err(e) => err(req, e.to_string()),
+            }
         }
         (Method::Post, "/api/pick") => {
             let text = body(&mut req);
@@ -264,4 +355,15 @@ pub fn serve(file: &Path, port: u16) -> Result<(), String> {
         handle(&mut app, req);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_import_specifiers() {
+        let src = "import {\n  Building, ft,\n} from \"topo-cad\";\nimport { m } from './x.measured';\nimport \"./side\";\nconst transform = 1; // not an import\nexport { y } from \"../lib/y.ts\";";
+        assert_eq!(import_specifiers(src), vec!["topo-cad", "./x.measured", "../lib/y.ts", "./side"]);
+    }
 }
