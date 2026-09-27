@@ -91,6 +91,8 @@ export interface KingCountyParcel {
   /** Wind exposure for the site (B suburban/wooded, C open); site specific. */
   readonly exposure: "B" | "C" | "D";
   readonly exposureSource?: string;
+  /** S_DS / S_D1 for the parcel (e.g. from the USGS design-maps service). */
+  readonly seismicValues?: { readonly sds: number; readonly sd1?: number; readonly source: string };
 }
 
 /** Site hazards for a parcel in unincorporated King County. */
@@ -104,7 +106,10 @@ export function kingCounty(p: KingCountyParcel): SiteHazards {
     groundSnow: { value: pg, source: `${RULE}: P_g = C_g·h = ${cg} × ${p.elevationFt} ft = ${pg.toFixed(1)} psf (C_g: ${cgSource})` },
     windSpeed: { value: 110, source: `${KCC} (ultimate design wind speed)` },
     exposure: { value: p.exposure, source: p.exposureSource ?? "site specific (IRC R301.2.1.4); King County registered plans assume C" },
-    seismic: { value: { sdc: p.seismicDesignCategory }, source: `${KCC}, footnote 2 (S_DS, S_D1: look up the parcel with the USGS design-maps service)` },
+    seismic: {
+      value: { sdc: p.seismicDesignCategory, sds: p.seismicValues?.sds, sd1: p.seismicValues?.sd1 },
+      source: `SDC: ${KCC}, footnote 2; ` + (p.seismicValues ? `S_DS/S_D1: ${p.seismicValues.source}` : "S_DS, S_D1: look up the parcel with the USGS design-maps service"),
+    },
     frostDepth: { value: frostDepth(p.elevationFt), source: `${KCC}, footnote 3` },
     notes: [
       "Weathering: moderate. Termite: slight to moderate. Decay: slight to moderate. Winter design temperature 25 °F. Ice shield: not required. Air freezing index 100–250. Mean annual temperature 50 °F. (KCC §16.05.040)",
