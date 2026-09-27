@@ -119,6 +119,18 @@
    "description": "Synthetic roof underlayment, typical (estimate; check the product sheet)",
    "psf": 0.05,
    "verified": false
+  },
+  {
+   "key": "polystick mts",
+   "description": "Polyglass Polystick MTS self-adhered HT underlayment: 70 lb per 200 sq ft coverage (Polyglass PDS, \u00a92011)",
+   "psf": 0.35,
+   "verified": true
+  },
+  {
+   "key": "tpo 60 mil",
+   "description": "TPO membrane, 60 mil: 0.31 psf (Duro-Last Duro-TECH TPO 60-mil PDS, 2024-10-14)",
+   "psf": 0.31,
+   "verified": true
   }
  ]
 }
