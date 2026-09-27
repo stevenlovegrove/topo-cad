@@ -58,6 +58,49 @@ export function garageTruss(p: TrussParams): TrussShape {
 
 
 /**
+ * The variant over the north section, where the trusses bear on an inner
+ * wall `bearingAt` from the left heel: a vertical over that wall (Bw–Tw) and
+ * a diagonal from its foot up to T1' replace the right vertical (T1'–B3).
+ */
+export function garageTrussInnerBearing(p: TrussParams, bearingAt: number): TrussShape {
+  const { span: l, pitch: k } = p;
+  const top = (s: number) => k * Math.min(s, l - s);
+  const v = p.rightVertical;
+  return TrussShape.custom({
+    name: "Existing (Pratt variant, inner bearing)",
+    span: l,
+    pitch: k,
+    points: {
+      F: [-p.flat, 0],
+      H0: [0, 0],
+      H1: [l, 0],
+      P: [l / 2, top(l / 2)],
+      C: [l / 2, 0],
+      T1: [v, top(v)],
+      "T1'": [l - v, top(v)],
+      Bw: [bearingAt, 0],
+      Tw: [bearingAt, top(bearingAt)],
+      X1: [l + p.tail, -p.tail * k],
+    },
+    topChords: [
+      ["H0", "T1", "P"],
+      ["X1", "H1", "Tw", "T1'", "P"],
+    ],
+    bottomChords: [["F", "H0", "C", "Bw", "H1"]],
+    webs: [
+      ["P", "C"], // centre vertical
+      ["T1", "C"], // left diagonal
+      ["T1'", "C"], // right diagonal
+      ["Tw", "Bw"], // vertical over the inner bearing wall
+      ["T1'", "Bw"], // diagonal from its foot
+    ],
+  })
+    .sized("bottom_chord", p.bottomChord)
+    .sized("top_chord", p.topChord)
+    .sized("web", p.topChord);
+}
+
+/**
  * Fitted to the tape readings in garage-truss.ts (7 measurements, exactly
  * determined; 2026-09-26): pitch 4.67:12, heel-to-heel 24'-10 3/16".
  */

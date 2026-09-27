@@ -1,0 +1,89 @@
+{
+ "source": {
+  "publication": "NDS Supplement",
+  "edition": "2018",
+  "table": "Table 4D (timbers 5\" x 5\" and larger; G: Table 12.3.3A)",
+  "url": "https://www.fp-supply.com/cmss_files/attachmentlibrary/AWC-NDS2018-Supplement-ViewOnly-171027.pdf",
+  "note": "Douglas Fir-Larch, WCLIB rules. Beams & Stringers (B&S): width more than 2\" greater than thickness; Posts & Timbers (P&T): otherwise. C_F = (12/d)^(1/9) on F_b for d > 12\"."
+ },
+ "rows": [
+  {
+   "species": "DFL",
+   "grade": "B&S Select Structural",
+   "fb": 1600,
+   "ft": 950,
+   "fv": 170,
+   "fc_perp": 625,
+   "fc": 1100,
+   "e": 1600000,
+   "e_min": 580000,
+   "g": 0.5,
+   "verified": true
+  },
+  {
+   "species": "DFL",
+   "grade": "B&S No.1",
+   "fb": 1350,
+   "ft": 675,
+   "fv": 170,
+   "fc_perp": 625,
+   "fc": 925,
+   "e": 1600000,
+   "e_min": 580000,
+   "g": 0.5,
+   "verified": true
+  },
+  {
+   "species": "DFL",
+   "grade": "B&S No.2",
+   "fb": 875,
+   "ft": 425,
+   "fv": 170,
+   "fc_perp": 625,
+   "fc": 600,
+   "e": 1300000,
+   "e_min": 470000,
+   "g": 0.5,
+   "verified": true
+  },
+  {
+   "species": "DFL",
+   "grade": "P&T Select Structural",
+   "fb": 1500,
+   "ft": 1000,
+   "fv": 170,
+   "fc_perp": 625,
+   "fc": 1150,
+   "e": 1600000,
+   "e_min": 580000,
+   "g": 0.5,
+   "verified": true
+  },
+  {
+   "species": "DFL",
+   "grade": "P&T No.1",
+   "fb": 1200,
+   "ft": 825,
+   "fv": 170,
+   "fc_perp": 625,
+   "fc": 1000,
+   "e": 1600000,
+   "e_min": 580000,
+   "g": 0.5,
+   "verified": true
+  },
+  {
+   "species": "DFL",
+   "grade": "P&T No.2",
+   "fb": 750,
+   "ft": 475,
+   "fv": 170,
+   "fc_perp": 625,
+   "fc": 700,
+   "e": 1300000,
+   "e_min": 470000,
+   "g": 0.5,
+   "verified": true
+  }
+ ]
+}

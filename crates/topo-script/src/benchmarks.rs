@@ -294,3 +294,31 @@ const roof = TrussRoof"#)
     let resting: usize = td.info.iter().filter(|i| i.supports.iter().any(|s| s.by == Some(beam))).count();
     assert!(resting >= 7, "{resting} truss chords bear on the beam");
 }
+
+/// Some trusses of a roof can have another shape (`withShape`), and an
+/// assembly can bond two members face to face (a cap on a header).
+#[test]
+fn truss_shape_overrides_and_bonds() {
+    let dir = format!("{}/../../examples/benchmarks", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(format!("{dir}/05-roof-takedown.ts")).unwrap()
+        .replace("import { Building,", "import { Assembly, TrussShape, Building,")
+        .replace(".bearingOn(walls)", ".withShape([2, 3], TrussShape.kingPost({ span: width, pitch: 4 / 12, overhang: inch(12) })).bearingOn(walls)")
+        .replace(".add(walls, roof)", r#".add(walls, roof, Assembly.named("Beam")
+  .point("a", [0, -2, 0]).point("b", [0, -2, 3]).point("c", [4, -2, 0]).point("d", [4, -2, 3])
+  .point("e", [0, -2, 3.2]).point("f", [4, -2, 3.2])
+  .member("post", ["a", "b"], { size: [4, 4], grade: DFL.No2 })
+  .member("post", ["c", "d"], { size: [4, 4], grade: DFL.No2 })
+  .member("beam", ["b", "d"], { size: [6, 8], grade: DFL.BeamsStringersNo1, anchor: [0, -0.5], priority: 10 })
+  .member("cap", ["e", "f"], { size: [2, 6], grade: DFL.No2, depth: [0, 1, 0], anchor: [0, -0.5] })
+  .bonded("cap", "beam")
+  .supportedAt("a", "c"))"#);
+    let m = run(&src, &format!("{dir}/override.ts")).unwrap_or_else(|e| panic!("{e}"));
+    let webs = |t: &str| m.members.iter().filter(|x| x.role == "web" && m.member_path(x.id).contains(&format!("/{t}/"))).count();
+    assert_ne!(webs("T2"), webs("T1"), "T2 is a king post truss");
+    assert_eq!(webs("T2"), webs("T3"));
+    assert_eq!(webs("T4"), webs("T1"));
+    let beam = m.find_member("Beam/beam#1").unwrap();
+    let cap = m.find_member("Beam/cap#1").unwrap();
+    assert!(m.bonds.iter().any(|b| (b.a, b.b) == (cap, beam)), "cap bonded to beam");
+    assert_eq!(m.material(m.member(beam).material).design_key.as_deref(), Some("NDS:DFL:B&S No.1"));
+}

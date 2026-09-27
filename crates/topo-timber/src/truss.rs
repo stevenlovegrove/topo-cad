@@ -567,6 +567,8 @@ pub struct TrussRoof {
     pub chord: (u32, u32),
     pub web: (u32, u32),
     pub material: MaterialId,
+    /// Shapes for particular trusses (1-based numbers) instead of `shape`.
+    pub overrides: Vec<(Vec<usize>, TrussShape)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -590,7 +592,7 @@ impl TrussRoof {
     pub fn new(name: &str, origin: Vec3, span_dir: Vec3, shape: TrussShape, length: f64, spacing: f64, material: MaterialId) -> TrussRoof {
         let span_dir = span_dir.normalized();
         let run_dir = v3(span_dir.y, -span_dir.x, 0.0);
-        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material }
+        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material, overrides: vec![] }
     }
 
     pub fn build(&self, m: &mut Model) -> RoofParts {
@@ -610,7 +612,8 @@ impl TrussRoof {
         stations.push((self.length, Some(-run)));
         let mut parts = RoofParts { group: g, trusses: vec![] };
         for (i, (r, face)) in stations.into_iter().enumerate() {
-            let mut t = Truss::new(&format!("T{}", i + 1), self.origin + run * r, self.span_dir, self.shape.clone(), self.material);
+            let shape = self.overrides.iter().find(|(ns, _)| ns.contains(&(i + 1))).map(|(_, s)| s).unwrap_or(&self.shape);
+            let mut t = Truss::new(&format!("T{}", i + 1), self.origin + run * r, self.span_dir, shape.clone(), self.material);
             t.chord = self.chord;
             t.web = self.web;
             t.face = face;

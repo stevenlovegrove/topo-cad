@@ -87,8 +87,27 @@ impl Verified for LumberValues {
 
 table!(nds_lumber, LumberValues, "nds-lumber.json");
 
+table!(nds_timbers, LumberValues, "nds-timbers.json");
+
+/// Reference design values for a species/grade: dimension lumber (Table 4A)
+/// or timbers (Table 4D, grades `B&S …` / `P&T …`).
 pub fn lumber(species: &str, grade: &str) -> Option<&'static LumberValues> {
-    nds_lumber().rows.iter().find(|r| r.species == species && r.grade == grade)
+    lumber_with_source(species, grade).map(|(r, _)| r)
+}
+
+/// As [`lumber`], with the table it comes from.
+pub fn lumber_with_source(species: &str, grade: &str) -> Option<(&'static LumberValues, &'static Source)> {
+    for t in [nds_lumber(), nds_timbers()] {
+        if let Some(r) = t.rows.iter().find(|r| r.species == species && r.grade == grade) {
+            return Some((r, &t.source));
+        }
+    }
+    None
+}
+
+/// Whether a grade is a timber grade (Table 4D).
+pub fn is_timber_grade(grade: &str) -> bool {
+    grade.starts_with("B&S") || grade.starts_with("P&T")
 }
 
 /// Size factors C_F by nominal width, for a thickness class.
@@ -262,12 +281,13 @@ pub fn table_json(name: &str) -> Option<String> {
         "nail-z" => serde_json::to_string(nail_z()),
         "material-weights" => serde_json::to_string(material_weights()),
         "nds-flat-use" => serde_json::to_string(nds_flat_use()),
+        "nds-timbers" => serde_json::to_string(nds_timbers()),
         _ => return None,
     };
     v.ok()
 }
 
-pub const TABLES: [&str; 7] = ["nds-lumber", "nds-size-factors", "nds-load-duration", "nails", "nail-z", "material-weights", "nds-flat-use"];
+pub const TABLES: [&str; 8] = ["nds-lumber", "nds-size-factors", "nds-load-duration", "nails", "nail-z", "material-weights", "nds-flat-use", "nds-timbers"];
 
 #[cfg(test)]
 mod tests {
@@ -288,5 +308,7 @@ mod tests {
         assert!(nail("common", 16).is_some());
         assert_eq!(flat_use(2, 6).unwrap().cfu, 1.15);
         assert_eq!(flat_use(2, 12).unwrap().cfu, 1.2);
+        assert_eq!(lumber("DFL", "B&S No.2").unwrap().fb, 875.0);
+        assert!(lumber_with_source("DFL", "B&S No.1").unwrap().1.table.contains("4D"));
     }
 }

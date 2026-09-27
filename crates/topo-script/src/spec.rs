@@ -202,6 +202,9 @@ pub struct AssemblySpec {
     pub supports: Vec<String>,
     #[serde(default)]
     pub loads: Vec<AssemblyLoadSpec>,
+    /// Pairs of members fastened face to face (`role` or `role#i`).
+    #[serde(default)]
+    pub bonds: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -303,6 +306,15 @@ pub struct TrussRoofSpec {
     pub height: Option<f64>,
     pub bears_on: Vec<String>,
     pub loads: Vec<AreaLoadSpec>,
+    /// Other shapes for particular trusses (1-based numbers).
+    #[serde(default)]
+    pub overrides: Vec<ShapeOverrideSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ShapeOverrideSpec {
+    pub trusses: Vec<usize>,
+    pub shape: TrussShape,
 }
 
 struct Builder {
@@ -432,6 +444,10 @@ impl Builder {
         let mut roof = TrussRoof::new(&r.name, v3(r.origin.0, r.origin.1, h), span, r.shape.clone(), r.length, r.spacing, mat);
         roof.chord = r.chord;
         roof.web = r.web;
+        for o in &r.overrides {
+            o.shape.validate()?;
+            roof.overrides.push((o.trusses.clone(), o.shape.clone()));
+        }
         r.shape.validate()?;
         let roof = roof
         .build(&mut self.m);
@@ -530,6 +546,19 @@ impl Builder {
             ids.push(self.m.add_member(&path, &spec));
         }
         self.assemblies.insert(a.name.clone(), ids.clone());
+        // Face-to-face bonds (a cap nailed on a header, plies of a post).
+        let find = |sel: &str| -> Result<MemberId, String> {
+            let (role, index) = match sel.split_once('#') {
+                Some((r, i)) => (r, i.parse::<usize>().map_err(|_| format!("assembly {}: bad member {sel}", a.name))?),
+                None => (sel, 1),
+            };
+            ids.iter().copied().enumerate().filter(|(k, _)| a.members[*k].role == role).map(|(_, id)| id).nth(index - 1).ok_or(format!("assembly {}: no member {sel}", a.name))
+        };
+        for (x, y) in &a.bonds {
+            let (mx, my) = (find(x)?, find(y)?);
+            let c = self.m.add_connection(fx::double_top_plate());
+            self.m.bond(mx, my, c);
+        }
         let conn = match &a.joints {
             JointsSpec::Kind(k) => match k.as_str() {
                 "nailed" => Some(self.m.add_connection(fx::plate_corner())),

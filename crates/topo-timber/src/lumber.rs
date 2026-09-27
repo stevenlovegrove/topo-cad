@@ -24,11 +24,23 @@ pub fn dressed_in(nominal: u32) -> f64 {
     }
 }
 
-/// Sawn lumber section, e.g. `sawn(2, 10)` → 1½" × 9¼" named `2x10`.
+/// Dressed size (in) of a nominal thickness × width: dimension lumber per
+/// `dressed_in`; timbers (5" and thicker) are ½" under nominal each way.
+pub fn dressed_pair(thick: u32, width: u32) -> (f64, f64) {
+    if thick.min(width) >= 5 {
+        (thick as f64 - 0.5, width as f64 - 0.5)
+    } else {
+        (dressed_in(thick), dressed_in(width))
+    }
+}
+
+/// Sawn lumber section, e.g. `sawn(2, 10)` → 1½" × 9¼" named `2x10`;
+/// `sawn(6, 10)` → 5½" × 9½" (a timber).
 /// Thickness (first) is along u, width (second) along v (depth).
 pub fn sawn(thick: u32, width: u32) -> Section {
     let name = format!("{thick}x{width}");
-    Section::rect(&name, inch(dressed_in(thick)), inch(dressed_in(width)))
+    let (t, w) = dressed_pair(thick, width);
+    Section::rect(&name, inch(t), inch(w))
         .with_tag("nominal", &name)
         .with_tag("family", "sawn")
 }
@@ -95,6 +107,9 @@ mod tests {
         assert!((s.props.depth - inch(9.25)).abs() < 1e-12);
         // 2x10x12' = 20 bf
         assert!((board_feet(&s, inch(144.0)).unwrap() - 20.0).abs() < 1e-9);
+        // Timbers dress ½" under nominal each way.
+        let t = sawn(6, 10);
+        assert!((t.props.width - inch(5.5)).abs() < 1e-12 && (t.props.depth - inch(9.5)).abs() < 1e-12);
         let h = built_up(2, 2, 10, 0.5);
         assert!((h.props.width - inch(3.5)).abs() < 1e-12);
     }

@@ -161,7 +161,16 @@ export const DFL = {
   SelectStructural: grade("DFL", "Select Structural"),
   No1: grade("DFL", "No.1"),
   No2: grade("DFL", "No.2"),
+  No3: grade("DFL", "No.3"),
   Stud: grade("DFL", "Stud"),
+  /** Timbers (5" and thicker, NDS Table 4D): beams & stringers (width > thickness + 2"). */
+  BeamsStringersSelect: grade("DFL", "B&S Select Structural"),
+  BeamsStringersNo1: grade("DFL", "B&S No.1"),
+  BeamsStringersNo2: grade("DFL", "B&S No.2"),
+  /** Timbers: posts & timbers (width ≤ thickness + 2"). */
+  PostsTimbersSelect: grade("DFL", "P&T Select Structural"),
+  PostsTimbersNo1: grade("DFL", "P&T No.1"),
+  PostsTimbersNo2: grade("DFL", "P&T No.2"),
 } as const;
 /** Spruce-Pine-Fir. */
 export const SPF = { No1No2: grade("SPF", "No.1/No.2"), Stud: grade("SPF", "Stud") } as const;
@@ -617,6 +626,7 @@ export class TrussRoof {
     readonly height?: Length;
     readonly bears_on: readonly string[];
     readonly loads: readonly AreaLoad[];
+    readonly overrides?: readonly { readonly trusses: readonly number[]; readonly shape: TrussShape }[];
   }) {}
 
   /**
@@ -641,6 +651,14 @@ export class TrussRoof {
       bears_on: [],
       loads: [],
     });
+  }
+  /**
+   * A different shape for some trusses (1-based numbers, T1 at the origin),
+   * e.g. the trusses over a wing with a different bearing. The same
+   * spacing and loads apply.
+   */
+  withShape(trusses: readonly number[], shape: TrussShape): TrussRoof {
+    return new TrussRoof({ ...this.spec, overrides: [...(this.spec.overrides ?? []), { trusses, shape }] });
   }
   /** Fink trusses (shorthand for `TrussRoof.of(TrussShape.fink(...), ...)`). */
   static fink(o: {
@@ -773,13 +791,14 @@ export class Assembly {
     readonly bearsOn: readonly string[],
     readonly supports: readonly string[],
     readonly loads: readonly AssemblyLoad[],
+    readonly bonds: readonly (readonly [string, string])[],
   ) {}
 
   static named(name: string): Assembly {
-    return new Assembly(name, Placement.identity, [], [], "nailed", [], [], []);
+    return new Assembly(name, Placement.identity, [], [], "nailed", [], [], [], []);
   }
   private copy(
-    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[] }>,
+    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"] }>,
   ): Assembly {
     return new Assembly(
       p.name ?? this.name,
@@ -790,7 +809,13 @@ export class Assembly {
       p.bearsOn ?? this.bearsOn,
       p.supports ?? this.supports,
       p.loads ?? this.loads,
+      p.bonds ?? this.bonds,
     );
+  }
+  /** Two members fastened face to face (e.g. a cap nailed onto a header): `"header_cap"`, `"header"` or `"post#2"`. */
+  bonded(a: string, b: string): Assembly {
+    for (const x of [a, b]) if (!this.members.some((m) => m.role === x.split("#")[0])) throw new Error(`assembly ${this.name}: no member ${x}`);
+    return this.copy({ bonds: [...this.bonds, [a, b]] });
   }
   /** Uniform downward load along members: `"beam"` (every member with that role) or `"beam#2"`, in N/m (use `plf`). */
   lineLoad(kind: LoadKind, member: string, w: number): Assembly {
@@ -853,6 +878,7 @@ export class Assembly {
       bears_on: this.bearsOn,
       supports: this.supports,
       loads: this.loads,
+      bonds: this.bonds,
     };
   }
 }

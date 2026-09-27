@@ -82,13 +82,13 @@ fn wood(model: &Model, m: MemberId) -> Option<Wood<'static>> {
         return None;
     }
     let (species, grade) = (parts.next()?, parts.next()?);
-    let v = topo_data::lumber(species, grade)?;
+    let (v, source) = topo_data::lumber_with_source(species, grade)?;
     let sec = model.section(model.member(m).section);
     let nominal = sec.tags.get("nominal").and_then(|n| {
         let (t, w) = n.split_once('x')?;
         Some((t.trim().parse().ok()?, w.trim().parse().ok()?))
     });
-    Some(Wood { v, cite: &topo_data::nds_lumber().source, nominal })
+    Some(Wood { v, cite: source, nominal })
 }
 
 struct Trace {
@@ -124,10 +124,21 @@ fn fmt(v: f64) -> String {
     }
 }
 
+/// Dressed depth (in) of a timber of nominal thickness × width.
+fn topo_timber_depth(t: u32, w: u32) -> f64 {
+    if t.min(w) >= 5 { w as f64 - 0.5 } else { w as f64 }
+}
+
 const REPETITIVE: [&str; 6] = ["joist", "rafter", "top_chord", "bottom_chord", "stud", "king_stud"];
 
 /// Size factor for the property column `which` (`fb`, `ft`, `fc`).
 fn cf(w: &Wood, which: &str) -> (f64, String, bool) {
+    if topo_data::is_timber_grade(&w.v.grade) {
+        // Table 4D: C_F = (12/d)^(1/9) on F_b for depths over 12"; 1.0 otherwise.
+        let d = w.nominal.map(|(t, wd)| topo_timber_depth(t, wd)).unwrap_or(0.0);
+        let v = if which == "fb" && d > 12.0 { (12.0 / d).powf(1.0 / 9.0) } else { 1.0 };
+        return (v, format!("timber, d = {d:.1}\", NDS Supplement (2018) Table 4D"), true);
+    }
     match w.nominal.and_then(|(t, wd)| topo_data::size_factor(&w.v.grade, t, wd).map(|r| (r, t, wd))) {
         Some((r, t, wd)) => {
             let v = match which {
