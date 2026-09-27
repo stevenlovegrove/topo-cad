@@ -1,0 +1,82 @@
+{
+ "source": {
+  "publication": "ASCE 7 Table C3.1-1a / HUD Residential Structural Design Guide (2000) Table 3.2",
+  "edition": "see rows",
+  "table": "minimum design dead loads",
+  "note": "Assembly values (keys starting with an assembly name) are from HUD Table 3.2 and verified. Individual layers are from ASCE 7 Table C3.1-1a, which could not be read (paywalled): unverified."
+ },
+ "rows": [
+  {
+   "key": "roof: shingles, WSP, gypsum ceiling",
+   "description": "Light-frame roof: WSP sheathing, asphalt shingles, 1/2\" gypsum ceiling (HUD Table 3.2)",
+   "psf": 15.0,
+   "verified": true
+  },
+  {
+   "key": "roof: metal, WSP, gypsum ceiling",
+   "description": "Light-frame roof with metal roofing (HUD Table 3.2)",
+   "psf": 14.0,
+   "verified": true
+  },
+  {
+   "key": "roof: light tile, WSP, gypsum ceiling",
+   "description": "Light-frame roof with light-weight tile (HUD Table 3.2)",
+   "psf": 21.0,
+   "verified": true
+  },
+  {
+   "key": "roof: clay tile, WSP, gypsum ceiling",
+   "description": "Light-frame roof with clay tile (HUD Table 3.2)",
+   "psf": 27.0,
+   "verified": true
+  },
+  {
+   "key": "floor: 2x12, WSP, gypsum ceiling",
+   "description": "2x12 floor, 3/4\" WSP, 1/2\" gypsum ceiling (HUD Table 3.2)",
+   "psf": 10.0,
+   "verified": true
+  },
+  {
+   "key": "wall: 2x4, WSP, gypsum",
+   "description": "2x4 wall, 1/2\" WSP and 1/2\" gypsum (HUD Table 3.2)",
+   "psf": 6.0,
+   "verified": true
+  },
+  {
+   "key": "wall: 2x4, WSP, gypsum, vinyl siding",
+   "description": "2x4 wall with vinyl siding (HUD Table 3.2)",
+   "psf": 7.0,
+   "verified": true
+  },
+  {
+   "key": "asphalt shingles",
+   "description": "Asphalt shingles (ASCE 7 C3.1-1a)",
+   "psf": 2.0,
+   "verified": false
+  },
+  {
+   "key": "roofing felt",
+   "description": "Roofing felt, 3-ply (ASCE 7 C3.1-1a)",
+   "psf": 1.5,
+   "verified": false
+  },
+  {
+   "key": "osb 7/16",
+   "description": "OSB or plywood, 7/16\" (0.4 psf per 1/8\", ASCE 7 C3.1-1a)",
+   "psf": 1.4,
+   "verified": false
+  },
+  {
+   "key": "plywood 1/2",
+   "description": "Plywood, 1/2\" (0.4 psf per 1/8\", ASCE 7 C3.1-1a)",
+   "psf": 1.6,
+   "verified": false
+  },
+  {
+   "key": "gypsum 1/2",
+   "description": "Gypsum board, 1/2\" (0.55 psf per 1/8\", ASCE 7 C3.1-1a)",
+   "psf": 2.2,
+   "verified": false
+  }
+ ]
+}

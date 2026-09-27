@@ -166,39 +166,60 @@ touching faces allowed. Generators are tested to produce zero clashes.
 * Backends: SVG (sheets) and DXF R12 (full-scale model-space, layered: `FRAMING`,
   `HIDDEN`, `CENTER`, `DIMS`, `TEXT`, `TITLE`).
 
-## 6. Analysis (Milestone 2 — designed in now)
+## 6. Analysis (`topo-analysis`, reference data in `topo-data`)
 
-Hooks already present in M1 data:
+Gravity analysis follows how an engineer checks light-frame wood by hand, so
+every number can be reviewed; a plane-frame solver handles trusses.
 
-* `Support`, `LoadCase` (Dead, Live, RoofLive, Snow, Wind, Seismic), `Load`
-  (nodal, member-distributed, area on a group) are part of the model IR.
-* `Connection`/`JointSpec` carry **fixity** per member end (pinned default for
-  nailed timber; rigid/semi-rigid available for extrusion brackets).
-* Geometry supplies what codes need but topology doesn't: cut (unbraced)
-  lengths, bearing areas (butt face contact), eccentricities (anchor offsets).
+* **Reference data with provenance** (`topo-data`): JSON tables compiled in
+  (so they work in WASM) — NDS Supplement Table 4A values, size and flat-use
+  factors, load-duration factors, nail dimensions and F_yb, NDS Table 12N
+  values, dead loads of assemblies. Each table cites publication, edition and
+  table; each row says whether it was verified against that source. Checks
+  carry the citation, and unverified values are flagged in the UI and on
+  sheets. Scripts read tables too (`layers(...)` builds a dead load from the
+  material-weights table).
+* **Loads**: load cases by kind; area loads on roof/floor groups (on plan or
+  sloped surface) go to their receiving members (truss top chords, rafters,
+  joists) by tributary width; member line loads, point loads, self-weight
+  (switchable). `Building.designBasis({ asce7 })` selects the ASCE 7 edition,
+  which sets the ASD combinations (7-22 ground snow is strength-level: 0.7S).
+  Site hazards live in a sourced, per-jurisdiction file
+  (`examples/site-template.ts`, from the county's IRC Table R301.2(1) and the
+  USGS seismic service); `roofSnow(site, { ce, ct })` derives p_f with its
+  equation and source in the load's label.
+* **Takedown** (`takedown`): carriers are processed top-down in support-graph
+  order. Beams are simple spans between adjacent supports (overhangs join the
+  end span), reactions by statics, V/M by free body, deflection by integrating
+  M/EI; columns take everything above to their base; trusses are solved as
+  plane frames (chords continuous, members pinned to each other). Reactions
+  become point loads on the supporting member. Nailed transfers are relied on
+  only where there is no bearing nearby. A member lying along another (a
+  double top plate) bends with it, sharing moment by stiffness; face-to-face
+  contact passes load straight through. Each case is taken down separately;
+  combinations superpose. Equilibrium (foundation reactions = applied load)
+  is tested on every example.
+* **Checks** (`nds_asd`, NDS 2018 ASD): bending (C_D, C_F, C_fu, C_r, C_L = 1
+  assumed braced), shear, deflection (total L/240; live L/360, snow/roof live
+  L/240 per IRC R301.7), bearing perpendicular to grain, column stability
+  (C_P; wall studs braced on the weak axis), combined stresses in truss
+  members (indicative only: trusses are designed by their manufacturer), and
+  nailed connections by the NDS yield-limit equations (reproducing every
+  Table 12N value held) with C_eg / C_tn. Every check returns a calculation
+  trace: symbol, formula, substituted values, result, clause, source.
+* **Benchmarks** (`examples/benchmarks/`): textbook-style problems with the
+  hand calculation in their header, recomputed independently in tests, plus
+  the AWC span tables (2x10 @ 16", 16'-5": f_b ≈ 1,255 psi, Δ_L ≈ L/360).
+* **Presentation**: in `topo serve`, a Structure panel (summary, worst
+  members, colour-by utilization/bending/shear/…, per combination) and a
+  member inspector (checks with expandable traces, M/V/N/deflection
+  diagrams). On sheets: `utilization(...)` views (members filled by ratio
+  band, labelled, with legend) and `schedule("checks")` /
+  `schedule("reactions")` tables for the engineer and permit set.
 
-Planned pipeline:
-
-1. `AnalysisModel::extract(model, geom)` — analytical nodes = topology nodes,
-   elements = member path segments, section props, releases from fixity,
-   supports. (Implemented in M1 as the basis of the analytical diagram.)
-2. **Load path / tributary takedown** for light framing: gravity *support
-   graph* derived from junctions (a member ending on / resting on another is
-   supported by it) → area loads to members by tributary width → reactions
-   propagated down (roof → rafter → header → jack → plate → foundation). This is
-   how engineers actually review light-frame wood.
-   Already in M1: the support graph (bearing vs. fastened transfer, including
-   face-to-face bonds such as a top plate on a flush header) and a
-   **load-path check** that flags members carried only by nails in shear or
-   not carried at all — e.g. a garage-door header with no jack studs.
-3. **3D frame solver** (direct stiffness, sparse skyline/LDLᵀ, pure Rust so it
-   runs in WASM) for braced frames / extrusion structures / verification.
-4. `trait DesignCode` — load combinations (ASCE 7 ASD/LRFD), member checks
-   (NDS: bending with C_D C_M C_t C_L C_F C_fu C_i C_r, shear, compression with
-   C_P, bearing C_b, combined, deflection), connection checks. Every check
-   returns a `CalcTrace`: symbol, formula, substituted values, result, clause.
-5. Calc report (HTML/PDF) keyed to the same member/connection marks as the
-   drawings.
+Next: lateral loads (wind, seismic), sheathing and shear walls (SDPWS),
+hold-downs and straps from part catalogs, and a 3D frame solver for irregular
+and as-built conditions.
 
 ## 7. Crates
 

@@ -59,5 +59,27 @@ pub enum Load {
     MemberUniform { case: LoadCaseId, member: MemberId, w: Vec3 },
     /// Uniform pressure (Pa) on a group's surface (floor, roof, wall) acting in
     /// `direction`; distributed to the group's spanning members by tributary width.
-    Area { case: LoadCaseId, group: GroupId, pressure: f64, direction: Vec3 },
+    Area {
+        case: LoadCaseId,
+        group: GroupId,
+        pressure: f64,
+        direction: Vec3,
+        /// Whether `pressure` is per unit plan area (snow, roof live) or per
+        /// unit surface area (dead load of sloped roofing).
+        #[serde(default)]
+        basis: AreaBasis,
+        /// Where it came from, for reports (e.g. `Roof dead: shingles 2.0 + …`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AreaBasis {
+    /// Per unit horizontal projected area.
+    #[default]
+    Plan,
+    /// Per unit area along the (sloped) surface.
+    Surface,
 }

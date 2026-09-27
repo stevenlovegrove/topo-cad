@@ -164,6 +164,8 @@ fn eval_js(api: &str, js: &str, file: &str, params: Option<&std::collections::BT
         let native = || -> rquickjs::Result<()> {
             let truss = rquickjs::Function::new(ctx.clone(), |req: String| -> String { standard_truss_json(&req) })?;
             ctx.globals().set("__topo_truss_standard", truss)?;
+            let data = rquickjs::Function::new(ctx.clone(), |name: String| -> String { topo_data::table_json(&name).unwrap_or_else(|| "null".into()) })?;
+            ctx.globals().set("__topo_data", data)?;
             if let Some(p) = params {
                 ctx.eval::<(), _>(format!("globalThis.__topo_params = {};", serde_json::to_string(p).unwrap()))?;
             }
@@ -224,5 +226,7 @@ pub(crate) fn parse_spec(json: &str) -> Result<SceneSpec, ScriptError> {
     SceneSpec::from_json(json).map_err(|e| ScriptError::Spec(format!("{e} in exported scene")))
 }
 
+#[cfg(test)]
+mod benchmarks;
 #[cfg(test)]
 mod tests;

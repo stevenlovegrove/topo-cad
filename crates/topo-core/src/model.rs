@@ -242,6 +242,21 @@ pub struct Bond {
     pub connection: ConnectionId,
 }
 
+/// Editions of the standards the model's loads are based on. The load
+/// combinations must match the source of the loads: ASCE 7-22 ground snow
+/// loads are strength-level (ASD uses 0.7S); ASCE 7-16 values are not.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Standards {
+    /// `7-16` or `7-22`.
+    pub asce7: String,
+}
+
+impl Default for Standards {
+    fn default() -> Self {
+        Standards { asce7: "7-16".into() }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectInfo {
     pub name: String,
@@ -298,6 +313,9 @@ fn cell_of(p: Vec3) -> (i64, i64, i64) {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Model {
     pub info: ProjectInfo,
+    /// Which editions of the design standards the loads follow.
+    #[serde(default)]
+    pub standards: Standards,
     pub units: UnitSystem,
     pub nodes: Vec<Node>,
     pub members: Vec<Member>,

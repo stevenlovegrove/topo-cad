@@ -35,8 +35,11 @@ pub enum ViewKind {
     Detail,
     /// Centre-line model with junction symbols.
     Analytical,
-    /// A table: `members`, `connections`, `junctions`, or the title of a
-    /// table the tool supplies (e.g. `Field measurements`).
+    /// Members filled by their highest demand/capacity ratio, labelled.
+    Utilization,
+    /// A table: `members`, `connections`, `junctions`, `checks` (governing
+    /// check per member), `reactions` (foundation reactions by load case),
+    /// or the title of a table the tool supplies (e.g. `Field measurements`).
     Schedule,
     /// A block of text lines.
     Notes,

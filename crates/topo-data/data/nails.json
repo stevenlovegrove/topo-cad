@@ -1,0 +1,59 @@
+{
+ "source": {
+  "publication": "NDS",
+  "edition": "2018",
+  "table": "Table L4 (dimensions); Table 12N footnote 2 (F_yb)",
+  "url": "https://awc.org/wp-content/uploads/2021/10/AWC_NDS2018-withCommentary_20210113_AWCWebsite_Appendix.pdf",
+  "note": "F_yb: 100 ksi for 0.099\" \u2264 D \u2264 0.142\"; 90 ksi to 0.177\"; 80 ksi to 0.236\"; 70 ksi to 0.273\"."
+ },
+ "rows": [
+  {
+   "kind": "common",
+   "penny": 6,
+   "d": 0.113,
+   "l": 2.0,
+   "fyb": 100000,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 8,
+   "d": 0.131,
+   "l": 2.5,
+   "fyb": 100000,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 10,
+   "d": 0.148,
+   "l": 3.0,
+   "fyb": 90000,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 12,
+   "d": 0.148,
+   "l": 3.25,
+   "fyb": 90000,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 16,
+   "d": 0.162,
+   "l": 3.5,
+   "fyb": 90000,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 20,
+   "d": 0.192,
+   "l": 4.0,
+   "fyb": 80000,
+   "verified": true
+  }
+ ]
+}

@@ -1131,6 +1131,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "topo-core",
+ "topo-data",
  "topo-geom",
  "topo-timber",
 ]
@@ -1152,6 +1153,14 @@ dependencies = [
 
 [[package]]
 name = "topo-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "topo-data"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1193,6 +1202,7 @@ dependencies = [
  "serde_json",
  "topo-analysis",
  "topo-core",
+ "topo-data",
  "topo-draw",
  "topo-geom",
  "topo-timber",
@@ -1204,6 +1214,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "topo-core",
+ "topo-data",
  "topo-geom",
 ]
 

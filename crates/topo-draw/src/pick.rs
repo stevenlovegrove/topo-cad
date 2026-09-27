@@ -385,6 +385,71 @@ pub fn overlay(model: &Model, geom: &Geometry, sheet: &Sheet, items: &[OverlayIn
     out
 }
 
+/// A member's silhouette in one view of a sheet (SVG inches).
+#[derive(Clone, Debug, Serialize)]
+pub struct MemberShape {
+    pub member: MemberId,
+    pub outline: Vec<[f64; 2]>,
+}
+
+/// Silhouettes of every member drawn on `sheet`, far to near within each
+/// view (so near members paint over far ones); clipped to detail circles.
+pub fn member_shapes(geom: &Geometry, sheet: &Sheet) -> Vec<MemberShape> {
+    let mut out = vec![];
+    for f in frames(sheet) {
+        let clip: Option<Vec<Vec2>> = f.view.clip.map(|(c, r)| (0..48).map(|k| {
+            let a = k as f64 / 48.0 * std::f64::consts::TAU;
+            c + Vec2::new(a.cos(), a.sin()) * r
+        }).collect());
+        let mut shapes: Vec<(f64, MemberId, Vec<Vec2>)> = f
+            .view
+            .members
+            .iter()
+            .map(|&m| {
+                let g = geom.member(m);
+                let hull = convex_hull(&g.convex().verts.iter().map(|v| f.proj.p(*v)).collect::<Vec<_>>());
+                (f.proj.depth(g.centroid()), m, hull)
+            })
+            .collect();
+        shapes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, m, hull) in shapes {
+            let poly = match &clip {
+                Some(c) => clip_convex(&hull, c),
+                None => hull,
+            };
+            if poly.len() >= 3 {
+                out.push(MemberShape { member: m, outline: poly.iter().map(|p| f.to_svg(*p)).collect() });
+            }
+        }
+    }
+    out
+}
+
+/// Sutherland–Hodgman: `poly` clipped to the convex, counter-clockwise `clip`.
+fn clip_convex(poly: &[Vec2], clip: &[Vec2]) -> Vec<Vec2> {
+    let mut out = poly.to_vec();
+    for i in 0..clip.len() {
+        let (a, b) = (clip[i], clip[(i + 1) % clip.len()]);
+        let inside = |p: Vec2| (b - a).cross(p - a) >= 0.0;
+        let input = std::mem::take(&mut out);
+        for j in 0..input.len() {
+            let (p, q) = (input[j], input[(j + 1) % input.len()]);
+            let (ip, iq) = (inside(p), inside(q));
+            if ip {
+                out.push(p);
+            }
+            if ip != iq {
+                let (d1, d2) = ((b - a).cross(p - a), (b - a).cross(q - a));
+                out.push(p + (q - p) * (d1 / (d1 - d2)));
+            }
+        }
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
 /// Titles and SVG bounding boxes `[x0, y0, x1, y1]` of the model views on a sheet.
 pub fn view_boxes(sheet: &Sheet) -> Vec<(String, [f64; 4])> {
     frames(sheet)

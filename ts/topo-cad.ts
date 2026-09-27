@@ -24,6 +24,112 @@ export const ft = (v: number): Length => v * 0.3048;
 export const ftIn = (feet: number, inches: number): Length => ft(feet) + inch(inches);
 /** Pounds per square foot → pascals. */
 export const psf = (v: number): number => v * 47.880259;
+/** Pounds per linear foot → newtons per metre. */
+export const plf = (v: number): number => v * 14.593903;
+/** Pounds (force) → newtons. */
+export const lbf = (v: number): number => v * 4.4482216;
+/** Kips → newtons. */
+export const kip = (v: number): number => v * 4448.2216;
+
+// ----- reference data (tables with provenance, see crates/topo-data) ----------
+
+declare const __topo_data: (table: string) => string;
+interface MaterialWeightRow {
+  readonly key: string;
+  readonly description: string;
+  readonly psf: number;
+  readonly verified: boolean;
+}
+interface DataTable<T> {
+  readonly source: { readonly publication: string; readonly edition: string; readonly table: string };
+  readonly rows: readonly T[];
+}
+/** A reference table by name (e.g. `"material-weights"`, `"nds-lumber"`). */
+export function dataTable<T = unknown>(name: string): DataTable<T> {
+  const t = JSON.parse(__topo_data(name));
+  if (t === null) throw new Error(`no data table "${name}"`);
+  return t;
+}
+
+// ----- site hazards (authored per jurisdiction; see examples/site-template.ts) ----
+
+/** A value with where it came from (a URL, table, or document). */
+export interface Sourced<T> {
+  readonly value: T;
+  readonly source: string;
+}
+
+/**
+ * Design criteria for a site. Most jurisdictions publish these as IRC Table
+ * R301.2(1) ("climatic and geographic design criteria"); seismic values can
+ * also come from the USGS design-maps service. Every value names its source.
+ */
+export interface SiteHazards {
+  readonly jurisdiction: string;
+  /** Edition the values belong to: ASCE 7-22 ground snow is strength-level (ASD uses 0.7S). */
+  readonly asce7: "7-16" | "7-22";
+  readonly riskCategory: 1 | 2 | 3 | 4;
+  /** Ground snow load p_g (psf). */
+  readonly groundSnow?: Sourced<number>;
+  /** Ultimate design wind speed (mph) and exposure category. */
+  readonly windSpeed?: Sourced<number>;
+  readonly exposure?: Sourced<"B" | "C" | "D">;
+  readonly seismic?: Sourced<{ readonly sds: number; readonly sd1: number; readonly sdc: string }>;
+  readonly frostDepth?: Sourced<Length>;
+  readonly notes?: readonly string[];
+}
+
+/**
+ * Flat-roof snow load for a roof from site hazards, on plan area:
+ * ASCE 7-16: p_f = 0.7 C_e C_t I_s p_g;  ASCE 7-22: p_f = 0.7 C_e C_t p_g.
+ * `ce` (exposure, ASCE 7 Table 7.3-1) and `ct` (thermal, Table 7.3-2 / 7.3-3)
+ * are yours to choose (an unheated garage is typically C_t = 1.2). Slope
+ * factor C_s = 1 is assumed (conservative for ordinary slopes); minimum snow
+ * loads, drifts and unbalanced loads are not applied.
+ */
+export function roofSnow(site: SiteHazards, o: { ce: number; ct: number; is?: number }): DeadLoad {
+  if (!site.groundSnow) throw new Error(`${site.jurisdiction}: no ground snow load given`);
+  const pg = site.groundSnow.value;
+  const is = site.asce7 === "7-16" ? (o.is ?? [0.8, 1.0, 1.1, 1.2][site.riskCategory - 1]) : 1;
+  const pf = 0.7 * o.ce * o.ct * is * pg;
+  const eq = site.asce7 === "7-16" ? `0.7 · ${o.ce} · ${o.ct} · ${is} · ${pg}` : `0.7 · ${o.ce} · ${o.ct} · ${pg}`;
+  return {
+    pressure: psf(pf),
+    label: `Snow p_f = ${eq} = ${pf.toFixed(1)} psf (ASCE ${site.asce7} Eq. 7.3-1; p_g from ${site.groundSnow.source}; C_s = 1 assumed; drift/unbalanced not included)`,
+  };
+}
+
+/** A dead load built from layers: total pressure plus the breakdown for reports. */
+export interface DeadLoad {
+  readonly pressure: number;
+  readonly label: string;
+}
+/**
+ * Dead load from material layers looked up in the material-weights table
+ * (ASCE 7 Table C3.1-1a), e.g. `layers("asphalt shingles", "roofing felt", "osb 7/16")`.
+ * A `[key, count]` pair repeats a layer; a `[description, psf]` with a number
+ * adds your own value.
+ */
+export function layers(...items: (string | readonly [string, number])[]): DeadLoad {
+  const t = dataTable<MaterialWeightRow>("material-weights");
+  let total = 0;
+  const parts: string[] = [];
+  for (const it of items) {
+    const [key, n] = typeof it === "string" ? [it, 1] : it;
+    const row = t.rows.find((r) => r.key === key);
+    if (row) {
+      total += row.psf * n;
+      parts.push(`${n === 1 ? "" : n + " × "}${row.description} ${row.psf}${row.verified ? "" : "*"}`);
+    } else if (typeof it !== "string") {
+      total += n;
+      parts.push(`${key} ${n} (given)`);
+    } else {
+      throw new Error(`no material "${key}" in ${t.source.publication} ${t.source.table} (known: ${t.rows.map((r) => r.key).join(", ")})`);
+    }
+  }
+  const star = parts.some((p) => p.includes("*")) ? " (* unverified)" : "";
+  return { pressure: psf(total), label: `${parts.join(" + ")} = ${total.toFixed(1)} psf, ${t.source.publication} ${t.source.edition} ${t.source.table}${star}` };
+}
 
 // ----- materials -----------------------------------------------------------
 
@@ -472,7 +578,7 @@ export class TrussShape {
 
 // ----- roofs ---------------------------------------------------------------
 
-type LoadKind = "dead" | "live" | "roof_live" | "snow";
+export type LoadKind = "dead" | "live" | "roof_live" | "snow" | "wind" | "seismic";
 interface AreaLoad {
   readonly kind: LoadKind;
   readonly pressure: number;
@@ -537,9 +643,20 @@ export class TrussRoof {
   bearingOn(...ps: Perimeter[]): TrussRoof {
     return new TrussRoof({ ...this.spec, bears_on: [...this.spec.bears_on, ...ps.map((p) => p.name)] });
   }
-  /** Uniform load on the roof, in pascals (use `psf`). */
-  load(kind: LoadKind, pressure: number): TrussRoof {
-    return new TrussRoof({ ...this.spec, loads: [...this.spec.loads, { kind, pressure }] });
+  /**
+   * Uniform load on the roof, in pascals (use `psf`). `basis`: per unit of
+   * plan area (default; snow and roof live loads) or of sloped surface.
+   */
+  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string } = {}): TrussRoof {
+    return new TrussRoof({ ...this.spec, loads: [...this.spec.loads, { kind, pressure, ...o }] });
+  }
+  /** Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`. */
+  snow(d: DeadLoad): TrussRoof {
+    return this.load("snow", d.pressure, { basis: "plan", label: d.label });
+  }
+  /** Roofing dead load along the slope, from `layers(...)`. */
+  dead(d: DeadLoad): TrussRoof {
+    return this.load("dead", d.pressure, { basis: "surface", label: d.label });
   }
   get name(): string {
     return this.spec.name;
@@ -596,7 +713,13 @@ export class Placement {
   }
 }
 
-export type Joints = "nailed" | "truss_plate" | "none";
+/**
+ * How members that meet are fastened: typical nailing, truss plates, none,
+ * or explicit nails, e.g. `{ nails: 4, penny: 16, method: "end" }`.
+ */
+export type Joints = "nailed" | "truss_plate" | "none" | { readonly nails: number; readonly penny: 6 | 8 | 10 | 12 | 16 | 20; readonly method: "end" | "toe" | "face" };
+
+type AssemblyLoad = { readonly kind: LoadKind; readonly member: string; readonly w: number } | { readonly kind: LoadKind; readonly point: string; readonly force: number };
 
 interface AssemblyMemberSpec {
   readonly role: string;
@@ -624,13 +747,14 @@ export class Assembly {
     readonly joints_: Joints,
     readonly bearsOn: readonly string[],
     readonly supports: readonly string[],
+    readonly loads: readonly AssemblyLoad[],
   ) {}
 
   static named(name: string): Assembly {
-    return new Assembly(name, Placement.identity, [], [], "nailed", [], []);
+    return new Assembly(name, Placement.identity, [], [], "nailed", [], [], []);
   }
   private copy(
-    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[] }>,
+    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[] }>,
   ): Assembly {
     return new Assembly(
       p.name ?? this.name,
@@ -640,7 +764,18 @@ export class Assembly {
       p.joints ?? this.joints_,
       p.bearsOn ?? this.bearsOn,
       p.supports ?? this.supports,
+      p.loads ?? this.loads,
     );
+  }
+  /** Uniform downward load along members: `"beam"` (every member with that role) or `"beam#2"`, in N/m (use `plf`). */
+  lineLoad(kind: LoadKind, member: string, w: number): Assembly {
+    if (!this.members.some((m) => m.role === member.split("#")[0])) throw new Error(`assembly ${this.name}: no member ${member}`);
+    return this.copy({ loads: [...this.loads, { kind, member, w }] });
+  }
+  /** Downward point load at a named point, in N (use `lbf`). */
+  pointLoad(kind: LoadKind, point: string, force: number): Assembly {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
+    return this.copy({ loads: [...this.loads, { kind, point, force }] });
   }
   /** These points bear on the foundation (e.g. post bases on footings). */
   supportedAt(...points: string[]): Assembly {
@@ -692,6 +827,7 @@ export class Assembly {
       joints: this.joints_,
       bears_on: this.bearsOn,
       supports: this.supports,
+      loads: this.loads,
     };
   }
 }
@@ -860,7 +996,7 @@ export interface ViewOptions {
   readonly dims?: boolean;
 }
 
-export type ViewKind = "plan" | "elevation" | "iso" | "detail" | "analytical" | "schedule" | "notes";
+export type ViewKind = "plan" | "elevation" | "iso" | "detail" | "analytical" | "utilization" | "schedule" | "notes";
 export interface ViewSpec {
   readonly kind: ViewKind;
   readonly [k: string]: unknown;
@@ -904,7 +1040,17 @@ export const detail = (at: Feature | PlaneRef, of?: Target | readonly Target[], 
   projectedView("detail", of, { ...o, at: asFeature(at) });
 /** The centre-line model with junction symbols. */
 export const analytical = (of?: Target | readonly Target[], o: ViewOptions = {}): ViewSpec => projectedView("analytical", of, o);
-/** A table: `"members"`, `"connections"`, `"junctions"`, or a tool table such as `"Field measurements"`. */
+/**
+ * Members filled by their highest demand/capacity ratio over all load
+ * combinations (NDS ASD), labelled, with a legend. Roofs and floors are shown
+ * in plan, walls and trusses in elevation (override with `from`).
+ */
+export const utilization = (of?: Target | readonly Target[], o: ViewOptions = {}): ViewSpec => projectedView("utilization", of, o);
+/**
+ * A table: `"members"`, `"connections"`, `"junctions"`, `"checks"` (the
+ * governing check of each member), `"reactions"` (foundation reactions by
+ * load case), or a tool table such as `"Field measurements"`.
+ */
 export const schedule = (table: string, o: { title?: string } = {}): ViewSpec => ({ kind: "schedule", table, title: o.title });
 /** A block of notes. */
 export const notes = (title: string, ...lines: string[]): ViewSpec => ({ kind: "notes", title, lines });
@@ -943,6 +1089,11 @@ export interface BuildingPlacement {
   readonly xBearing?: number;
 }
 
+export interface DesignBasis {
+  readonly asce7?: "7-16" | "7-22";
+  readonly selfWeight?: boolean;
+}
+
 /** A building, in its own frame; a script exports one, or a `Site` of several. */
 export class Building {
   private constructor(
@@ -953,16 +1104,26 @@ export class Building {
     readonly placement_: BuildingPlacement | undefined,
     readonly directions_: Readonly<Record<string, Point3>>,
     readonly sheets_: readonly SheetSpec[] | undefined,
+    readonly basis_: DesignBasis,
   ) {}
 
   static named(name: string): Building {
-    return new Building(name, {}, [], [], undefined, {}, undefined);
+    return new Building(name, {}, [], [], undefined, {}, undefined, {});
   }
   private with(
-    o: Partial<{ info_: Partial<Info>; items: readonly Item[]; measurements: readonly Measurement[]; placement_: BuildingPlacement; directions_: Record<string, Point3>; sheets_: readonly SheetSpec[] }>,
+    o: Partial<{ info_: Partial<Info>; items: readonly Item[]; measurements: readonly Measurement[]; placement_: BuildingPlacement; directions_: Record<string, Point3>; sheets_: readonly SheetSpec[]; basis_: DesignBasis }>,
   ): Building {
     const v = { ...this, ...o };
-    return new Building(this.name, v.info_, v.items, v.measurements, v.placement_, v.directions_, v.sheets_);
+    return new Building(this.name, v.info_, v.items, v.measurements, v.placement_, v.directions_, v.sheets_, v.basis_);
+  }
+  /**
+   * Design basis: the ASCE 7 edition the loads come from (`"7-16"`, the
+   * default, or `"7-22"` — whose strength-level snow enters ASD combinations
+   * at 0.7S), and whether member self-weight is added to the dead load
+   * (default true; turn off when the dead load already includes it).
+   */
+  designBasis(b: DesignBasis): Building {
+    return this.with({ basis_: { ...this.basis_, ...b } });
   }
   /**
    * The drawing set, in tab order. Without this, the standard sets are drawn;
@@ -1002,6 +1163,8 @@ export class Building {
       placement: p ? { origin: p.origin ?? [0, 0, 0], x_bearing: p.xBearing ?? 90 } : undefined,
       directions: this.directions_,
       sheets: this.sheets_,
+      asce7: this.basis_.asce7,
+      self_weight: this.basis_.selfWeight,
     };
   }
 }

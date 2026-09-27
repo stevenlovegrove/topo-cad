@@ -25,6 +25,12 @@ pub struct SceneSpec {
     /// The drawing set (sheet tabs, in order); `None` for the standard set.
     #[serde(default)]
     pub sheets: Option<Vec<SheetSpec>>,
+    /// ASCE 7 edition the loads follow (`7-16` default, or `7-22`).
+    #[serde(default)]
+    pub asce7: Option<String>,
+    /// Include member self-weight in the dead load (default true).
+    #[serde(default)]
+    pub self_weight: Option<bool>,
 }
 
 /// One building: items in its own frame, placed in the world.
@@ -46,6 +52,10 @@ pub struct BuildingSpec {
     pub directions: std::collections::BTreeMap<String, [f64; 3]>,
     #[serde(default)]
     pub sheets: Option<Vec<SheetSpec>>,
+    #[serde(default)]
+    pub asce7: Option<String>,
+    #[serde(default)]
+    pub self_weight: Option<bool>,
 }
 
 /// Where a building sits: its origin in the world, and the compass bearing
@@ -93,6 +103,8 @@ impl SceneSpec {
             measurements: std::mem::take(&mut b.measurements),
             unknowns: std::mem::take(&mut b.unknowns),
             sheets: b.sheets.take(),
+            asce7: b.asce7.take(),
+            self_weight: b.self_weight.take(),
             buildings: vec![b],
         })
     }
@@ -180,13 +192,16 @@ pub struct AssemblySpec {
     pub placement: FrameSpec,
     pub points: Vec<AssemblyPoint>,
     pub members: Vec<AssemblyMember>,
-    /// `nailed`, `truss_plate` or `none`: connection recorded where members meet.
-    pub joints: String,
+    /// `nailed`, `truss_plate`, `none`, or explicit nailing: connection
+    /// recorded where members meet.
+    pub joints: JointsSpec,
     #[serde(default)]
     pub bears_on: Vec<String>,
     /// Points that bear on the foundation.
     #[serde(default)]
     pub supports: Vec<String>,
+    #[serde(default)]
+    pub loads: Vec<AssemblyLoadSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -240,6 +255,33 @@ pub struct PerimeterSpec {
 pub struct AreaLoadSpec {
     pub kind: String,
     pub pressure: f64,
+    /// `plan` (default) or `surface`.
+    #[serde(default)]
+    pub basis: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum JointsSpec {
+    Kind(String),
+    Nails { nails: u32, penny: u32, method: String },
+}
+
+/// A load on an assembly: along a member (`w`, N/m downward) or at a point
+/// (`force`, N downward).
+#[derive(Debug, Deserialize)]
+pub struct AssemblyLoadSpec {
+    pub kind: String,
+    #[serde(default)]
+    pub member: Option<String>,
+    #[serde(default)]
+    pub point: Option<String>,
+    #[serde(default)]
+    pub w: f64,
+    #[serde(default)]
+    pub force: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,6 +308,24 @@ struct Builder {
 }
 
 impl Builder {
+    /// The load case for a kind (`dead`, `live`, `roof_live`, `snow`, `wind`,
+    /// `seismic`), created on first use.
+    fn case(&mut self, kind: &str) -> Result<LoadCaseId, String> {
+        let (kind, name) = match kind {
+            "dead" => (LoadKind::Dead, "D"),
+            "live" => (LoadKind::Live, "L"),
+            "roof_live" => (LoadKind::RoofLive, "Lr"),
+            "snow" => (LoadKind::Snow, "S"),
+            "wind" => (LoadKind::Wind, "W"),
+            "seismic" => (LoadKind::Seismic, "E"),
+            k => return Err(format!("unknown load kind {k} (dead, live, roof_live, snow, wind, seismic)")),
+        };
+        Ok(match self.m.load_cases.iter().find(|c| c.kind == kind) {
+            Some(c) => c.id,
+            None => self.m.add_load_case(name, kind),
+        })
+    }
+
     fn material(&mut self, g: &GradeSpec) -> Result<MaterialId, String> {
         if let Some(&id) = self.grades.get(g) {
             return Ok(id);
@@ -370,26 +430,13 @@ impl Builder {
             }
         }
         for l in &r.loads {
-            let kind = match l.kind.as_str() {
-                "dead" => LoadKind::Dead,
-                "live" => LoadKind::Live,
-                "roof_live" => LoadKind::RoofLive,
-                "snow" => LoadKind::Snow,
-                k => return Err(format!("unknown load kind {k}")),
+            let case = self.case(&l.kind)?;
+            let basis = match l.basis.as_deref() {
+                None | Some("plan") => AreaBasis::Plan,
+                Some("surface") => AreaBasis::Surface,
+                Some(b) => return Err(format!("roof {}: unknown load basis {b} (plan or surface)", r.name)),
             };
-            let case = match self.m.load_cases.iter().find(|c| c.kind == kind) {
-                Some(c) => c.id,
-                None => {
-                    let name = match kind {
-                        LoadKind::Dead => "D",
-                        LoadKind::Live => "L",
-                        LoadKind::RoofLive => "Lr",
-                        _ => "S",
-                    };
-                    self.m.add_load_case(name, kind)
-                }
-            };
-            self.m.loads.push(Load::Area { case, group: roof.group, pressure: l.pressure, direction: -Vec3::Z });
+            self.m.loads.push(Load::Area { case, group: roof.group, pressure: l.pressure, direction: -Vec3::Z, basis, label: l.label.clone() });
         }
         Ok(())
     }
@@ -435,11 +482,25 @@ impl Builder {
             }
             ids.push(self.m.add_member(&path, &spec));
         }
-        let conn = match a.joints.as_str() {
-            "nailed" => Some(self.m.add_connection(fx::plate_corner())),
-            "truss_plate" => Some(self.m.add_connection(fx::truss_plate())),
-            "none" => None,
-            j => return Err(format!("assembly {}: unknown joint kind {j}", a.name)),
+        let conn = match &a.joints {
+            JointsSpec::Kind(k) => match k.as_str() {
+                "nailed" => Some(self.m.add_connection(fx::plate_corner())),
+                "truss_plate" => Some(self.m.add_connection(fx::truss_plate())),
+                "none" => None,
+                j => return Err(format!("assembly {}: unknown joint kind {j}", a.name)),
+            },
+            JointsSpec::Nails { nails, penny, method } => {
+                let method = match method.as_str() {
+                    "end" => FastenMethod::EndNail,
+                    "toe" => FastenMethod::ToeNail,
+                    "face" => FastenMethod::FaceNail,
+                    m => return Err(format!("assembly {}: unknown nailing method {m} (end, toe, face)", a.name)),
+                };
+                if ![6, 8, 10, 12, 16, 20].contains(penny) {
+                    return Err(format!("assembly {}: no {penny}d common nail", a.name));
+                }
+                Some(self.m.add_connection(fx::nails(&format!("{} joints", a.name), *penny, *nails, method)))
+            }
         };
         if let Some(c) = conn {
             for &id in &ids {
@@ -453,6 +514,34 @@ impl Builder {
         for name in &a.supports {
             let node = *nodes.get(name.as_str()).ok_or(format!("assembly {}: unknown support point {name}", a.name))?;
             self.m.supports.push(Support { node, restraint: Restraint::PINNED, description: Some(format!("{} on foundation", a.name)) });
+        }
+        for l in &a.loads {
+            let case = self.case(&l.kind)?;
+            match (&l.member, &l.point) {
+                (Some(sel), None) => {
+                    // `beam` (every member with that role) or `beam#2`.
+                    let (role, index) = match sel.split_once('#') {
+                        Some((r, i)) => (r, Some(i.parse::<usize>().map_err(|_| format!("assembly {}: bad member {sel}", a.name))?)),
+                        None => (sel.as_str(), None),
+                    };
+                    let hits: Vec<MemberId> = ids.iter().copied().enumerate().filter(|(k, _)| a.members[*k].role == role).map(|(_, id)| id).collect();
+                    let chosen: Vec<MemberId> = match index {
+                        Some(i) => hits.get(i.wrapping_sub(1)).copied().into_iter().collect(),
+                        None => hits,
+                    };
+                    if chosen.is_empty() {
+                        return Err(format!("assembly {}: no member {sel} to load", a.name));
+                    }
+                    for m in chosen {
+                        self.m.loads.push(Load::MemberUniform { case, member: m, w: -Vec3::Z * l.w });
+                    }
+                }
+                (None, Some(pt)) => {
+                    let node = *nodes.get(pt.as_str()).ok_or(format!("assembly {}: unknown load point {pt}", a.name))?;
+                    self.m.loads.push(Load::Node { case, node, force: -Vec3::Z * l.force, moment: Vec3::ZERO });
+                }
+                _ => return Err(format!("assembly {}: a load needs a member or a point", a.name)),
+            }
         }
         let mut plates = vec![];
         for name in &a.bears_on {
@@ -514,6 +603,17 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
         }
     }
     m.sheets = sheets;
+    if let Some(e) = &spec.asce7 {
+        if e != "7-16" && e != "7-22" {
+            return Err(format!("unknown ASCE 7 edition {e} (7-16 or 7-22)"));
+        }
+        m.standards.asce7 = e.clone();
+    }
+    if spec.self_weight == Some(false) {
+        for c in &mut m.load_cases {
+            c.self_weight = false;
+        }
+    }
     Ok(m)
 }
 

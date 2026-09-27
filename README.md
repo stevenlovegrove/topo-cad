@@ -7,7 +7,7 @@ schedules and the analytical model are derived. See [DESIGN.md](DESIGN.md).
 ```bash
 cargo test --workspace
 cargo run --release -p topo-cli -- run examples/garage-as-built.ts out   # TypeScript model
-cargo run --release -p topo-cli -- serve examples/garage-truss.ts        # web UI: http://127.0.0.1:8765
+cargo run --release -p topo-cli -- serve examples                         # web UI: http://127.0.0.1:8765
 cargo run --release -p topo-cli -- example garage out                    # built-in Rust example
 cargo run --release -p topo-cli -- render out/model.json out2            # JSON IR
 cargo build -p topo-wasm --target wasm32-unknown-unknown --release
@@ -29,6 +29,16 @@ Field measurements (`horizontal`, `vertical`, `along(a, b, "north")`,
 `lengthOf`, `riseOver`) fit `unknown(...)` parameters; see
 [examples/garage-truss.ts](examples/garage-truss.ts).
 
+Structural checks run on every model: a gravity load takedown (roof →
+trusses → plates → studs/headers → foundation) and NDS (ASD) member and
+nailed-connection checks, each with a hand-calculation-style trace citing its
+source tables ([crates/topo-data](crates/topo-data/data)). `topo serve` shows
+them as heatmaps and a member inspector; `utilization(...)`,
+`schedule("checks")` and `schedule("reactions")` put them on sheets.
+[examples/benchmarks](examples/benchmarks) holds worked problems checked
+against hand calculations and published tables; start a site file from
+[examples/site-template.ts](examples/site-template.ts).
+
 The drawing set is code too: `.sheets(standardSheets("cover"), sheet("S-102",
 "Typical truss", elevation(roof.truss(2)), detail(heel, [roof.truss(2), walls],
 { scale: '1-1/2"' })), standardSheets("walls"))` — the sheets are the tabs in
@@ -46,7 +56,8 @@ sheet (paper space) and per view (full-size model space), `model.json` (the IR),
 | `topo-geom` | junction resolution → exact member solids, clash detection, mesh |
 | `topo-draw` | hidden-line views, dimensions, schedules, sheets, SVG/DXF |
 | `topo-timber` | lumber + NDS data, fastening presets, wall/floor generators, examples |
-| `topo-analysis` | analytical model, gravity support graph, ASCE 7 combos, `DesignCode` trait |
+| `topo-analysis` | analytical model, support graph, gravity load takedown, plane-frame solver, ASCE 7 combinations, NDS checks |
+| `topo-data` | reference tables with provenance: NDS values and factors, fasteners, material weights |
 | `topo-script` | runs TypeScript models (QuickJS + oxc) → scene spec → model |
 | `topo-wasm` | wasm-bindgen `Project` API |
 | `topo-cli` | `topo` binary |

@@ -1,6 +1,6 @@
 //! `topo example <name> <out-dir>` — build an example model and render it.
 //! `topo run <model.ts> <out-dir>` — run a TypeScript model and render it.
-//! `topo serve <model.ts> [port]` — web UI: inspect the model, add field measurements.
+//! `topo serve [model.ts | dir]… [port]` — web UI: pick a project, inspect it, add field measurements, edit its script.
 //! `topo render <model.json> <out-dir>` — render a model from its JSON IR.
 
 use std::fs;
@@ -11,7 +11,7 @@ use topo_script::solve::SolveReport;
 use topo_geom::Geometry;
 
 fn usage() -> ! {
-    eprintln!("usage:\n  topo example <garage|garage-as-built> <out-dir>\n  topo run <model.ts> <out-dir>\n  topo serve <model.ts> [port]\n  topo render <model.json> <out-dir>");
+    eprintln!("usage:\n  topo example <garage|garage-as-built> <out-dir>\n  topo run <model.ts> <out-dir>\n  topo serve [model.ts | dir]... [port]\n  topo render <model.json> <out-dir>");
     std::process::exit(2);
 }
 
@@ -31,9 +31,10 @@ fn main() {
                 }
             }
         }
-        ["serve", path] | ["serve", path, _] => {
-            let port = args.get(2).and_then(|p| p.parse().ok()).unwrap_or(8765);
-            if let Err(e) = serve::serve(Path::new(path), port) {
+        ["serve", rest @ ..] => {
+            let port = rest.iter().find_map(|a| a.parse::<u16>().ok()).unwrap_or(8765);
+            let paths: Vec<std::path::PathBuf> = rest.iter().filter(|a| a.parse::<u16>().is_err()).map(std::path::PathBuf::from).collect();
+            if let Err(e) = serve::serve(&paths, port) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -61,6 +62,8 @@ pub(crate) fn all_issues(model: &Model, topo: &Topology, geom: &Geometry) -> Vec
     issues.extend(geom.clash_issues());
     issues.extend(geom.bearing_issues(model));
     issues.extend(topo_analysis::load_path_issues(model, topo, geom));
+    let td = topo_analysis::takedown(model, topo, geom);
+    issues.extend(td.issues);
     issues
 }
 

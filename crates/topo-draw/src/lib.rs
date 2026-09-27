@@ -17,7 +17,7 @@ pub use sheet::Sheet;
 pub use views::{Ctx, View};
 
 use topo_core::units::INCH;
-use topo_core::{v2, validate, MemberId, Model, Severity, SheetSpec, Topology};
+use topo_core::{v2, validate, BBox2, MemberId, Model, Severity, SheetSpec, Topology};
 use topo_geom::Geometry;
 
 /// Wrapped text block in paper units, top-left at the origin.
@@ -106,6 +106,11 @@ impl DrawingSet {
         let marks = Marks::assign(model, geom);
         let ctx = Ctx { model, topo, geom, marks: &marks };
         let list = model.sheets.clone().unwrap_or_else(topo_core::standard_sheets);
+        // Structural results, only if a sheet shows them.
+        let wants = list.iter().any(|s| matches!(s, SheetSpec::Sheet { views, .. } if custom::needs_results(views)));
+        let td = wants.then(|| topo_analysis::takedown(model, topo, geom));
+        let analysis = td.as_ref().map(|t| topo_analysis::nds_asd(model, geom, t));
+        let results = td.as_ref().zip(analysis.as_ref()).map(|(takedown, analysis)| custom::Results { takedown, analysis });
         let mut sheets: Vec<Sheet> = vec![];
         let mut errors = vec![];
         let mut cover_at = None;
@@ -139,7 +144,7 @@ impl DrawingSet {
                     }
                     other => errors.push(format!("unknown standard sheets \"{other}\"")),
                 },
-                SheetSpec::Sheet { number, title, views } => sheets.extend(custom::sheet(&ctx, number, title, views, &extras, &mut errors)),
+                SheetSpec::Sheet { number, title, views } => sheets.extend(custom::sheet(&ctx, number, title, views, &extras, results, &mut errors)),
             }
         }
         if let Some(i) = cover_at {

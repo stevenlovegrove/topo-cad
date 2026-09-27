@@ -26,10 +26,21 @@ pub enum Layer {
     Knockout,
     /// Analytical (centre-line) model.
     Analytical,
+    /// Utilization fills, by band: ≤ 0.5, ≤ 0.8, ≤ 1.0, ≤ 1.5, > 1.5.
+    Heat0,
+    Heat1,
+    Heat2,
+    Heat3,
+    Heat4,
 }
 
 impl Layer {
-    pub const ALL: [Layer; 12] = [
+    pub const ALL: [Layer; 17] = [
+        Layer::Heat0,
+        Layer::Heat1,
+        Layer::Heat2,
+        Layer::Heat3,
+        Layer::Heat4,
         Layer::Knockout,
         Layer::Analytical,
         Layer::Framing,
@@ -57,6 +68,21 @@ impl Layer {
             Layer::Supports => "S-SUPP",
             Layer::Knockout => "S-MASK",
             Layer::Analytical => "S-ANLY",
+            Layer::Heat0 => "S-UTIL-0",
+            Layer::Heat1 => "S-UTIL-1",
+            Layer::Heat2 => "S-UTIL-2",
+            Layer::Heat3 => "S-UTIL-3",
+            Layer::Heat4 => "S-UTIL-4",
+        }
+    }
+    /// The utilization band layer for a demand/capacity ratio.
+    pub fn heat(ratio: f64) -> Layer {
+        match ratio {
+            r if r <= 0.5 => Layer::Heat0,
+            r if r <= 0.8 => Layer::Heat1,
+            r if r <= 1.0 => Layer::Heat2,
+            r if r <= 1.5 => Layer::Heat3,
+            _ => Layer::Heat4,
         }
     }
     pub fn dashed(self) -> Option<&'static str> {

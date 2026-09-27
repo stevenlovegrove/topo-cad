@@ -34,6 +34,11 @@ fn nailed(name: &str, penny: u32, count: u32, method: FastenMethod, spacing_in: 
     }
 }
 
+/// A custom nailed connection, e.g. `nails("Header to post", 16, 4, EndNail)`.
+pub fn nails(name: &str, penny: u32, count: u32, method: FastenMethod) -> Connection {
+    nailed(name, penny, count, method, None, "as specified")
+}
+
 const IRC: &str = "IRC R602.3(1)";
 
 pub fn stud_to_bottom_plate() -> Connection {

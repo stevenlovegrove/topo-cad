@@ -101,8 +101,8 @@ pub fn garage_studio() -> Model {
 
     let dead = m.add_load_case("D", LoadKind::Dead);
     let live = m.add_load_case("L", LoadKind::Live);
-    m.loads.push(Load::Area { case: dead, group: floor.group, pressure: psf(10.0), direction: -Vec3::Z });
-    m.loads.push(Load::Area { case: live, group: floor.group, pressure: psf(40.0), direction: -Vec3::Z });
+    m.loads.push(Load::Area { case: dead, group: floor.group, pressure: psf(10.0), direction: -Vec3::Z, basis: AreaBasis::Plan, label: None });
+    m.loads.push(Load::Area { case: live, group: floor.group, pressure: psf(40.0), direction: -Vec3::Z, basis: AreaBasis::Plan, label: None });
     m
 }
 
@@ -157,8 +157,8 @@ pub fn garage_as_built() -> Model {
     support_bottom_plates(&mut m, &walls.bottom_plates(), "Bottom plate on slab");
     let dead = m.add_load_case("D", LoadKind::Dead);
     let snow = m.add_load_case("S", LoadKind::Snow);
-    m.loads.push(Load::Area { case: dead, group: roof.group, pressure: psf(20.0), direction: -Vec3::Z });
-    m.loads.push(Load::Area { case: snow, group: roof.group, pressure: psf(25.0), direction: -Vec3::Z });
+    m.loads.push(Load::Area { case: dead, group: roof.group, pressure: psf(20.0), direction: -Vec3::Z, basis: AreaBasis::Plan, label: None });
+    m.loads.push(Load::Area { case: snow, group: roof.group, pressure: psf(25.0), direction: -Vec3::Z, basis: AreaBasis::Plan, label: None });
     m
 }
 

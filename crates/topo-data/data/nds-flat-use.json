@@ -1,0 +1,110 @@
+{
+ "source": {
+  "publication": "NDS Supplement",
+  "edition": "2018",
+  "table": "Table 4A flat use factor C_fu",
+  "url": "https://www.fp-supply.com/cmss_files/attachmentlibrary/AWC-NDS2018-Supplement-ViewOnly-171027.pdf",
+  "note": "Widths beyond the table use its last row (10\" and wider)."
+ },
+ "rows": [
+  {
+   "thickness": [
+    2,
+    3
+   ],
+   "width": [
+    2,
+    3
+   ],
+   "cfu": 1.0,
+   "verified": true
+  },
+  {
+   "thickness": [
+    2,
+    3
+   ],
+   "width": [
+    4
+   ],
+   "cfu": 1.1,
+   "verified": true
+  },
+  {
+   "thickness": [
+    2,
+    3
+   ],
+   "width": [
+    5
+   ],
+   "cfu": 1.1,
+   "verified": true
+  },
+  {
+   "thickness": [
+    2,
+    3
+   ],
+   "width": [
+    6
+   ],
+   "cfu": 1.15,
+   "verified": true
+  },
+  {
+   "thickness": [
+    2,
+    3
+   ],
+   "width": [
+    8
+   ],
+   "cfu": 1.15,
+   "verified": true
+  },
+  {
+   "thickness": [
+    2,
+    3
+   ],
+   "width": [
+    10
+   ],
+   "cfu": 1.2,
+   "verified": true
+  },
+  {
+   "thickness": [
+    4
+   ],
+   "width": [
+    4
+   ],
+   "cfu": 1.0,
+   "verified": true
+  },
+  {
+   "thickness": [
+    4
+   ],
+   "width": [
+    5,
+    6,
+    8
+   ],
+   "cfu": 1.05,
+   "verified": true
+  },
+  {
+   "thickness": [
+    4
+   ],
+   "width": [
+    10
+   ],
+   "cfu": 1.1,
+   "verified": true
+  }
+ ]
+}

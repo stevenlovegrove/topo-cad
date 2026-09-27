@@ -269,7 +269,7 @@ impl Model {
             self.loads.push(match l {
                 Load::Node { case: k, node, force, moment } => Load::Node { case: case(k), node: n(node), force, moment },
                 Load::MemberUniform { case: k, member, w } => Load::MemberUniform { case: case(k), member: m(member), w },
-                Load::Area { case: k, group, pressure, direction } => Load::Area { case: case(k), group: g(group), pressure, direction },
+                Load::Area { case: k, group, pressure, direction, basis, label } => Load::Area { case: case(k), group: g(group), pressure, direction, basis, label },
             });
         }
     }

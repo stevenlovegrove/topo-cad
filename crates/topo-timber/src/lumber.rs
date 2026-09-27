@@ -4,7 +4,6 @@
 //! visually graded dimension lumber, 2"–4" thick. They are data for the NDS
 //! design-code plug-in; verify against the edition adopted by the AHJ.
 
-use serde::{Deserialize, Serialize};
 use topo_core::units::{inch, psi, PCF};
 use topo_core::{Material, MaterialId, Section, Shape};
 
@@ -55,34 +54,10 @@ pub fn board_feet(section: &Section, length_m: f64) -> Option<f64> {
     Some(t * w * (length_m / inch(12.0)) / 12.0 * section.plies as f64)
 }
 
-/// NDS reference design values (psi) for visually graded dimension lumber.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NdsReference {
-    pub species: &'static str,
-    pub grade: &'static str,
-    pub fb: f64,
-    pub ft: f64,
-    pub fv: f64,
-    pub fc_perp: f64,
-    pub fc: f64,
-    pub e: f64,
-    pub e_min: f64,
-    /// Specific gravity (NDS Table 12.3.3A) — used for fastener design.
-    pub g: f64,
-}
-
-/// Selected rows of NDS Supplement Table 4A (2018).
-pub const NDS_TABLE_4A: &[NdsReference] = &[
-    NdsReference { species: "DFL", grade: "Select Structural", fb: 1500., ft: 1000., fv: 180., fc_perp: 625., fc: 1700., e: 1_900_000., e_min: 690_000., g: 0.50 },
-    NdsReference { species: "DFL", grade: "No.1", fb: 1000., ft: 675., fv: 180., fc_perp: 625., fc: 1500., e: 1_700_000., e_min: 620_000., g: 0.50 },
-    NdsReference { species: "DFL", grade: "No.2", fb: 900., ft: 575., fv: 180., fc_perp: 625., fc: 1350., e: 1_600_000., e_min: 580_000., g: 0.50 },
-    NdsReference { species: "DFL", grade: "Stud", fb: 700., ft: 450., fv: 180., fc_perp: 625., fc: 850., e: 1_400_000., e_min: 510_000., g: 0.50 },
-    NdsReference { species: "SPF", grade: "No.1/No.2", fb: 875., ft: 450., fv: 135., fc_perp: 425., fc: 1150., e: 1_400_000., e_min: 510_000., g: 0.42 },
-    NdsReference { species: "SPF", grade: "Stud", fb: 675., ft: 350., fv: 135., fc_perp: 425., fc: 725., e: 1_200_000., e_min: 440_000., g: 0.42 },
-];
-
-pub fn nds_reference(species: &str, grade: &str) -> Option<&'static NdsReference> {
-    NDS_TABLE_4A.iter().find(|r| r.species == species && r.grade == grade)
+/// NDS reference design values (psi) for a visually graded species/grade,
+/// from the reference data (with provenance) in `topo-data`.
+pub fn nds_reference(species: &str, grade: &str) -> Option<&'static topo_data::LumberValues> {
+    topo_data::lumber(species, grade)
 }
 
 fn species_name(code: &str) -> &str {

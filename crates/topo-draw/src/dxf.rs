@@ -20,6 +20,11 @@ fn color(l: Layer) -> u8 {
         Layer::Nodes => 1,
         Layer::Supports => 6,
         Layer::Knockout => 7,
+        Layer::Heat0 => 3,
+        Layer::Heat1 => 51,
+        Layer::Heat2 => 40,
+        Layer::Heat3 => 1,
+        Layer::Heat4 => 6,
     }
 }
 

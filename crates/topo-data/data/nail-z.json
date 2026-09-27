@@ -1,0 +1,107 @@
+{
+ "source": {
+  "publication": "NDS",
+  "edition": "2018",
+  "table": "Table 12N",
+  "url": "https://awc.org/wp-content/uploads/2026/08/AWC_NDS2018-withCommentary_20240204_AWCWebsite_Chapter-12-Dowel-Type-Fasteners.pdf",
+  "note": "Single shear, 1-1/2\" sawn side member, both members of the same G; tabulated for main-member penetration p = 10D (reduce by p/10D down to p = 6D). Used to cross-check the yield-limit equations."
+ },
+ "rows": [
+  {
+   "kind": "common",
+   "penny": 8,
+   "side": 1.5,
+   "g": 0.55,
+   "z": 106,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 8,
+   "side": 1.5,
+   "g": 0.5,
+   "z": 97,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 8,
+   "side": 1.5,
+   "g": 0.43,
+   "z": 84,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 8,
+   "side": 1.5,
+   "g": 0.42,
+   "z": 82,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 10,
+   "side": 1.5,
+   "g": 0.55,
+   "z": 128,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 10,
+   "side": 1.5,
+   "g": 0.5,
+   "z": 118,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 10,
+   "side": 1.5,
+   "g": 0.43,
+   "z": 102,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 10,
+   "side": 1.5,
+   "g": 0.42,
+   "z": 100,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 16,
+   "side": 1.5,
+   "g": 0.55,
+   "z": 154,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 16,
+   "side": 1.5,
+   "g": 0.5,
+   "z": 141,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 16,
+   "side": 1.5,
+   "g": 0.43,
+   "z": 122,
+   "verified": true
+  },
+  {
+   "kind": "common",
+   "penny": 16,
+   "side": 1.5,
+   "g": 0.42,
+   "z": 120,
+   "verified": true
+  }
+ ]
+}

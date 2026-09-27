@@ -14,6 +14,7 @@
   header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   header b { font-size: 15px; }
   #status { color: var(--muted); }
+  #project { width: auto; max-width: 260px; font-size: 13px; }
   #status .ok { color: var(--ok); } #status .bad { color: var(--bad); }
   nav { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
   nav button { border: 1px solid var(--line); background: var(--bg); padding: 3px 9px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; }
@@ -78,11 +79,32 @@
     aside { width: auto; border-left: 0; border-top: 1px solid var(--line); }
     nav { margin-left: 0; }
   }
+  #structure .sum { font-size: 13px; }
+  #structure .sum b.bad { color: var(--bad); } #structure .sum b.ok { color: var(--ok); }
+  #structure label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; flex: 1; }
+  .legend { height: 10px; border-radius: 3px; margin: 8px 0 2px; background: linear-gradient(90deg, #2b9348 0%, #a7c957 35%, #f4a100 65%, #d62828 80%, #7b1fa2 100%); }
+  .legend-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); }
+  ul.worst { list-style: none; padding: 0; margin: 6px 0; font-size: 12px; }
+  ul.worst li { display: grid; grid-template-columns: 44px 1fr; gap: 6px; padding: 3px 2px; cursor: pointer; border-bottom: 1px solid var(--line); }
+  ul.worst li:hover { background: #f3f3ee; }
+  .ratio { font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; }
+  .bar { height: 6px; border-radius: 3px; background: #eee; margin-top: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; }
+  #inspector .head { margin-top: 10px; padding: 8px; background: #f7f7f3; border-radius: 6px; font-size: 12px; }
+  #inspector .head b { font-size: 13px; }
+  .chk { border-bottom: 1px solid var(--line); padding: 6px 0; font-size: 12px; }
+  .chk .top { display: grid; grid-template-columns: 1fr auto; gap: 6px; cursor: pointer; }
+  .chk table { margin-top: 4px; font-size: 11px; }
+  .chk td { padding: 2px 3px; }
+  .chk .note { color: var(--muted); font-style: italic; margin-top: 2px; }
+  .badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; background: #fff4d6; color: #8a5a00; margin-left: 4px; }
+  svg.chart { width: 100%; height: 78px; display: block; margin-top: 4px; }
   .tk-k { color: #8a2be2; } .tk-s { color: #1e7b3a; } .tk-c { color: #8b8b84; font-style: italic; } .tk-n { color: #b35900; } .tk-f { color: #1f5fbf; }
 </style>
 </head>
 <body>
 <header>
+  <select id="project" title="Open a project (examples, benchmarks, your projects)"></select>
   <b id="title">topo-cad</b>
   <span id="status">loading…</span>
   <nav id="tabs"></nav>
@@ -104,6 +126,29 @@
   </div>
   <aside>
     <div id="banner"></div>
+    <div id="structure">
+      <h3>Structure <span id="asce" class="muted" style="text-transform:none;letter-spacing:0"></span></h3>
+      <div class="sum" id="strSummary">—</div>
+      <div class="row" style="margin-top:8px">
+        <label>Colour by
+          <select id="heatMode">
+            <option value="off">off</option>
+            <option value="utilization">utilization (all checks)</option>
+            <option value="bending">bending</option>
+            <option value="shear">shear</option>
+            <option value="compression">compression</option>
+            <option value="bearing">bearing</option>
+            <option value="deflection">deflection</option>
+            <option value="connections">nailed connections</option>
+          </select>
+        </label>
+        <label>Load combination <select id="heatCombo"></select></label>
+      </div>
+      <div class="legend"></div>
+      <div class="legend-labels"><span>0</span><span>0.5</span><span>0.8</span><span>1.0</span><span>≥ 1.5</span></div>
+      <ul class="worst" id="worst"></ul>
+      <div id="inspector"></div>
+    </div>
     <h3>New measurement</h3>
     <div class="row">
       <button class="act" id="btnDist" title="Pick two features (faces, corners, centrelines)">Distance</button>
@@ -153,6 +198,7 @@ async function poll() {
   try {
     const s = await api("/api/state");
     if (!state || s.version !== state.version) {
+      if (state && s.file !== state.file) resetForProject();
       state = s;
       // A model that fails before any sheet exists opens on its script.
       if (s.error && !(s.sheets || []).length && view === "sheet" && !svg) view = "script";
@@ -183,6 +229,7 @@ function renderPanel() {
   if (s.sidecar && s.sidecar.exists && !s.sidecar.imported) {
     banner.innerHTML = `<div class="warn">New measurements are saved to <b>${esc(s.sidecar.path)}</b>. Import it in your model to use them:<code>${esc(s.sidecar.hint)}</code></div>`;
   }
+  renderStructure();
   const fit = s.fit;
   const st = $("status");
   if (fit) {
@@ -212,6 +259,156 @@ function renderPanel() {
     ut.appendChild(tr);
   });
   $("issues").innerHTML = s.issues.length ? s.issues.map((i) => `<li>${esc(i)}</li>`).join("") : "<li class=muted>none</li>";
+}
+
+// ----- structure: checks, heatmap, member inspector -------------------------
+let heatData = [], inspected = null;
+function heatColor(r) {
+  const stops = [[0, [43, 147, 72]], [0.5, [167, 201, 87]], [0.8, [244, 161, 0]], [1.0, [214, 40, 40]], [1.5, [123, 31, 162]]];
+  const x = Math.max(0, Math.min(1.5, r));
+  for (let i = 1; i < stops.length; i++) {
+    if (x <= stops[i][0]) {
+      const [a, ca] = stops[i - 1], [b, cb] = stops[i];
+      const f = (x - a) / (b - a);
+      return `rgb(${ca.map((c, k) => Math.round(c + (cb[k] - c) * f)).join(",")})`;
+    }
+  }
+  return "rgb(123,31,162)";
+}
+
+function renderStructure() {
+  const a = state.analysis;
+  if (!a) { $("structure").hidden = true; return; }
+  $("structure").hidden = false;
+  $("asce").textContent = `NDS 2018 ASD · ASCE ${a.asce7}`;
+  const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : `<b class="ok">all within capacity</b>`;
+  const ind = a.indicative_over ? ` · <span class="muted" title="Members designed by others (e.g. manufactured trusses): checked for information only">${a.indicative_over} indicative over 1.0</span>` : "";
+  $("strSummary").innerHTML = `${a.checked} members checked · ${over}${ind} · max ratio ${a.max.toFixed(2)}` +
+    (a.unverified ? `<span class="badge" title="Some reference values are not yet verified against their source">unverified data</span>` : "") +
+    (a.issues.length ? `<div class="muted" style="margin-top:4px">${a.issues.map(esc).join("<br>")}</div>` : "");
+  const sel = $("heatCombo"), prev = sel.value;
+  sel.innerHTML = `<option value="">governing (all)</option>` + a.combos.map((c) => `<option>${esc(c)}</option>`).join("");
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  $("worst").innerHTML = a.worst.map((w) => `<li data-path="${esc(w.path)}"><span class="ratio" style="color:${heatColor(w.ratio)}">${w.ratio.toFixed(2)}</span><span>${esc(w.label)} <span class="muted">— ${esc(w.title)} (${esc(w.combination)})${w.indicative ? " · indicative" : ""}</span></span></li>`).join("");
+  for (const li of $("worst").children) li.onclick = () => inspect(li.dataset.path);
+  if (inspected) inspect(inspected, true);
+}
+
+async function loadHeat() {
+  const mode = $("heatMode").value;
+  heatData = !svg || !state || state.error ? [] : await api(`/api/heat/${sheet}?mode=${mode === "off" ? "utilization" : mode}&combo=${encodeURIComponent($("heatCombo").value)}`);
+  drawHeat();
+}
+
+function drawHeat() {
+  if (!svg) return;
+  const g = svg.querySelector("#heat");
+  if (!g) return;
+  g.innerHTML = "";
+  if ($("heatMode").value === "off") return;
+  const p = px();
+  for (const h of heatData) {
+    const poly = el("polygon", { points: h.outline.map((q) => q.join(",")).join(" "), fill: heatColor(h.ratio), "fill-opacity": 0.6, stroke: h.path === inspected ? "#111" : "none", "stroke-width": 2.5 * p }, g);
+    poly.style.pointerEvents = "none";
+  }
+}
+
+$("heatMode").addEventListener("change", loadHeat);
+$("heatCombo").addEventListener("change", () => { loadHeat(); if (inspected) inspect(inspected, true); });
+
+function chart(t, v, title, unit, color, down) {
+  if (!v.length || v.every((x) => Math.abs(x) < 1e-9)) return "";
+  const shown = v;
+  if (down) v = v.map((x) => -x);  // draw downward-positive values below the axis
+  const w = 380, h = 70, pad = 4;
+  const t0 = t[0], t1 = t[t.length - 1] || 1;
+  const vmax = Math.max(...v.map(Math.abs)) || 1;
+  const x = (tt) => pad + (w - 2 * pad) * (tt - t0) / ((t1 - t0) || 1);
+  const y = (vv) => h / 2 - (h / 2 - pad) * vv / vmax;
+  const pts = t.map((tt, i) => `${x(tt).toFixed(1)},${y(v[i]).toFixed(1)}`).join(" ");
+  const i = v.reduce((k, vv, j) => (Math.abs(vv) > Math.abs(v[k]) ? j : k), 0);
+  return `<div class="muted" style="font-size:11px;margin-top:6px">${title}: max ${fmtNum(shown[i])} ${unit} at ${fmtNum(t[i])} ft</div>
+    <svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <line x1="0" x2="${w}" y1="${h / 2}" y2="${h / 2}" stroke="#bbb" stroke-width="1"/>
+      <polygon points="${x(t0)},${h / 2} ${pts} ${x(t1)},${h / 2}" fill="${color}" fill-opacity="0.18"/>
+      <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>
+    </svg>`;
+}
+function fmtNum(v) { const a = Math.abs(v); return a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : v.toFixed(2); }
+
+async function inspect(path, keep) {
+  inspected = path;
+  const r = await api(`/api/member?path=${encodeURIComponent(path)}&combo=${encodeURIComponent($("heatCombo").value)}`);
+  if (r.error) { $("inspector").innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
+  const sup = r.supports.map((s) => `${esc(s.by)} at ${s.at_ft.toFixed(2)} ft${s.transfer === "Fastened" ? " (nails only)" : ""}`).join("; ");
+  const d = r.diagram;
+  let html = `<div class="head"><b>${esc(r.label)}</b> — ${esc(r.section)} ${esc(r.material)}, ${esc(r.role)}, ${r.behaviour}, ${r.length_ft.toFixed(2)} ft<br><span class="muted">Supported by: ${sup || "—"}</span></div>`;
+  html += `<div class="muted" style="font-size:11px;margin-top:6px">Diagrams for ${esc(r.combination)}</div>`;
+  html += chart(d.t_ft, d.m_lbft, "Moment", "lb·ft", "#1d4ed8") + chart(d.t_ft, d.v_lb, "Shear", "lb", "#2b9348") + chart(d.t_ft, d.n_lb, "Axial (tension +)", "lb", "#8a2be2") + chart(d.t_ft, d.y_in, "Deflection (downward)", "in", "#d62828", true);
+  html += `<h3 style="margin-top:12px">Checks</h3>`;
+  r.checks.forEach((c, k) => {
+    const pct = Math.min(100, c.ratio * 100 / 1.5);
+    html += `<div class="chk"><div class="top" data-k="${k}"><span>${esc(c.title)} <span class="muted">${esc(c.combination)}${c.other ? " · with " + esc(c.other) : ""}</span>${c.verified ? "" : `<span class="badge">unverified data</span>`}${c.indicative ? `<span class="badge" style="background:#eef">indicative</span>` : ""}</span>
+      <span class="ratio" style="color:${heatColor(c.ratio)}">${c.ratio.toFixed(2)}</span></div>
+      <div class="bar"><i style="width:${pct}%;background:${heatColor(c.ratio)}"></i></div>
+      <div class="muted">${fmtNum(c.demand)} / ${fmtNum(c.capacity)} ${esc(c.unit)} · ${esc(c.clause)}</div>
+      <div class="trace" hidden><table>${c.trace.map((s) => `<tr><td><b>${esc(s.symbol)}</b></td><td>${esc(s.formula)}${s.substituted ? ` <span class="muted">[${esc(s.substituted)}]</span>` : ""}</td><td class="num">${fmtNum(s.value)} ${esc(s.unit)}</td><td class="muted">${esc(s.reference || "")}</td></tr>`).join("")}</table>
+      ${c.notes.map((n) => `<div class="note">${esc(n)}</div>`).join("")}</div></div>`;
+  });
+  $("inspector").innerHTML = html;
+  for (const t of $("inspector").querySelectorAll(".chk .top")) t.onclick = () => { const tr = t.parentElement.querySelector(".trace"); tr.hidden = !tr.hidden; };
+  drawHeat();
+  if (!keep) $("inspector").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ----- projects ------------------------------------------------------------
+async function loadProjects() {
+  const r = await api("/api/projects");
+  const sel = $("project");
+  sel.innerHTML = "";
+  const groups = new Map();
+  for (const p of r.projects) {
+    if (!groups.has(p.group)) {
+      const g = document.createElement("optgroup");
+      g.label = p.group || "projects";
+      groups.set(p.group, g);
+      sel.appendChild(g);
+    }
+    const o = document.createElement("option");
+    o.value = p.path; o.textContent = p.name; o.selected = p.path === r.current;
+    groups.get(p.group).appendChild(o);
+  }
+  const g = document.createElement("optgroup");
+  g.label = "—";
+  const o = document.createElement("option");
+  o.value = "__new__"; o.textContent = "New project…";
+  g.appendChild(o);
+  sel.appendChild(g);
+}
+
+$("project").addEventListener("change", async (e) => {
+  const v = e.target.value;
+  if (files.some((f) => f.text !== f.saved) && !confirm("Discard unsaved script edits?")) { await loadProjects(); return; }
+  if (v === "__new__") {
+    const name = prompt("Name for the new project (saved in ./projects):");
+    if (!name) { await loadProjects(); return; }
+    const r = await api("/api/new", { path: name });
+    if (r.error) { alert(r.error); await loadProjects(); return; }
+  } else {
+    const r = await api("/api/open", { path: v });
+    if (r.error) { alert(r.error); return; }
+  }
+  await loadProjects();
+});
+
+// Forget everything tied to the previous project.
+function resetForProject() {
+  sheet = 0; viewBox = null; svg = null; selected = null; overlays = [];
+  picks = []; choice = []; hover = null; mode = null;
+  files = []; current = 0; srcVersion = -1;
+  inspected = null; heatData = []; $("inspector").innerHTML = "";
+  $("sheet").innerHTML = "";
+  if (typeof cancel === "function") cancel();
 }
 
 // ----- tabs: sheets (from the script's .sheets(...)) and the script itself --
@@ -369,12 +566,13 @@ async function loadSheet() {
   svg.removeAttribute("height");
   if (!viewBox) viewBox = fitViews();
   svg.setAttribute("viewBox", viewBox.join(" "));
-  for (const id of ["ov", "hl"]) {
+  for (const id of ["heat", "ov", "hl"]) {
     const g = document.createElementNS(NS, "g");
     g.id = id;
     svg.appendChild(g);
   }
   overlays = await api(`/api/overlay/${sheet}`);
+  await loadHeat();
   drawOverlays();
   drawPicks();
 }
@@ -515,7 +713,11 @@ async function sendPick() {
   } finally { pending = false; }
   const tip = $("tip");
   if (hover) {
-    const label = mode === "len" ? `member: ${hover.member_label}` : hover.primary ? hover.primary.label : `member: ${hover.member_label}`;
+    let label = mode === "len" ? `member: ${hover.member_label}` : hover.primary ? hover.primary.label : `member: ${hover.member_label}`;
+    if (!mode) {
+      const h = heatData.find((x) => x.path === hover.member);
+      label = `${hover.member_label}` + (h ? ` · ${h.ratio.toFixed(2)} ${h.title.toLowerCase()} (${h.combination})` : "") + " — click for checks";
+    }
     tip.textContent = label;
     const r = $("viewer").getBoundingClientRect();
     tip.style.display = "block";
@@ -542,6 +744,7 @@ $("btnLen").onclick = () => startMode("len");
 $("btnCancel").onclick = cancel;
 
 function onClick() {
+  if (!mode && hover) { inspect(hover.member); return; }
   if (!mode || !hover) return;
   if (mode === "len") {
     picks = [{ member: hover.member, label: `member ${hover.member_label}`, outline: hover.member_outline }];
@@ -633,6 +836,7 @@ function msg(text, isErr) {
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
 
+loadProjects();
 poll();
 </script>
 </body>

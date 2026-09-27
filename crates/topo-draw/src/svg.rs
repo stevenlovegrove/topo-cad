@@ -9,7 +9,12 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-const ORDER: [Layer; 12] = [
+const ORDER: [Layer; 17] = [
+    Layer::Heat0,
+    Layer::Heat1,
+    Layer::Heat2,
+    Layer::Heat3,
+    Layer::Heat4,
     Layer::Analytical,
     Layer::Hidden,
     Layer::Framing,
@@ -38,6 +43,8 @@ const CSS: &str = "
   .S-NODE.fill { fill:#b3261e }
   .S-SUPP { stroke:#000; stroke-width:0.008; fill:none }
   .G-TTLB { stroke:#000; stroke-width:0.02; fill:none }
+  .S-UTIL-0 { fill:#b7e4c7; stroke:none } .S-UTIL-1 { fill:#e9f5a4; stroke:none } .S-UTIL-2 { fill:#ffd166; stroke:none }
+  .S-UTIL-3 { fill:#f28482; stroke:none } .S-UTIL-4 { fill:#c77dff; stroke:none }
   text { font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif; stroke:none; fill:#000 }
   text.b { font-weight:700 }
 ";

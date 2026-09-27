@@ -5,12 +5,17 @@
 //! takedown, a sparse 3D frame solver and NDS member/connection checks.
 
 pub mod code;
+pub mod frame2d;
 pub mod loadpath;
 pub mod model;
+pub mod nds;
+pub mod takedown;
 
 pub use code::*;
 pub use loadpath::{load_path_issues, support_graph, SupportEdge, Transfer};
 pub use model::{AnalysisModel, Element};
+pub use nds::{nds_asd, Analysis};
+pub use takedown::{takedown, Behaviour, Diagram, MemberInfo, Reaction, SupportPt, Takedown};
 
 #[cfg(test)]
 mod tests {
@@ -86,14 +91,69 @@ mod tests {
         assert!(edges.iter().any(|e| role(&m, e.member) == "bottom_chord" && role(&m, e.by) == "cap_plate"));
     }
 
+    /// Every load reaches the foundation: for each case, the foundation
+    /// reactions add up to the load applied (roof, floor, self-weight).
+    #[test]
+    fn takedown_is_in_equilibrium() {
+        for m in [garage_studio(), topo_timber::examples::garage_as_built()] {
+            let topo = Topology::build(&m);
+            let g = Geometry::build(&m, &topo);
+            let t = takedown(&m, &topo, &g);
+            assert!(t.issues.is_empty(), "{}: {:#?}", m.info.name, t.issues);
+            for (ci, case) in m.load_cases.iter().enumerate() {
+                let found: f64 = t.foundation(&[(case.id, 1.0)]).iter().map(|r| r.force.z).sum();
+                let applied = t.applied[ci];
+                assert!(applied > 0.0);
+                assert!((found - applied).abs() < 1e-6 * applied, "{} {}: foundation {found} vs applied {applied}", m.info.name, case.name);
+            }
+        }
+    }
+
     #[test]
     fn asd_combinations_for_dead_and_live() {
         let m = garage_studio();
-        let combos = asce7_asd(&m.load_cases);
+        let combos = asce7_asd(&m.load_cases, &m.standards.asce7);
         let names: Vec<&str> = combos.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["D", "D + L"]);
         assert!((nds_load_duration(&m, &combos[0]) - 0.9).abs() < 1e-12);
         assert!((nds_load_duration(&m, &combos[1]) - 1.0).abs() < 1e-12);
         assert!(m.load_cases.iter().any(|c| c.kind == LoadKind::Live));
+    }
+}
+
+#[cfg(test)]
+mod explore {
+    use super::*;
+    use topo_core::Topology;
+    use topo_geom::Geometry;
+
+    /// Prints the governing checks of the as-built garage (run with --nocapture).
+    #[test]
+    #[ignore]
+    fn print_garage_checks() {
+        let m = topo_timber::examples::garage_as_built();
+        let topo = Topology::build(&m);
+        let g = Geometry::build(&m, &topo);
+        let td = takedown(&m, &topo, &g);
+        let a = nds_asd(&m, &g, &td);
+        let mut gov: Vec<usize> = a.governing.iter().flatten().copied().collect();
+        gov.sort_by(|x, y| a.checks[*y].ratio().total_cmp(&a.checks[*x].ratio()));
+        for &i in gov.iter().take(12) {
+            let c = &a.checks[i];
+            println!("{:5.2}  {:<40} {:<45} {:>9.1} / {:>9.1} {}  [{}]", c.ratio(), m.member_path(c.member), c.title, c.demand, c.capacity, c.unit, c.combination);
+        }
+        for i in &a.issues {
+            println!("issue: {}", i.message);
+        }
+        let hdr = m.members.iter().find(|x| x.role == "header").unwrap().id;
+        for c in a.checks.iter().filter(|c| c.member == hdr && c.combination == "D + S") {
+            println!("\n== {} ({}) {:.2}", c.title, c.clause, c.ratio());
+            for s in &c.trace.steps {
+                println!("  {:<8} = {:<60} = {} {}   {}", s.symbol, format!("{} [{}]", s.formula, s.substituted), s.value, s.unit, s.reference.clone().unwrap_or_default());
+            }
+            for n in &c.notes {
+                println!("  note: {n}");
+            }
+        }
     }
 }

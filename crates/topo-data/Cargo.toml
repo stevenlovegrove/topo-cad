@@ -1,0 +1,10 @@
+[package]
+name = "topo-data"
+description = "Reference data with provenance: design values, adjustment factors, fasteners, material weights, part catalogs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

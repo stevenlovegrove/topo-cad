@@ -1,0 +1,53 @@
+{
+ "source": {
+  "publication": "NDS",
+  "edition": "2018",
+  "table": "Table 2.3.2",
+  "url": "https://awc.org/wp-content/uploads/2021/10/AWC_NDS2018-withCommentary_20200827_AWCWebsite_Chapter02.pdf",
+  "note": "C_D does not apply to E, E_min, or deformation-based F_c\u22a5; C_D > 1.6 not allowed for connections."
+ },
+ "rows": [
+  {
+   "load": "dead",
+   "duration": "permanent",
+   "cd": 0.9,
+   "verified": true
+  },
+  {
+   "load": "live",
+   "duration": "ten years",
+   "cd": 1.0,
+   "verified": true
+  },
+  {
+   "load": "snow",
+   "duration": "two months",
+   "cd": 1.15,
+   "verified": true
+  },
+  {
+   "load": "roof_live",
+   "duration": "seven days",
+   "cd": 1.25,
+   "verified": true
+  },
+  {
+   "load": "wind",
+   "duration": "ten minutes",
+   "cd": 1.6,
+   "verified": true
+  },
+  {
+   "load": "seismic",
+   "duration": "ten minutes",
+   "cd": 1.6,
+   "verified": true
+  },
+  {
+   "load": "impact",
+   "duration": "impact",
+   "cd": 2.0,
+   "verified": true
+  }
+ ]
+}

@@ -33,6 +33,25 @@ pub struct Check {
     pub clause: String,
     pub demand: f64,
     pub capacity: f64,
+    /// Unit of demand and capacity, e.g. `psi`, `lb`, `in`.
+    #[serde(default)]
+    pub unit: String,
+    /// The other member involved (bearing on, fastened to), if any.
+    #[serde(default)]
+    pub other: Option<MemberId>,
+    /// Where along the member it governs (m from its first node).
+    #[serde(default)]
+    pub at: Option<f64>,
+    /// Assumptions and caveats an engineer should see.
+    #[serde(default)]
+    pub notes: Vec<String>,
+    /// Whether every reference value used has been checked against its source.
+    #[serde(default)]
+    pub verified: bool,
+    /// For information only (e.g. members designed by others, such as
+    /// manufactured trusses); not counted as a failure.
+    #[serde(default)]
+    pub indicative: bool,
     pub trace: CalcTrace,
 }
 
@@ -73,32 +92,51 @@ pub trait DesignCode {
     fn check_member(&self, model: &Model, member: MemberId, combo: &Combination, forces: &MemberForces) -> Vec<Check>;
 }
 
-/// ASCE 7-16 §2.4.1 basic ASD combinations, generated for the load kinds
-/// present. Several cases of one kind are applied together.
-pub fn asce7_asd(cases: &[LoadCase]) -> Vec<Combination> {
+/// ASCE 7 §2.4.1 basic ASD combinations for an edition (`7-16` or `7-22`),
+/// generated for the load kinds present. Several cases of one kind are
+/// applied together. ASCE 7-22 uses strength-level snow loads, so snow
+/// enters ASD combinations at 0.7S.
+pub fn asce7_asd(cases: &[LoadCase], edition: &str) -> Vec<Combination> {
     use LoadKind::*;
+    let s = if edition == "7-22" { 0.7 } else { 1.0 };
     let of = |k: LoadKind| cases.iter().filter(move |c| c.kind == k).map(|c| c.id).collect::<Vec<_>>();
     let has = |k: LoadKind| !of(k).is_empty();
     let mut out = vec![];
-    let mut push = |name: &str, terms: &[(LoadKind, f64)]| {
+    let mut push = |terms: &[(LoadKind, f64)]| {
         if terms.iter().any(|(k, _)| !has(*k)) {
             return;
         }
+        let name = terms
+            .iter()
+            .map(|&(k, f)| {
+                let sym = match k {
+                    Dead => "D",
+                    Live => "L",
+                    RoofLive => "Lr",
+                    Snow => "S",
+                    Wind => "W",
+                    Seismic => "E",
+                    Other => "O",
+                };
+                if (f - 1.0).abs() < 1e-9 { sym.to_string() } else { format!("{}{sym}", (f * 1000.0).round() / 1000.0) }
+            })
+            .collect::<Vec<_>>()
+            .join(" + ");
         let factors = terms.iter().flat_map(|&(k, f)| of(k).into_iter().map(move |id| (id, f))).collect();
-        out.push(Combination { name: name.into(), factors });
+        out.push(Combination { name, factors });
     };
-    push("D", &[(Dead, 1.0)]);
-    push("D + L", &[(Dead, 1.0), (Live, 1.0)]);
-    push("D + Lr", &[(Dead, 1.0), (RoofLive, 1.0)]);
-    push("D + S", &[(Dead, 1.0), (Snow, 1.0)]);
-    push("D + 0.75L + 0.75Lr", &[(Dead, 1.0), (Live, 0.75), (RoofLive, 0.75)]);
-    push("D + 0.75L + 0.75S", &[(Dead, 1.0), (Live, 0.75), (Snow, 0.75)]);
-    push("D + 0.6W", &[(Dead, 1.0), (Wind, 0.6)]);
-    push("D + 0.7E", &[(Dead, 1.0), (Seismic, 0.7)]);
-    push("D + 0.75L + 0.45W + 0.75S", &[(Dead, 1.0), (Live, 0.75), (Wind, 0.45), (Snow, 0.75)]);
-    push("D + 0.75L + 0.525E + 0.75S", &[(Dead, 1.0), (Live, 0.75), (Seismic, 0.525), (Snow, 0.75)]);
-    push("0.6D + 0.6W", &[(Dead, 0.6), (Wind, 0.6)]);
-    push("0.6D + 0.7E", &[(Dead, 0.6), (Seismic, 0.7)]);
+    push(&[(Dead, 1.0)]);
+    push(&[(Dead, 1.0), (Live, 1.0)]);
+    push(&[(Dead, 1.0), (RoofLive, 1.0)]);
+    push(&[(Dead, 1.0), (Snow, s)]);
+    push(&[(Dead, 1.0), (Live, 0.75), (RoofLive, 0.75)]);
+    push(&[(Dead, 1.0), (Live, 0.75), (Snow, 0.75 * s)]);
+    push(&[(Dead, 1.0), (Wind, 0.6)]);
+    push(&[(Dead, 1.0), (Seismic, 0.7)]);
+    push(&[(Dead, 1.0), (Live, 0.75), (Wind, 0.45), (Snow, 0.75 * s)]);
+    push(&[(Dead, 1.0), (Live, 0.75), (Seismic, 0.525), (Snow, 0.75 * s)]);
+    push(&[(Dead, 0.6), (Wind, 0.6)]);
+    push(&[(Dead, 0.6), (Seismic, 0.7)]);
     out
 }
 
