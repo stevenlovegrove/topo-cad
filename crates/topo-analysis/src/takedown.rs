@@ -431,10 +431,13 @@ pub fn takedown(model: &Model, topo: &Topology, geom: &Geometry) -> Takedown {
                     applied[ci] += -w.z * l;
                 }
             }
-            Load::MemberUniform { case, member, w } => {
+            Load::MemberUniform { case, member, w, range } => {
                 let (_, _, l) = axis(model, *member);
-                loading[case.idx()][member.idx()].lines.push((0.0, l, *w, *w));
-                applied[case.idx()] += -w.z * l;
+                let (t0, t1) = range.map(|(a, b)| (a.clamp(0.0, l), b.clamp(0.0, l))).unwrap_or((0.0, l));
+                if t1 > t0 {
+                    loading[case.idx()][member.idx()].lines.push((t0, t1, *w, *w));
+                    applied[case.idx()] += -w.z * (t1 - t0);
+                }
             }
             Load::Node { case, node, force, .. } => {
                 if let Some(m) = model.members.iter().find(|m| m.path.contains(node)) {

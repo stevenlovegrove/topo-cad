@@ -100,6 +100,23 @@ export function roofSnow(site: SiteHazards, o: { ce: number; ct: number; is?: nu
   };
 }
 
+/**
+ * A layer of boards, as a `layers(...)` item: weight from the species'
+ * specific gravity (NDS Table 12.3.3A, via the lumber table) at about 12 %
+ * moisture, the dressed size, and the board spacing (default: laid tight).
+ */
+export function boards(size: Nominal, o: { grade?: Grade; spacing?: Length } = {}): readonly [string, number] {
+  const grade = o.grade ?? DFL.No2;
+  const t = dataTable<{ species: string; grade: string; g: number }>("nds-lumber");
+  const row = t.rows.find((r) => r.species === grade.species && r.grade === grade.grade) ?? t.rows.find((r) => r.species === grade.species);
+  if (!row) throw new Error(`no specific gravity for ${grade.species}`);
+  const [tk, wd] = [dressed(size[0]) / 0.0254, dressed(size[1]) / 0.0254]; // inches
+  const pcf = 62.4 * row.g * 1.12;
+  const spacingIn = o.spacing === undefined ? wd : o.spacing / 0.0254;
+  const psfValue = (pcf * (tk / 12) * wd) / spacingIn;
+  return [`${size[0]}x${size[1]} ${grade.species} boards ${o.spacing === undefined ? "laid tight" : `@ ${spacingIn.toFixed(1)}" o.c.`} (G ${row.g}: ${pcf.toFixed(1)} pcf)`, psfValue];
+}
+
 /** A dead load built from layers: total pressure plus the breakdown for reports. */
 export interface DeadLoad {
   readonly pressure: number;
@@ -123,7 +140,7 @@ export function layers(...items: (string | readonly [string, number])[]): DeadLo
       parts.push(`${n === 1 ? "" : n + " × "}${row.description} ${row.psf}${row.verified ? "" : "*"}`);
     } else if (typeof it !== "string") {
       total += n;
-      parts.push(`${key} ${n} (given)`);
+      parts.push(`${key} ${n.toFixed(2)}`);
     } else {
       throw new Error(`no material "${key}" in ${t.source.publication} ${t.source.table} (known: ${t.rows.map((r) => r.key).join(", ")})`);
     }
@@ -648,16 +665,19 @@ export class TrussRoof {
    * Uniform load on the roof, in pascals (use `psf`). `basis`: per unit of
    * plan area (default; snow and roof live loads) or of sloped surface.
    */
-  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string } = {}): TrussRoof {
+  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string; on?: "slope" | "flat" } = {}): TrussRoof {
     return new TrussRoof({ ...this.spec, loads: [...this.spec.loads, { kind, pressure, ...o }] });
   }
-  /** Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`. */
-  snow(d: DeadLoad): TrussRoof {
-    return this.load("snow", d.pressure, { basis: "plan", label: d.label });
+  /**
+   * Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`.
+   * `on: "flat"` puts it on the flat roof over the bottom chords beyond the heels.
+   */
+  snow(d: DeadLoad, o: { on?: "slope" | "flat" } = {}): TrussRoof {
+    return this.load("snow", d.pressure, { basis: "plan", label: d.label, ...o });
   }
-  /** Roofing dead load along the slope, from `layers(...)`. */
-  dead(d: DeadLoad): TrussRoof {
-    return this.load("dead", d.pressure, { basis: "surface", label: d.label });
+  /** Roofing dead load along the slope (or on the flat part), from `layers(...)`. */
+  dead(d: DeadLoad, o: { on?: "slope" | "flat" } = {}): TrussRoof {
+    return this.load("dead", d.pressure, { basis: "surface", label: d.label, ...o });
   }
   get name(): string {
     return this.spec.name;

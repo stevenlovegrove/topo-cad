@@ -260,6 +260,11 @@ pub struct AreaLoadSpec {
     pub basis: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
+    /// `slope` (default: the sloped roof, via the top chords) or `flat`: the
+    /// parts of the bottom chords beyond the heels (a flat roof on a
+    /// bottom-chord extension).
+    #[serde(default)]
+    pub on: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -436,7 +441,37 @@ impl Builder {
                 Some("surface") => AreaBasis::Surface,
                 Some(b) => return Err(format!("roof {}: unknown load basis {b} (plan or surface)", r.name)),
             };
-            self.m.loads.push(Load::Area { case, group: roof.group, pressure: l.pressure, direction: -Vec3::Z, basis, label: l.label.clone() });
+            match l.on.as_deref() {
+                None | Some("slope") => {
+                    self.m.loads.push(Load::Area { case, group: roof.group, pressure: l.pressure, direction: -Vec3::Z, basis, label: l.label.clone() });
+                }
+                Some("flat") => {
+                    // Per truss, the bottom chord beyond the nodes it shares
+                    // with a top chord, at the truss's tributary width.
+                    let n = roof.trusses.len();
+                    for (i, t) in roof.trusses.iter().enumerate() {
+                        let trib = if n == 1 { r.spacing } else if i == 0 || i + 1 == n { r.spacing / 2.0 } else { r.spacing };
+                        let top: std::collections::HashSet<NodeId> = t.top_chords.iter().flat_map(|&m| self.m.member(m).path.clone()).collect();
+                        for &bc in &t.bottom_chords {
+                            let path = self.m.member(bc).path.clone();
+                            let (a, b) = (self.m.pos(path[0]), self.m.pos(*path.last().unwrap()));
+                            let len = a.distance(b);
+                            let x = (b - a) / len;
+                            let ts: Vec<f64> = path.iter().filter(|n| top.contains(n)).map(|&n| (self.m.pos(n) - a).dot(x)).collect();
+                            if ts.is_empty() {
+                                continue;
+                            }
+                            let (lo, hi) = (ts.iter().copied().fold(f64::INFINITY, f64::min), ts.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                            for range in [(0.0, lo), (hi, len)] {
+                                if range.1 - range.0 > 1e-3 {
+                                    self.m.loads.push(Load::MemberUniform { case, member: bc, w: -Vec3::Z * (l.pressure * trib), range: Some(range) });
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(o) => return Err(format!("roof {}: unknown load placement {o} (slope or flat)", r.name)),
+            }
         }
         Ok(())
     }
@@ -533,7 +568,7 @@ impl Builder {
                         return Err(format!("assembly {}: no member {sel} to load", a.name));
                     }
                     for m in chosen {
-                        self.m.loads.push(Load::MemberUniform { case, member: m, w: -Vec3::Z * l.w });
+                        self.m.loads.push(Load::MemberUniform { case, member: m, w: -Vec3::Z * l.w, range: None });
                     }
                 }
                 (None, Some(pt)) => {

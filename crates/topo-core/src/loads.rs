@@ -56,7 +56,15 @@ pub enum Load {
     /// Concentrated force (N) and moment (N·m) at a node, global axes.
     Node { case: LoadCaseId, node: NodeId, force: Vec3, moment: Vec3 },
     /// Uniform line load along a member (N/m), global axes.
-    MemberUniform { case: LoadCaseId, member: MemberId, w: Vec3 },
+    /// Over `range` (distances along the member from its first node, m) if
+    /// given, else the whole member.
+    MemberUniform {
+        case: LoadCaseId,
+        member: MemberId,
+        w: Vec3,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        range: Option<(f64, f64)>,
+    },
     /// Uniform pressure (Pa) on a group's surface (floor, roof, wall) acting in
     /// `direction`; distributed to the group's spanning members by tributary width.
     Area {

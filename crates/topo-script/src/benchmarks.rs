@@ -243,3 +243,24 @@ fn king_county_snow() {
     // Above 1,000 ft the helper refuses.
     assert!(roof_snow("Skykomish", 1100.0).unwrap_err().contains("above 1,000 ft"));
 }
+
+/// A load `on: "flat"` goes on the bottom-chord extension beyond the heel
+/// (the fitted flat part of the garage truss) at the truss's tributary width.
+#[test]
+fn flat_roof_loads() {
+    let path = format!("{}/../../examples/garage-truss.ts", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path).unwrap().replace(".load(\"snow\", psf(25));", ".load(\"snow\", psf(25))\n  .load(\"dead\", psf(10), { on: \"flat\" });");
+    let (m, _) = crate::run_solved(&src, &path).unwrap_or_else(|e| panic!("{e}"));
+    let flat: Vec<(f64, (f64, f64))> = m.loads.iter().filter_map(|l| match l {
+        topo_core::Load::MemberUniform { w, range: Some(r), .. } => Some((-w.z, *r)),
+        _ => None,
+    }).collect();
+    assert!(flat.len() >= 3, "one per truss: {flat:?}");
+    let spacing = 24.0 * IN;
+    let flat_len = 0.9605188696330536; // fitted
+    for (i, (w, (a, b))) in flat.iter().enumerate() {
+        assert!(a.abs() < 1e-9 && (b - flat_len).abs() < 1e-3, "range {a}..{b}");
+        let trib = if i == 0 || i + 1 == flat.len() { spacing / 2.0 } else { spacing };
+        close("w", *w, 10.0 * 47.880259 * trib, 1e-9);
+    }
+}

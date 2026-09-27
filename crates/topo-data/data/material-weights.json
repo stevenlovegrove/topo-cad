@@ -3,7 +3,7 @@
   "publication": "ASCE 7 Table C3.1-1a / HUD Residential Structural Design Guide (2000) Table 3.2",
   "edition": "see rows",
   "table": "minimum design dead loads",
-  "note": "Assembly values (keys starting with an assembly name) are from HUD Table 3.2 and verified. Individual layers are from ASCE 7 Table C3.1-1a, which could not be read (paywalled): unverified."
+  "note": "Assembly values (keys starting with an assembly name) are from HUD Table 3.2 and verified. Individual layers are from ASCE 7 Table C3.1-1a, which could not be read (paywalled): unverified. Product rows cite their own sources in the description."
  },
  "rows": [
   {
@@ -76,6 +76,48 @@
    "key": "gypsum 1/2",
    "description": "Gypsum board, 1/2\" (0.55 psf per 1/8\", ASCE 7 C3.1-1a)",
    "psf": 2.2,
+   "verified": false
+  },
+  {
+   "key": "plywood 15/32",
+   "description": "Plywood 15/32\" (APA Panel Design Specification D510C, Table 6)",
+   "psf": 1.4,
+   "verified": true
+  },
+  {
+   "key": "plywood 19/32",
+   "description": "Plywood 19/32\" (APA Panel Design Specification D510C, Table 6)",
+   "psf": 1.8,
+   "verified": true
+  },
+  {
+   "key": "plywood 23/32",
+   "description": "Plywood 23/32\" (APA Panel Design Specification D510C, Table 6)",
+   "psf": 2.2,
+   "verified": true
+  },
+  {
+   "key": "steel sheet 24ga galvanized",
+   "description": "Galvanized steel sheet 24 ga, 0.0276\" (Manufacturers' Standard Gauge; secondary chart)",
+   "psf": 1.156,
+   "verified": false
+  },
+  {
+   "key": "standing seam 24ga steel",
+   "description": "Standing-seam steel roofing 24 ga, 16\" panels with 1.5\" ribs (\u2248 20\" coil per 16\" coverage \u00d7 1.156 psf; estimate, no published product weight)",
+   "psf": 1.45,
+   "verified": false
+  },
+  {
+   "key": "self-adhered underlayment",
+   "description": "Self-adhered (peel-and-stick) roof underlayment, typical (estimate; check the product sheet)",
+   "psf": 0.3,
+   "verified": false
+  },
+  {
+   "key": "synthetic underlayment",
+   "description": "Synthetic roof underlayment, typical (estimate; check the product sheet)",
+   "psf": 0.05,
    "verified": false
   }
  ]
