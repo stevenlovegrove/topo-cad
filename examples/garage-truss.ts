@@ -12,57 +12,8 @@ import {
 } from "topo-cad";
 import { fieldMeasurements } from "./garage-truss.measured";
 
-export interface TrussParams {
-  /** Top chord pitch (rise/run). */
-  readonly pitch: number;
-  /** Heel node to heel node, where the top chord's underside meets the bottom of the bottom chord. */
-  readonly span: number;
-  /** Bottom chord beyond the left heel node (the flat part). */
-  readonly flat: number;
-  /** Right vertical's centreline, from the right heel node. */
-  readonly rightVertical: number;
-  /** Eave tail's plumb cut, horizontally from the right heel node. */
-  readonly tail: number;
-  readonly topChord: Nominal;
-  readonly bottomChord: Nominal;
-}
-
-/** The truss shape for given parameters (nothing measurement-specific). */
-export function garageTruss(p: TrussParams): TrussShape {
-  const { span: l, pitch: k } = p;
-  const top = (s: number) => k * Math.min(s, l - s); // underside of the top chord
-  const v = p.rightVertical;
-  return TrussShape.custom({
-    name: "Existing (Pratt variant)",
-    span: l,
-    pitch: k,
-    points: {
-      F: [-p.flat, 0],
-      H0: [0, 0],
-      H1: [l, 0],
-      P: [l / 2, top(l / 2)],
-      C: [l / 2, 0],
-      T1: [v, top(v)],
-      "T1'": [l - v, top(v)],
-      B3: [l - v, 0],
-      X1: [l + p.tail, -p.tail * k],
-    },
-    topChords: [
-      ["H0", "T1", "P"],
-      ["X1", "H1", "T1'", "P"],
-    ],
-    bottomChords: [["F", "H0", "C", "B3", "H1"]],
-    webs: [
-      ["P", "C"], // centre vertical
-      ["T1", "C"], // left diagonal
-      ["T1'", "C"], // right diagonal
-      ["T1'", "B3"], // right vertical (no left one)
-    ],
-  })
-    .sized("bottom_chord", p.bottomChord)
-    .sized("top_chord", p.topChord)
-    .sized("web", p.topChord);
-}
+export { garageTruss, type TrussParams } from "./garage-truss-shape";
+import { garageTruss, type TrussParams } from "./garage-truss-shape";
 
 // ----- unknowns (guesses only) ------------------------------------------------
 
