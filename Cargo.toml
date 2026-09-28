@@ -10,6 +10,7 @@ members = [
     "crates/topo-wasm",
     "crates/topo-script",
     "crates/topo-data",
+    "crates/topo-app",
 ]
 
 [workspace.package]
@@ -25,5 +26,6 @@ topo-geom = { path = "crates/topo-geom" }
 topo-draw = { path = "crates/topo-draw" }
 topo-timber = { path = "crates/topo-timber" }
 topo-analysis = { path = "crates/topo-analysis" }
-topo-script = { path = "crates/topo-script" }
+topo-script = { path = "crates/topo-script", default-features = false }
 topo-data = { path = "crates/topo-data" }
+topo-app = { path = "crates/topo-app" }

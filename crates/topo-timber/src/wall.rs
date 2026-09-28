@@ -6,6 +6,7 @@
 
 use crate::fastening as fx;
 use crate::lumber::{built_up, dressed_in, sawn};
+use crate::survey::{Post, PostRole, ResolvedItem, Survey, SurveyItem, WallContext};
 use topo_core::units::inch;
 use topo_core::*;
 
@@ -92,6 +93,11 @@ pub struct Wall {
     /// intersecting partition's cap can lap through (see `lap_tee`).
     pub cap_breaks: Vec<f64>,
     pub parent: Option<GroupId>,
+    /// As-built layout from field measurements, instead of the layout rules.
+    pub survey: Option<Survey>,
+    /// Inside faces of the walls met at the start and end, as x along this
+    /// wall; set by the perimeter (datums for surveys).
+    pub corner_inside: [Option<f64>; 2],
 }
 
 /// Handles to the generated members.
@@ -177,6 +183,8 @@ impl Wall {
             end_inset: 0.0,
             cap_breaks: vec![],
             parent: None,
+            survey: None,
+            corner_inside: [None, None],
         }
     }
     /// A wall with no position yet, to be placed by a `Perimeter` (or `between`).
@@ -219,6 +227,11 @@ impl Wall {
         self.header_material = Some(m);
         self
     }
+    /// Frame the wall exactly as surveyed (see `survey`) instead of by rule.
+    pub fn surveyed(mut self, s: Survey) -> Wall {
+        self.survey = Some(s);
+        self
+    }
     pub fn parent(mut self, g: GroupId) -> Wall {
         self.parent = Some(g);
         self
@@ -229,102 +242,27 @@ impl Wall {
     }
 
     pub fn build(&self, m: &mut Model) -> WallParts {
+        self.try_build(m).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Builds the wall: from its survey if it has one, else by layout rules.
+    pub fn try_build(&self, m: &mut Model) -> Result<WallParts, String> {
+        match &self.survey {
+            Some(s) => self.build_surveyed(m, s),
+            None => Ok(self.build_generated(m)),
+        }
+    }
+
+    fn build_generated(&self, m: &mut Model) -> WallParts {
         let len = self.start.distance(self.end);
-        let dir = (self.end - self.start) / len;
-        let inward = if self.interior_left { Vec3::Z.cross(dir) } else { dir.cross(Vec3::Z) };
-        let frame = Frame { origin: self.start, x: dir, y: inward, z: Vec3::Z };
-        let w = |x: f64, z: f64| frame.to_world(v3(x, 0.0, z));
-        let (h, b, t) = (self.height, inch(dressed_in(self.stud.0)), self.thickness());
-        let v_side = match self.justify {
-            Justify::Exterior => Some(inward),
-            Justify::Center => None,
-        };
-
-        let g = m.add_group(&self.name, "wall", frame, self.parent);
-        m.name_direction(g, "along", Vec3::X);
-        m.name_direction(g, "inside", Vec3::Y);
-        m.name_direction(g, "outside", -Vec3::Y);
-        let stud_sec = m.add_section(sawn(self.stud.0, self.stud.1));
-        let mat = self.material;
-        let hdr_mat = self.header_material.unwrap_or(mat);
-        let c_bot = m.add_connection(fx::stud_to_bottom_plate());
-        let c_top = m.add_connection(fx::stud_to_top_plate());
-        let c_hdr = m.add_connection(fx::header_to_king());
-        let c_jack = m.add_connection(fx::jack_to_king());
-        let c_sill = m.add_connection(fx::sill_to_jack());
-        let c_crip = m.add_connection(fx::cripple_to_plate());
-
-        // Plates. Door openings interrupt the bottom plate.
-        let plate_ax = m.axes_between(self.start, self.end, Some(inward));
-        let bottom = MemberSpec::new("bottom_plate", stud_sec, mat)
-            .priority(10)
-            .depth_dir(inward)
-            .anchor(Anchor::body_toward(&plate_ax, Some(Vec3::Z), v_side))
-            .group(g);
-        let top = MemberSpec::new("top_plate", stud_sec, mat)
-            .priority(10)
-            .depth_dir(inward)
-            .anchor(Anchor::body_toward(&plate_ax, Some(-Vec3::Z), v_side))
-            .group(g);
-        let mut doors: Vec<(f64, f64)> = self
+        let doors: Vec<(f64, f64)> = self
             .openings
             .iter()
             .filter(|o| o.kind == OpeningKind::Door)
             .map(|o| (o.center - o.width / 2.0, o.center + o.width / 2.0))
             .collect();
-        doors.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut segs = vec![];
-        let mut x = 0.0;
-        for &(d0, d1) in &doors {
-            segs.push((x, d0));
-            x = d1;
-        }
-        segs.push((x, len));
-        let mut parts = WallParts { group: g, ..Default::default() };
-        let mut seg_members = vec![];
-        for (k, &(a, bx)) in segs.iter().enumerate() {
-            let name = if segs.len() == 1 { "bottom_plate".to_string() } else { format!("bottom_plate#{}", k + 1) };
-            let id = m.add_member_between(w(a, 0.0), w(bx, 0.0), &bottom.clone().named(&name));
-            seg_members.push((a, bx, id));
-            parts.bottom_plates.push(id);
-        }
-        let bottom_at = |x: f64| {
-            seg_members.iter().find(|(a, bx, _)| x >= *a && x <= *bx).map(|s| s.2).expect("stud over a door opening")
-        };
-        // Double top plate as two members: lower ply (axis on its top face)
-        // and cap plate(s) above, face-nailed together.
-        let ht = h - b;
-        parts.top_plate = m.add_member_between(w(0.0, ht), w(len, ht), &top.clone().named("top_plate"));
-        let cap = MemberSpec { role: "cap_plate".into(), ..top.clone() };
-        let c_dbl = m.add_connection(fx::double_top_plate());
-        let mut breaks: Vec<f64> = self.cap_breaks.iter().copied().filter(|&x| x > 1e-6 && x < len - 1e-6).collect();
-        breaks.sort_by(f64::total_cmp);
-        let mut x0 = 0.0;
-        let n_caps = breaks.len() + 1;
-        for (k, x1) in breaks.into_iter().chain([len]).enumerate() {
-            let name = if n_caps == 1 { "cap_plate".to_string() } else { format!("cap_plate#{}", k + 1) };
-            let id = m.add_member_between(w(x0, h), w(x1, h), &cap.clone().named(&name));
-            m.bond(id, parts.top_plate, c_dbl);
-            parts.cap_plates.push(id);
-            x0 = x1;
-        }
-
-        let stud_ax = m.axes_between(Vec3::ZERO, Vec3::Z, Some(inward));
-        let vspec = |role: &str| {
-            MemberSpec::new(role, stud_sec, mat)
-                .depth_dir(inward)
-                .anchor(Anchor::body_toward(&stud_ax, None, v_side))
-                .group(g)
-        };
-        // Vertical member from a point on `lo` to a point on `hi`.
-        let vertical = |m: &mut Model, x: f64, z0: f64, z1: f64, lo: MemberId, hi: MemberId, role: &str, c0, c1| {
-            let n0 = m.node_on(lo, w(x, z0)).expect("vertical base not on supporting member");
-            let n1 = m.node_on(hi, w(x, z1)).expect("vertical top not on supporting member");
-            let id = m.add_member(&[n0, n1], &vspec(role));
-            m.connect(n0, id, Some(lo), c0);
-            m.connect(n1, id, Some(hi), c1);
-            id
-        };
+        let mut f = Framing::new(self, m, &doors);
+        let (h, b, ht) = (f.h, f.b, f.ht);
 
         // Openings (flush headers resolved against the wall height first).
         let openings: Vec<Opening> = self
@@ -341,7 +279,6 @@ impl Wall {
                 o
             })
             .collect();
-        let c_plate_hdr = m.add_connection(fx::top_plate_to_header());
         let mut blocked: Vec<(f64, f64)> = vec![];
         let layout: Vec<f64> = (1..).map(|k| k as f64 * self.spacing).take_while(|&x| x < len).collect();
         for o in &openings {
@@ -350,72 +287,23 @@ impl Wall {
             // Posts each side, innermost first: jacks then the king.
             let (xk0, xk1) = (x0 - (nj + 0.5) * b, x1 + (nj + 0.5) * b);
             blocked.push((xk0 - b, xk1 + b));
-            let king0 = vertical(m, xk0, 0.0, ht, bottom_at(xk0), parts.top_plate, "king_stud", c_bot, c_top);
-            let king1 = vertical(m, xk1, 0.0, ht, bottom_at(xk1), parts.top_plate, "king_stud", c_bot, c_top);
-
-            let (plies, hdr_thick, hd) = o.header;
-            let gap = if plies > 1 { ((t - plies as f64 * b) / (plies - 1) as f64).max(0.0) / inch(1.0) } else { 0.0 };
-            let hdr_sec = m.add_section(built_up(plies, hdr_thick, hd, gap));
-            let hn0 = m.node_on(king0, w(xk0, o.head)).unwrap();
-            let hn1 = m.node_on(king1, w(xk1, o.head)).unwrap();
-            let hax = m.axes_between(w(xk0, o.head), w(xk1, o.head), Some(Vec3::Z));
-            let header = m.add_member(
-                &[hn0, hn1],
-                &MemberSpec::new("header", hdr_sec, hdr_mat)
-                    .named(&format!("header.{}", o.label))
-                    .priority(20)
-                    .depth_dir(Vec3::Z)
-                    .anchor(Anchor::body_toward(&hax, v_side, Some(Vec3::Z)))
-                    .group(g),
-            );
-            m.connect(hn0, header, Some(king0), c_hdr);
-            m.connect(hn1, header, Some(king1), c_hdr);
-            parts.headers.push(header);
-            parts.studs.extend([king0, king1]);
+            let king0 = f.full(m, xk0, "king_stud", None).unwrap();
+            let king1 = f.full(m, xk1, "king_stud", None).unwrap();
+            let header = f.header(m, o, xk0, xk1, king0, king1);
 
             // Jacks, bonded to each other and to the king.
             let (mut post0, mut post1) = (king0, king1);
             for k in (0..o.jacks).rev() {
                 let (xj0, xj1) = (x0 - (k as f64 + 0.5) * b, x1 + (k as f64 + 0.5) * b);
-                let jack0 = vertical(m, xj0, 0.0, o.head, bottom_at(xj0), header, "jack_stud", c_bot, c_crip);
-                let jack1 = vertical(m, xj1, 0.0, o.head, bottom_at(xj1), header, "jack_stud", c_bot, c_crip);
-                m.bond(jack0, post0, c_jack);
-                m.bond(jack1, post1, c_jack);
-                parts.studs.extend([jack0, jack1]);
+                let jack0 = f.jack(m, xj0, o.head, header, post0, None).unwrap();
+                let jack1 = f.jack(m, xj1, o.head, header, post1, None).unwrap();
                 (post0, post1) = (jack0, jack1);
             }
             let (xp0, xp1) = (x0 - 0.5 * b, x1 + 0.5 * b);
-
             let inside: Vec<f64> = layout.iter().copied().filter(|&x| x >= x0 + 0.5 * b && x <= x1 - 0.5 * b).collect();
-            if o.kind == OpeningKind::Window {
-                let zs = o.sill();
-                let sn0 = m.node_on(post0, w(xp0, zs)).unwrap();
-                let sn1 = m.node_on(post1, w(xp1, zs)).unwrap();
-                let sax = m.axes_between(w(xp0, zs), w(xp1, zs), Some(inward));
-                let sill = m.add_member(
-                    &[sn0, sn1],
-                    &MemberSpec::new("sill", stud_sec, mat)
-                        .priority(5)
-                        .depth_dir(inward)
-                        .anchor(Anchor::body_toward(&sax, Some(-Vec3::Z), v_side))
-                        .group(g),
-                );
-                m.connect(sn0, sill, Some(post0), c_sill);
-                m.connect(sn1, sill, Some(post1), c_sill);
-                for &x in &inside {
-                    let id = vertical(m, x, 0.0, zs, bottom_at(x), sill, "cripple", c_bot, c_crip);
-                    parts.studs.push(id);
-                }
-            }
-            let clear = h - 2.0 * b - (o.head + m.section(hdr_sec).props.depth);
-            if clear >= b {
-                for &x in &inside {
-                    let id = vertical(m, x, o.head, ht, header, parts.top_plate, "cripple", c_crip, c_top);
-                    parts.studs.push(id);
-                }
-            } else if clear.abs() < 1e-6 {
-                // Header tight to the top plate: face-to-face bearing contact.
-                m.bond(parts.top_plate, header, c_plate_hdr);
+            let sill = (o.kind == OpeningKind::Window).then(|| f.sill(m, o.sill(), post0, post1, xp0, xp1));
+            for &x in &inside {
+                f.cripples(m, x, o, header, sill, None).unwrap();
             }
         }
 
@@ -429,12 +317,251 @@ impl Wall {
             if blocked.iter().any(|&(a, bx)| x > a && x < bx) {
                 continue;
             }
-            let id = vertical(m, x, 0.0, ht, bottom_at(x), parts.top_plate, "stud", c_bot, c_top);
-            parts.studs.push(id);
+            f.full(m, x, "stud", None).unwrap();
         }
-
+        let _ = ht;
+        let (g, parts) = (f.g, f.parts);
         self.annotate(m, g, len, h, &openings);
         parts
+    }
+
+    /// Builds the wall exactly as surveyed: each post where it was measured,
+    /// openings between the posts either side of them.
+    fn build_surveyed(&self, m: &mut Model, survey: &Survey) -> Result<WallParts, String> {
+        let len = self.start.distance(self.end);
+        let b = inch(dressed_in(self.stud.0));
+        let d = (self.end - self.start) / len;
+        let cx = WallContext { len, ply: b, inside: self.corner_inside, dir: [d.x, d.y] };
+        let r = survey.resolve(&self.name, &cx)?;
+        let (h, t) = (self.height, self.thickness());
+        let _ = t;
+        let items = &r.items;
+        let post_at = |k: usize| match &items[k] {
+            ResolvedItem::Post(p) => Some(p),
+            _ => None,
+        };
+        // Positions in messages: from the outside corner at the wall start,
+        // named by compass where the wall runs square to one.
+        let start_name = {
+            let back = -(self.end - self.start) / len;
+            [("east", back.x), ("west", -back.x), ("north", back.y), ("south", -back.y)]
+                .into_iter()
+                .find(|(_, c)| *c > 0.9)
+                .map(|(n, _)| format!("the {n} outside corner"))
+                .unwrap_or_else(|| "the start (outside corner)".into())
+        };
+        let describe = |p: &Post| {
+            let at = format!("{} from {start_name}", topo_core::units::fmt_inches(p.x));
+            match &p.name {
+                Some(n) => format!("{n} ({at})"),
+                None => format!("{} at {at}", p.role.role().replace('_', " ")),
+            }
+        };
+
+        // Openings: rough-opening edges from the nearest posts each side
+        // (past any cripples listed beside the opening), the kings outermost.
+        struct Plan {
+            op: Opening,
+            kings: [usize; 2],
+            jacks: [Vec<usize>; 2],
+            cripples: Vec<usize>,
+            x: (f64, f64),
+        }
+        let mut plans: Vec<Plan> = vec![];
+        for (k, it) in items.iter().enumerate() {
+            let ResolvedItem::Opening(i) = it else { continue };
+            let SurveyItem::Opening { label, kind, head, sill, header, header_flush } = &survey.items[*i] else { unreachable!() };
+            let mut cripples = vec![];
+            let mut side = |dir: isize| -> Result<(Vec<usize>, usize), String> {
+                let mut j = k as isize + dir;
+                while j >= 0 && (j as usize) < items.len() && post_at(j as usize).is_some_and(|p| p.role == PostRole::Cripple) {
+                    cripples.push(j as usize);
+                    j += dir;
+                }
+                // Posts nearest the opening first: jacks, then the king.
+                let mut group = vec![];
+                while j >= 0 && (j as usize) < items.len() {
+                    match post_at(j as usize) {
+                        Some(p) if p.role == PostRole::Jack => group.push(j as usize),
+                        Some(p) if p.role == PostRole::King => {
+                            return Ok((group, j as usize));
+                        }
+                        _ => break,
+                    }
+                    j += dir;
+                }
+                Err(format!(
+                    "{}: opening {label} has no king stud on its {} side (list jacks and then a king between it and any other stud)",
+                    self.name,
+                    if dir < 0 { "start" } else { "end" }
+                ))
+            };
+            let (mut jacks0, mut king0) = side(-1)?;
+            let (mut jacks1, mut king1) = side(1)?;
+            // Listed the other way along the wall (e.g. from the end corner).
+            if post_at(king0).unwrap().x > post_at(king1).unwrap().x {
+                std::mem::swap(&mut jacks0, &mut jacks1);
+                std::mem::swap(&mut king0, &mut king1);
+            }
+            let inner = |group: &[usize], king: usize| *group.first().unwrap_or(&king);
+            let (p0, p1) = (post_at(inner(&jacks0, king0)).unwrap(), post_at(inner(&jacks1, king1)).unwrap());
+            let x = (p0.x + p0.width(b) / 2.0, p1.x - p1.width(b) / 2.0);
+            if x.1 <= x.0 {
+                return Err(format!("{}: opening {label} has no width between {} and {}", self.name, describe(p0), describe(p1)));
+            }
+            let kind = match kind.as_str() {
+                "door" => OpeningKind::Door,
+                "window" => OpeningKind::Window,
+                k => return Err(format!("{}: opening {label}: unknown kind {k}", self.name)),
+            };
+            let head_z = if *header_flush {
+                h - 2.0 * b - inch(dressed_in(header.2))
+            } else {
+                head.as_ref().ok_or_else(|| format!("{}: opening {label} needs a head height (or a flush header)", self.name))?.z(h, b)
+            };
+            let height = match kind {
+                OpeningKind::Door => head_z,
+                OpeningKind::Window => head_z - sill.as_ref().ok_or_else(|| format!("{}: window {label} needs a sill height", self.name))?.z(h, b),
+            };
+            if height <= 0.0 {
+                return Err(format!("{}: opening {label}: sill is not below the head", self.name));
+            }
+            let op = Opening { label: label.clone(), kind, center: (x.0 + x.1) / 2.0, width: x.1 - x.0, height, head: head_z, header: *header, jacks: jacks0.len().max(jacks1.len()) as u32, header_flush: *header_flush };
+            plans.push(Plan { op, kings: [king0, king1], jacks: [jacks0, jacks1], cripples, x });
+        }
+
+        // Checks on the layout: overlaps, missing studs, corners.
+        let mut posts: Vec<&Post> = items.iter().filter_map(|i| if let ResolvedItem::Post(p) = i { Some(p) } else { None }).collect();
+        posts.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let mut issues = vec![];
+        let tight = inch(0.125);
+        for w in posts.windows(2) {
+            let gap = (w[1].x - w[1].width(b) / 2.0) - (w[0].x + w[0].width(b) / 2.0);
+            if gap < -tight {
+                return Err(format!("{}: {} and {} overlap by {} — check the readings", self.name, describe(w[0]), describe(w[1]), topo_core::units::fmt_inches(-gap)));
+            } else if gap < -1e-6 {
+                issues.push(Issue::new(Severity::Warning, "survey-overlap", format!("{}: {} and {} overlap by {} (measurement slop?)", self.name, describe(w[0]), describe(w[1]), topo_core::units::fmt_inches(-gap))));
+            }
+        }
+        // Full-height studs (and kings) more than a layout space apart,
+        // outside openings: a stud may be missing from the survey.
+        let in_opening = |x: f64| plans.iter().any(|p| x > p.x.0 - 1e-6 && x < p.x.1 + 1e-6);
+        let mut bounds: Vec<(f64, String)> = vec![];
+        if let Some(x) = self.corner_inside[0] {
+            bounds.push((x, format!("the wall at {}", start_name.trim_start_matches("the ").replace("outside ", ""))));
+        }
+        for p in &posts {
+            if matches!(p.role, PostRole::Stud | PostRole::King | PostRole::Jack) {
+                bounds.push((p.x, describe(p)));
+            }
+        }
+        if let Some(x) = self.corner_inside[1] {
+            bounds.push((x, "the wall at the far corner".into()));
+        }
+        let limit = self.spacing + inch(0.5);
+        for w in bounds.windows(2) {
+            if w[1].0 - w[0].0 > limit && !in_opening((w[0].0 + w[1].0) / 2.0) {
+                issues.push(Issue::new(
+                    Severity::Warning,
+                    "survey-gap",
+                    format!("{}: {} between {} and {} with no stud (layout {} o.c.) — one missing from the survey?", self.name, topo_core::units::fmt_inches(w[1].0 - w[0].0), w[0].1, w[1].1, topo_core::units::fmt_inches(self.spacing)),
+                ));
+            }
+        }
+        for (what, measured, model, tol) in &r.checks {
+            let d = measured - model;
+            let sev = if d.abs() > *tol { Severity::Warning } else { Severity::Info };
+            issues.push(Issue::new(
+                sev,
+                "survey-check",
+                format!("{}: {what}: measured {}, model {} ({}{})", self.name, topo_core::units::fmt_inches(*measured), topo_core::units::fmt_inches(*model), if d >= 0.0 { "+" } else { "−" }, topo_core::units::fmt_inches(d.abs())),
+            ));
+        }
+
+        // Build.
+        let doors: Vec<(f64, f64)> = plans.iter().filter(|p| p.op.kind == OpeningKind::Door).map(|p| p.x).collect();
+        let mut f = Framing::new(self, m, &doors);
+        let mut ids: std::collections::HashMap<usize, Vec<MemberId>> = Default::default();
+        let plies = |p: &Post| -> Vec<f64> { (0..p.plies).map(|k| p.x - p.width(b) / 2.0 + (k as f64 + 0.5) * b).collect() };
+        let name_of = |p: &Post, k: usize| p.name.as_ref().map(|n| if p.plies > 1 { format!("{n}#{}", k + 1) } else { n.clone() });
+        // Full-height posts first (headers hang on the kings).
+        for (k, it) in items.iter().enumerate() {
+            let ResolvedItem::Post(p) = it else { continue };
+            if matches!(p.role, PostRole::Stud | PostRole::King) {
+                let mut v = vec![];
+                for (j, x) in plies(p).into_iter().enumerate() {
+                    let id = f.full(m, x, p.role.role(), name_of(p, j).as_deref()).map_err(|e| format!("{}: {}: {e}", self.name, describe(p)))?;
+                    if let Some(&prev) = v.last() {
+                        m.bond(prev, id, f.c_jack);
+                    }
+                    v.push(id);
+                }
+                ids.insert(k, v);
+            }
+        }
+        let mut openings = vec![];
+        for pl in &plans {
+            let o = &pl.op;
+            let (k0, k1) = (post_at(pl.kings[0]).unwrap(), post_at(pl.kings[1]).unwrap());
+            // The header runs between the kings' faces toward the opening.
+            let (king0, king1) = (*ids[&pl.kings[0]].last().unwrap(), ids[&pl.kings[1]][0]);
+            let xk0 = k0.x + k0.width(b) / 2.0 - 0.5 * b;
+            let xk1 = k1.x - k1.width(b) / 2.0 + 0.5 * b;
+            let header = f.header(m, o, xk0, xk1, king0, king1);
+            let mut post = [king0, king1];
+            let mut xp = [xk0, xk1];
+            for side in 0..2 {
+                // From the king inward.
+                for &j in pl.jacks[side].iter().rev() {
+                    let p = post_at(j).unwrap();
+                    let mut xs = plies(p);
+                    if side == 1 {
+                        xs.reverse();
+                    }
+                    let mut v = vec![];
+                    for (n, x) in xs.into_iter().enumerate() {
+                        let id = f.jack(m, x, o.head, header, post[side], name_of(p, n).as_deref()).map_err(|e| format!("{}: {}: {e}", self.name, describe(p)))?;
+                        post[side] = id;
+                        xp[side] = x;
+                        v.push(id);
+                    }
+                    ids.insert(j, v);
+                }
+            }
+            let sill = (o.kind == OpeningKind::Window).then(|| f.sill(m, o.sill(), post[0], post[1], xp[0], xp[1]));
+            for &c in &pl.cripples {
+                let p = post_at(c).unwrap();
+                if p.x - p.width(b) / 2.0 < pl.x.0 - 1e-6 || p.x + p.width(b) / 2.0 > pl.x.1 + 1e-6 {
+                    return Err(format!("{}: {} is listed with opening {} but lies outside it", self.name, describe(p), o.label));
+                }
+                let mut built = 0;
+                for (n, x) in plies(p).into_iter().enumerate() {
+                    built += f.cripples(m, x, o, header, sill, name_of(p, n).as_deref()).map_err(|e| format!("{}: {}: {e}", self.name, describe(p)))?;
+                }
+                if built == 0 {
+                    issues.push(Issue::new(
+                        Severity::Warning,
+                        "survey-cripple",
+                        format!("{}: {} was not built: no room above the {} header and no sill under it — check the head height and header size", self.name, describe(p), o.label),
+                    ));
+                }
+            }
+            openings.push(o.clone());
+        }
+        // Cripples or jacks not attached to an opening.
+        for (k, it) in items.iter().enumerate() {
+            if let ResolvedItem::Post(p) = it {
+                if matches!(p.role, PostRole::Jack | PostRole::Cripple) && !ids.contains_key(&k) && !plans.iter().any(|pl| pl.cripples.contains(&k)) {
+                    return Err(format!("{}: {} is not beside an opening (list it next to one)", self.name, describe(p)));
+                }
+            }
+        }
+        let (g, parts) = (f.g, f.parts);
+        m.issues.extend(issues);
+        self.annotate(m, g, len, h, &openings);
+        let framing = format!("{}x{} {} STUDS, AS SURVEYED", self.stud.0, self.stud.1, m.material(self.material).name);
+        m.group_mut(g).props.insert("framing".into(), framing);
+        Ok(parts)
     }
 
     fn annotate(&self, m: &mut Model, g: GroupId, len: f64, h: f64, openings: &[Opening]) {
@@ -481,5 +608,232 @@ impl Wall {
             format!("{}x{} {} STUDS @ {} O.C.", self.stud.0, self.stud.1, mat_name, topo_core::units::fmt_inches(self.spacing)),
         );
         group.props.insert("height".into(), topo_core::units::fmt_ft_in(h));
+    }
+}
+
+/// Shared construction for a wall: group, plates, and the members that hang
+/// off them.
+struct Framing {
+    frame: Frame,
+    g: GroupId,
+    parts: WallParts,
+    segs: Vec<(f64, f64, MemberId)>,
+    stud_sec: SectionId,
+    mat: MaterialId,
+    hdr_mat: MaterialId,
+    inward: Vec3,
+    v_side: Option<Vec3>,
+    h: f64,
+    b: f64,
+    t: f64,
+    ht: f64,
+    c_bot: ConnectionId,
+    c_top: ConnectionId,
+    c_hdr: ConnectionId,
+    c_jack: ConnectionId,
+    c_sill: ConnectionId,
+    c_crip: ConnectionId,
+    c_plate_hdr: ConnectionId,
+}
+
+impl Framing {
+    /// Group, sections, connections and plates; `doors` interrupt the bottom plate.
+    fn new(w: &Wall, m: &mut Model, doors: &[(f64, f64)]) -> Framing {
+        let len = w.start.distance(w.end);
+        let dir = (w.end - w.start) / len;
+        let inward = if w.interior_left { Vec3::Z.cross(dir) } else { dir.cross(Vec3::Z) };
+        let frame = Frame { origin: w.start, x: dir, y: inward, z: Vec3::Z };
+        let (h, b, t) = (w.height, inch(dressed_in(w.stud.0)), w.thickness());
+        let v_side = match w.justify {
+            Justify::Exterior => Some(inward),
+            Justify::Center => None,
+        };
+        let g = m.add_group(&w.name, "wall", frame, w.parent);
+        m.name_direction(g, "along", Vec3::X);
+        m.name_direction(g, "inside", Vec3::Y);
+        m.name_direction(g, "outside", -Vec3::Y);
+        let stud_sec = m.add_section(sawn(w.stud.0, w.stud.1));
+        let mat = w.material;
+        let hdr_mat = w.header_material.unwrap_or(mat);
+        let mut f = Framing {
+            frame,
+            g,
+            parts: WallParts { group: g, ..Default::default() },
+            segs: vec![],
+            stud_sec,
+            mat,
+            hdr_mat,
+            inward,
+            v_side,
+            h,
+            b,
+            t,
+            ht: h - b,
+            c_bot: m.add_connection(fx::stud_to_bottom_plate()),
+            c_top: m.add_connection(fx::stud_to_top_plate()),
+            c_hdr: m.add_connection(fx::header_to_king()),
+            c_jack: m.add_connection(fx::jack_to_king()),
+            c_sill: m.add_connection(fx::sill_to_jack()),
+            c_crip: m.add_connection(fx::cripple_to_plate()),
+            c_plate_hdr: m.add_connection(fx::top_plate_to_header()),
+        };
+        let wp = |x: f64, z: f64| frame.to_world(v3(x, 0.0, z));
+
+        // Plates. Door openings interrupt the bottom plate.
+        let plate_ax = m.axes_between(w.start, w.end, Some(inward));
+        let bottom = MemberSpec::new("bottom_plate", stud_sec, mat)
+            .priority(10)
+            .depth_dir(inward)
+            .anchor(Anchor::body_toward(&plate_ax, Some(Vec3::Z), v_side))
+            .group(g);
+        let top = MemberSpec::new("top_plate", stud_sec, mat)
+            .priority(10)
+            .depth_dir(inward)
+            .anchor(Anchor::body_toward(&plate_ax, Some(-Vec3::Z), v_side))
+            .group(g);
+        let mut doors = doors.to_vec();
+        doors.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut segs = vec![];
+        let mut x = 0.0;
+        for &(d0, d1) in &doors {
+            segs.push((x, d0));
+            x = d1;
+        }
+        segs.push((x, len));
+        for (k, &(a, bx)) in segs.iter().enumerate() {
+            let name = if segs.len() == 1 { "bottom_plate".to_string() } else { format!("bottom_plate#{}", k + 1) };
+            let id = m.add_member_between(wp(a, 0.0), wp(bx, 0.0), &bottom.clone().named(&name));
+            f.segs.push((a, bx, id));
+            f.parts.bottom_plates.push(id);
+        }
+        // Double top plate as two members: lower ply (axis on its top face)
+        // and cap plate(s) above, face-nailed together.
+        f.parts.top_plate = m.add_member_between(wp(0.0, f.ht), wp(len, f.ht), &top.clone().named("top_plate"));
+        let cap = MemberSpec { role: "cap_plate".into(), ..top.clone() };
+        let c_dbl = m.add_connection(fx::double_top_plate());
+        let mut breaks: Vec<f64> = w.cap_breaks.iter().copied().filter(|&x| x > 1e-6 && x < len - 1e-6).collect();
+        breaks.sort_by(f64::total_cmp);
+        let mut x0 = 0.0;
+        let n_caps = breaks.len() + 1;
+        for (k, x1) in breaks.into_iter().chain([len]).enumerate() {
+            let name = if n_caps == 1 { "cap_plate".to_string() } else { format!("cap_plate#{}", k + 1) };
+            let id = m.add_member_between(wp(x0, h), wp(x1, h), &cap.clone().named(&name));
+            m.bond(id, f.parts.top_plate, c_dbl);
+            f.parts.cap_plates.push(id);
+            x0 = x1;
+        }
+        f
+    }
+
+    fn w(&self, x: f64, z: f64) -> Vec3 {
+        self.frame.to_world(v3(x, 0.0, z))
+    }
+
+    fn bottom_at(&self, x: f64) -> Result<MemberId, String> {
+        self.segs.iter().find(|(a, bx, _)| x >= *a && x <= *bx).map(|s| s.2).ok_or_else(|| "stands over a door opening (no bottom plate there)".to_string())
+    }
+
+    fn vspec(&self, role: &str, m: &Model, name: Option<&str>) -> MemberSpec {
+        let stud_ax = m.axes_between(Vec3::ZERO, Vec3::Z, Some(self.inward));
+        let s = MemberSpec::new(role, self.stud_sec, self.mat).depth_dir(self.inward).anchor(Anchor::body_toward(&stud_ax, None, self.v_side)).group(self.g);
+        match name {
+            Some(n) => s.named(n),
+            None => s,
+        }
+    }
+
+    /// Vertical member at `x` from a point on `lo` to a point on `hi`.
+    #[allow(clippy::too_many_arguments)]
+    fn vertical(&mut self, m: &mut Model, x: f64, z0: f64, z1: f64, lo: MemberId, hi: MemberId, role: &str, c0: ConnectionId, c1: ConnectionId, name: Option<&str>) -> Result<MemberId, String> {
+        let n0 = m.node_on(lo, self.w(x, z0)).map_err(|e| format!("base not on its supporting member: {e:?}"))?;
+        let n1 = m.node_on(hi, self.w(x, z1)).map_err(|e| format!("top not on its supporting member: {e:?}"))?;
+        let spec = self.vspec(role, m, name);
+        let id = m.add_member(&[n0, n1], &spec);
+        m.connect(n0, id, Some(lo), c0);
+        m.connect(n1, id, Some(hi), c1);
+        self.parts.studs.push(id);
+        Ok(id)
+    }
+
+    /// Full-height stud or king at `x`.
+    fn full(&mut self, m: &mut Model, x: f64, role: &str, name: Option<&str>) -> Result<MemberId, String> {
+        let lo = self.bottom_at(x)?;
+        let (top, ht, c0, c1) = (self.parts.top_plate, self.ht, self.c_bot, self.c_top);
+        self.vertical(m, x, 0.0, ht, lo, top, role, c0, c1, name)
+    }
+
+    /// Jack at `x` under `header`, bonded to the post beside it.
+    fn jack(&mut self, m: &mut Model, x: f64, head: f64, header: MemberId, beside: MemberId, name: Option<&str>) -> Result<MemberId, String> {
+        let lo = self.bottom_at(x)?;
+        let (c0, c1, cj) = (self.c_bot, self.c_crip, self.c_jack);
+        let id = self.vertical(m, x, 0.0, head, lo, header, "jack_stud", c0, c1, name)?;
+        m.bond(id, beside, cj);
+        Ok(id)
+    }
+
+    /// Header between king centres `xk0`, `xk1`, its underside at the opening head.
+    fn header(&mut self, m: &mut Model, o: &Opening, xk0: f64, xk1: f64, king0: MemberId, king1: MemberId) -> MemberId {
+        let b = self.b;
+        let (plies, hdr_thick, hd) = o.header;
+        let gap = if plies > 1 { ((self.t - plies as f64 * b) / (plies - 1) as f64).max(0.0) / inch(1.0) } else { 0.0 };
+        let hdr_sec = m.add_section(built_up(plies, hdr_thick, hd, gap));
+        let hn0 = m.node_on(king0, self.w(xk0, o.head)).unwrap();
+        let hn1 = m.node_on(king1, self.w(xk1, o.head)).unwrap();
+        let hax = m.axes_between(self.w(xk0, o.head), self.w(xk1, o.head), Some(Vec3::Z));
+        let header = m.add_member(
+            &[hn0, hn1],
+            &MemberSpec::new("header", hdr_sec, self.hdr_mat)
+                .named(&format!("header.{}", o.label))
+                .priority(20)
+                .depth_dir(Vec3::Z)
+                .anchor(Anchor::body_toward(&hax, self.v_side, Some(Vec3::Z)))
+                .group(self.g),
+        );
+        m.connect(hn0, header, Some(king0), self.c_hdr);
+        m.connect(hn1, header, Some(king1), self.c_hdr);
+        self.parts.headers.push(header);
+        // Header tight to the top plate: face-to-face bearing contact.
+        let clear = self.h - 2.0 * b - (o.head + m.section(hdr_sec).props.depth);
+        if clear.abs() < 1e-6 {
+            m.bond(self.parts.top_plate, header, self.c_plate_hdr);
+        }
+        header
+    }
+
+    /// Window sill between the innermost posts (centres `xp0`, `xp1`).
+    fn sill(&mut self, m: &mut Model, zs: f64, post0: MemberId, post1: MemberId, xp0: f64, xp1: f64) -> MemberId {
+        let sn0 = m.node_on(post0, self.w(xp0, zs)).unwrap();
+        let sn1 = m.node_on(post1, self.w(xp1, zs)).unwrap();
+        let sax = m.axes_between(self.w(xp0, zs), self.w(xp1, zs), Some(self.inward));
+        let sill = m.add_member(
+            &[sn0, sn1],
+            &MemberSpec::new("sill", self.stud_sec, self.mat)
+                .priority(5)
+                .depth_dir(self.inward)
+                .anchor(Anchor::body_toward(&sax, Some(-Vec3::Z), self.v_side))
+                .group(self.g),
+        );
+        m.connect(sn0, sill, Some(post0), self.c_sill);
+        m.connect(sn1, sill, Some(post1), self.c_sill);
+        sill
+    }
+
+    /// Cripples at `x` in an opening: under the sill, and over the header if
+    /// there is room for one.
+    /// Returns how many were built.
+    fn cripples(&mut self, m: &mut Model, x: f64, o: &Opening, header: MemberId, sill: Option<MemberId>, name: Option<&str>) -> Result<usize, String> {
+        let mut n = 0;
+        let (c_bot, c_crip, c_top, top, ht) = (self.c_bot, self.c_crip, self.c_top, self.parts.top_plate, self.ht);
+        if let Some(s) = sill {
+            let lo = self.bottom_at(x)?;
+            self.vertical(m, x, 0.0, o.sill(), lo, s, "cripple", c_bot, c_crip, name)?;
+            n += 1;
+        }
+        let depth = m.section(m.member(header).section).props.depth;
+        if self.h - 2.0 * self.b - (o.head + depth) >= self.b {
+            self.vertical(m, x, o.head, ht, header, top, "cripple", c_crip, c_top, name)?;
+            n += 1;
+        }
+        Ok(n)
     }
 }

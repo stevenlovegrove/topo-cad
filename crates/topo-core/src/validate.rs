@@ -45,7 +45,7 @@ impl fmt::Display for Issue {
 }
 
 pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
-    let mut out = vec![];
+    let mut out = model.issues.clone();
     for m in &model.members {
         if m.section.idx() >= model.sections.len() || m.material.idx() >= model.materials.len() {
             out.push(Issue::new(Severity::Error, "bad-reference", format!("{} references a missing section/material", m.id)).members([m.id]));

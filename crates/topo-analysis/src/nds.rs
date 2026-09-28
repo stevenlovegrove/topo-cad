@@ -57,7 +57,15 @@ fn load_key(k: LoadKind) -> &'static str {
 }
 
 /// C_D for a combination: the shortest-duration load in it (NDS 2.3.2).
+pub fn load_duration_factor(model: &Model, combo: &Combination) -> (f64, String) {
+    let (cd, why, _) = load_duration(model, combo);
+    (cd, why)
+}
+
 fn load_duration(model: &Model, combo: &Combination) -> (f64, String, bool) {
+    if model.standards.combinations.as_deref() == Some("ubc-1976") {
+        return ubc1976_duration(model, combo);
+    }
     combo
         .factors
         .iter()
@@ -65,6 +73,28 @@ fn load_duration(model: &Model, combo: &Combination) -> (f64, String, bool) {
         .filter_map(|(id, _)| topo_data::load_duration(load_key(model.load_cases[id.idx()].kind)))
         .map(|r| (r.cd, format!("{} ({})", r.load.replace('_', " "), r.duration), r.verified))
         .fold((0.0, String::new(), true), |a, b| if b.0 > a.0 { (b.0, b.1, a.2 && b.2) } else { (a.0, a.1, a.2 && b.2) })
+}
+
+/// 1976 UBC Ch. 25 load-duration increases on tabulated stresses: "15 percent
+/// for two months duration as for snow; 25 percent for seven days duration as
+/// for roof loads; 33⅓ percent for wind or earthquake". Dead or floor load
+/// alone: the NDS values (0.9 permanent, 1.0 normal) — the UBC's own wording
+/// for these was not read (unverified).
+fn ubc1976_duration(model: &Model, combo: &Combination) -> (f64, String, bool) {
+    use topo_core::LoadKind::*;
+    combo
+        .factors
+        .iter()
+        .filter(|(_, f)| *f != 0.0)
+        .map(|(id, _)| match model.load_cases[id.idx()].kind {
+            Snow => (1.15, "snow: two months (1976 UBC Ch. 25, +15 %)".to_string(), true),
+            RoofLive => (1.25, "roof load: seven days (1976 UBC Ch. 25, +25 %)".into(), true),
+            Wind | Seismic => (4.0 / 3.0, "wind or earthquake (1976 UBC Ch. 25 / Sec. 2303(d), +33⅓ %)".into(), true),
+            Dead => (0.9, "permanent (as NDS; 1976 UBC wording not read)".into(), false),
+            _ => (1.0, "normal (as NDS; 1976 UBC wording not read)".into(), false),
+        })
+        // The shortest duration governs, and so does its source.
+        .fold((0.0, String::new(), true), |a, b| if b.0 > a.0 { b } else { a })
 }
 
 struct Wood<'a> {
@@ -574,7 +604,45 @@ fn is_wall_stud(model: &Model, m: MemberId) -> bool {
 
 /// Checks every member and nailed connection for every ASCE 7 ASD combination.
 pub fn nds_asd(model: &Model, geom: &topo_geom::Geometry, td: &Takedown) -> Analysis {
-    let combos = asce7_asd(&model.load_cases, &model.standards.asce7);
+    nds_asd_excluding(model, geom, td, &[])
+}
+
+/// Load combinations for a model, leaving out some load cases (e.g. to see
+/// the structure without snow): their terms are dropped and combinations that
+/// become duplicates are removed.
+pub fn combinations(model: &Model, exclude: &[topo_core::LoadCaseId]) -> Vec<Combination> {
+    let mut out: Vec<Combination> = vec![];
+    let base = match model.standards.combinations.as_deref() {
+        Some("ubc-1976") => crate::code::ubc1976(&model.load_cases),
+        _ => asce7_asd(&model.load_cases, &model.standards.asce7),
+    };
+    for mut c in base {
+        let before = c.factors.len();
+        c.factors.retain(|(id, _)| !exclude.contains(id));
+        if c.factors.is_empty() {
+            continue;
+        }
+        if c.factors.len() != before {
+            c.name = c
+                .factors
+                .iter()
+                .map(|&(id, f)| {
+                    let n = &model.load_cases[id.idx()].name;
+                    if (f - 1.0).abs() < 1e-9 { n.clone() } else { format!("{}{n}", (f * 1000.0).round() / 1000.0) }
+                })
+                .collect::<Vec<_>>()
+                .join(" + ");
+        }
+        if !out.iter().any(|o| o.factors == c.factors) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// As [`nds_asd`], without the excluded load cases.
+pub fn nds_asd_excluding(model: &Model, geom: &topo_geom::Geometry, td: &Takedown, exclude: &[topo_core::LoadCaseId]) -> Analysis {
+    let combos = combinations(model, exclude);
     let mut checks = vec![];
     let mut issues = vec![];
     let mut unknown = vec![false; model.members.len()];
@@ -603,7 +671,7 @@ pub fn nds_asd(model: &Model, geom: &topo_geom::Geometry, td: &Takedown) -> Anal
     }
     // Serviceability: deflection under each variable load alone (IRC Table
     // R301.7: floors L/360 under live load; roofs L/240 under snow/roof live).
-    for case in model.load_cases.iter().filter(|c| matches!(c.kind, LoadKind::Live | LoadKind::Snow | LoadKind::RoofLive)) {
+    for case in model.load_cases.iter().filter(|c| matches!(c.kind, LoadKind::Live | LoadKind::Snow | LoadKind::RoofLive) && !exclude.contains(&c.id)) {
         let (ds, _) = td.combine(&[(case.id, 1.0)]);
         let limit = if case.kind == LoadKind::Live { 360.0 } else { 240.0 };
         for m in &model.members {

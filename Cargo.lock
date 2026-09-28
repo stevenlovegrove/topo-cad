@@ -1137,6 +1137,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "topo-app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "topo-analysis",
+ "topo-core",
+ "topo-draw",
+ "topo-geom",
+ "topo-script",
+ "topo-timber",
+]
+
+[[package]]
 name = "topo-cli"
 version = "0.1.0"
 dependencies = [
@@ -1144,6 +1158,7 @@ dependencies = [
  "serde_json",
  "tiny_http",
  "topo-analysis",
+ "topo-app",
  "topo-core",
  "topo-draw",
  "topo-geom",
@@ -1191,6 +1206,7 @@ name = "topo-script"
 version = "0.1.0"
 dependencies = [
  "oxc_allocator",
+ "oxc_ast",
  "oxc_codegen",
  "oxc_diagnostics",
  "oxc_parser",
@@ -1222,11 +1238,15 @@ dependencies = [
 name = "topo-wasm"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "serde_json",
  "topo-analysis",
+ "topo-app",
  "topo-core",
+ "topo-data",
  "topo-draw",
  "topo-geom",
+ "topo-script",
  "topo-timber",
  "wasm-bindgen",
 ]

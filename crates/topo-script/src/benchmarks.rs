@@ -322,3 +322,97 @@ fn truss_shape_overrides_and_bonds() {
     assert!(m.bonds.iter().any(|b| (b.a, b.b) == (cap, beam)), "cap bonded to beam");
     assert_eq!(m.material(m.member(beam).material).design_key.as_deref(), Some("NDS:DFL:B&S No.1"));
 }
+
+/// A script offers named scenarios; each evaluates with its own values and
+/// the model records which one it is.
+#[test]
+fn scenarios_choose_values() {
+    let dir = format!("{}/../../examples/benchmarks", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(format!("{dir}/05-roof-takedown.ts")).unwrap()
+        .replace("import { Building,", "import { scenarios, Building,")
+        .replace(".load(\"snow\", psf(25))", ".load(\"snow\", scenarios({ \"Current code\": psf(25), \"As built\": psf(30) }, { describe: { \"As built\": \"older values\" } }))");
+    let snow = |m: &topo_core::Model| m.loads.iter().find_map(|l| match l {
+        topo_core::Load::Area { case, pressure, .. } if m.load_cases[case.idx()].kind == topo_core::LoadKind::Snow => Some(pressure / 47.880259),
+        _ => None,
+    }).unwrap();
+    let (a, _) = crate::run_scenario(&src, "s.ts", None).unwrap();
+    let (b, _) = crate::run_scenario(&src, "s.ts", Some("As built")).unwrap();
+    close("default", snow(&a), 25.0, 1e-9);
+    close("as built", snow(&b), 30.0, 1e-9);
+    assert_eq!(a.scenarios.current.as_deref(), Some("Current code"));
+    assert_eq!(b.scenarios.current.as_deref(), Some("As built"));
+    assert_eq!(b.scenarios.available.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["Current code", "As built"]);
+    assert_eq!(b.scenarios.available[1].description.as_deref(), Some("older values"));
+}
+
+/// A roof's dead load built from `layers(...)` records the build-up as a
+/// surface, and its panels lie on the top faces of the top chords (sloped)
+/// or bottom-chord extension (flat).
+#[test]
+fn roof_layers_become_surfaces() {
+    let path = format!("{}/../../examples/garage-truss.ts", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("  psf, schedule,", "  psf, layers, boards, schedule,")
+        .replace(
+            ".load(\"snow\", psf(25));",
+            ".load(\"snow\", psf(25))\n  .dead(layers(\"standing seam 24ga steel\", \"polystick mts\", \"plywood 15/32\", boards([1, 4], { spacing: inch(7.5) })))\n  .dead(layers(\"tpo 60 mil\", \"plywood 15/32\"), { on: \"flat\" });",
+        );
+    let m = run(&src, &path).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(m.surfaces.len(), 2);
+    let slope = &m.surfaces[0];
+    assert_eq!(slope.region, topo_core::SurfaceRegion::Slope);
+    assert_eq!(slope.layers.len(), 4);
+    let seam = &slope.layers[0];
+    close("rib height", seam.thickness, 1.5 * IN, 1e-9);
+    assert!(seam.strips.as_ref().is_some_and(|s| s.sheet && s.along == "slope"));
+    let bd = &slope.layers[3];
+    close("board thickness", bd.thickness, 0.75 * IN, 1e-9);
+    let st = bd.strips.as_ref().expect("spaced boards");
+    close("board width", st.width, 3.5 * IN, 1e-9);
+    close("board spacing", st.spacing, 7.5 * IN, 1e-9);
+    assert_eq!(st.along, "run");
+    close("psf", slope.psf(), 1.45 + 0.35 + 1.4 + bd.psf, 1e-9);
+
+    let topo = Topology::build(&m);
+    let g = Geometry::build(&m, &topo);
+    let panels = topo_geom::surface_panels(&m, &g, slope);
+    assert!(panels.len() >= 2, "{panels:?}");
+    let tops: Vec<_> = m.members.iter().filter(|x| x.role == "top_chord").collect();
+    for p in &panels {
+        assert!(p.normal.z > 0.1);
+        // Nothing of a top chord pokes through the panel's plane, and it touches it.
+        let h = tops.iter().flat_map(|x| g.member(x.id).faces()).flat_map(|f| f.outer).map(|q| (q - p.origin).dot(p.normal)).fold(f64::NEG_INFINITY, f64::max);
+        assert!(h.abs() < 1e-6, "top chords reach the panel: {h}");
+    }
+    let flat = topo_geom::surface_panels(&m, &g, &m.surfaces[1]);
+    assert_eq!(flat.len(), 1, "{flat:?}");
+    assert!(flat[0].normal.z > 0.999);
+    assert!(flat[0].slope.norm() > 0.9 && flat[0].slope.norm() < 1.1, "flat part width {}", flat[0].slope.norm());
+    let bottoms_top = m.members.iter().filter(|x| x.role == "bottom_chord").flat_map(|x| g.member(x.id).faces()).flat_map(|f| f.outer).map(|q| q.z).fold(f64::NEG_INFINITY, f64::max);
+    close("flat panel on the bottom chords", flat[0].origin.z, bottoms_top, 1e-6);
+}
+
+/// `designBasis({ combinations: "ubc-1976" })`: the 1976 UBC's unfactored
+/// sums (roof live load and snow as alternatives) with its load-duration
+/// increases (snow +15 %, roof live +25 %).
+#[test]
+fn ubc_1976_combinations() {
+    let dir = format!("{}/../../examples/benchmarks", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(format!("{dir}/05-roof-takedown.ts"))
+        .unwrap()
+        .replace(".load(\"snow\", psf(25));", ".load(\"snow\", psf(25))\n  .load(\"roof_live\", psf(16));")
+        .replace("export default Building.named(\"Benchmark 5: roof takedown\")", "export default Building.named(\"Benchmark 5: roof takedown\").designBasis({ combinations: \"ubc-1976\" })");
+    let m = run(&src, &format!("{dir}/ubc.ts")).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(m.standards.combinations_label(), "1976 UBC");
+    let combos = topo_analysis::combinations(&m, &[]);
+    let names: Vec<&str> = combos.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["D", "D + Lr", "D + S"]);
+    assert!(combos.iter().all(|c| c.factors.iter().all(|&(_, f)| f == 1.0)), "unfactored");
+    let cd: Vec<f64> = combos.iter().map(|c| topo_analysis::load_duration_factor(&m, c).0).collect();
+    assert_eq!(cd, vec![0.9, 1.25, 1.15]);
+    // Unticking snow leaves D and D + Lr.
+    let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
+    let names: Vec<String> = topo_analysis::combinations(&m, &[snow]).into_iter().map(|c| c.name).collect();
+    assert_eq!(names, vec!["D", "D + Lr"]);
+}

@@ -13,6 +13,18 @@ pub fn sidecar_path(model_file: &Path) -> PathBuf {
     model_file.with_file_name(format!("{stem}.measured.ts"))
 }
 
+/// `projects/garage.ts` → `projects/garage.measured.ts`, for file ids that
+/// are `/`-separated paths (e.g. in browser storage).
+pub fn sidecar_id(model_id: &str) -> String {
+    format!("{}.measured.ts", model_id.strip_suffix(".ts").unwrap_or(model_id))
+}
+
+/// The import line a model with id `model_id` needs to pick up its sidecar.
+pub fn import_hint_id(model_id: &str) -> String {
+    let stem = model_id.rsplit('/').next().unwrap_or(model_id).trim_end_matches(".ts");
+    format!("import {{ fieldMeasurements }} from \"./{stem}.measured\";  // then: .measure(fieldMeasurements)")
+}
+
 /// The import line a model needs to pick up its sidecar.
 pub fn import_hint(model_file: &Path) -> String {
     let stem = model_file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -141,19 +153,27 @@ pub fn value_ts(v: f64) -> String {
     format!("inch({s})")
 }
 
+/// The sidecar's new text with a measurement appended (starting from the
+/// template if there is no sidecar yet), and the TypeScript line added.
+pub fn append_text(existing: Option<&str>, model: &Model, name: &str, q: &Quantity, value: f64, note: Option<&str>) -> Result<(String, String), String> {
+    let text = existing.unwrap_or(TEMPLATE);
+    let comment = note.map(|n| format!(" // {n}")).unwrap_or_default();
+    let line = format!("  measured({}, {}, {}),{comment}\n", js_str(name), quantity_ts(model, q), value_ts(value));
+    let close = text.rfind("];").ok_or("the measurements file has no closing `];`")?;
+    let mut out = text[..close].to_string();
+    out.push_str(&line);
+    out.push_str(&text[close..]);
+    Ok((out, line.trim().to_string()))
+}
+
 /// Appends a measurement to the sidecar file (creating it if needed) and
 /// returns the TypeScript line written.
 pub fn append(model_file: &Path, model: &Model, name: &str, q: &Quantity, value: f64, note: Option<&str>) -> std::io::Result<String> {
     let path = ensure(model_file)?;
     let text = std::fs::read_to_string(&path)?;
-    let comment = note.map(|n| format!(" // {n}")).unwrap_or_default();
-    let line = format!("  measured({}, {}, {}),{comment}\n", js_str(name), quantity_ts(model, q), value_ts(value));
-    let close = text.rfind("];").ok_or_else(|| std::io::Error::other(format!("{} has no closing `];`", path.display())))?;
-    let mut out = text[..close].to_string();
-    out.push_str(&line);
-    out.push_str(&text[close..]);
+    let (out, line) = append_text(Some(&text), model, name, q, value, note).map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
     std::fs::write(&path, out)?;
-    Ok(line.trim().to_string())
+    Ok(line)
 }
 
 #[cfg(test)]
@@ -179,6 +199,12 @@ mod tests {
         close("1.07 m", 1.07);
         assert!(parse_length("three feet").is_err());
         assert!(parse_length("1/0\"").is_err());
+    }
+
+    #[test]
+    fn sidecar_ids() {
+        assert_eq!(sidecar_id("projects/garage.ts"), "projects/garage.measured.ts");
+        assert!(import_hint_id("projects/garage.ts").contains("\"./garage.measured\""));
     }
 
     #[test]

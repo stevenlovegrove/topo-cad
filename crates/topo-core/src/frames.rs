@@ -265,6 +265,15 @@ impl Model {
             s.node = n(s.node);
             self.supports.push(s);
         }
+        for mut i in other.issues {
+            i.nodes = i.nodes.into_iter().map(n).collect();
+            i.members = i.members.into_iter().map(m).collect();
+            self.issues.push(i);
+        }
+        for mut x in other.surfaces {
+            x.group = g(x.group);
+            self.surfaces.push(x);
+        }
         for l in other.loads {
             self.loads.push(match l {
                 Load::Node { case: k, node, force, moment } => Load::Node { case: case(k), node: n(node), force, moment },

@@ -12,15 +12,21 @@ topo-core.workspace = true
 topo-timber.workspace = true
 topo-geom.workspace = true
 topo-data.workspace = true
-rquickjs = { version = "0.14", features = ["loader"] }
+rquickjs = { version = "0.14", optional = true }
 oxc_allocator = "0.151"
 oxc_parser = "0.151"
 oxc_semantic = "0.151"
 oxc_transformer = "0.151"
 oxc_codegen = "0.151"
 oxc_span = "0.151"
+oxc_ast = "0.151"
 oxc_diagnostics = "0.151"
 
 [dev-dependencies]
 topo-analysis.workspace = true
 topo-draw.workspace = true
+
+[features]
+default = ["quickjs"]
+# The QuickJS host for running scripts natively (not for wasm).
+quickjs = ["dep:rquickjs"]

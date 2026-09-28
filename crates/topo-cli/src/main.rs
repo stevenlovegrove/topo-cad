@@ -1,22 +1,31 @@
 //! `topo example <name> <out-dir>` — build an example model and render it.
 //! `topo run <model.ts> <out-dir>` — run a TypeScript model and render it.
-//! `topo serve [model.ts | dir]… [port]` — web UI: pick a project, inspect it, add field measurements, edit its script.
+//! `topo serve [dir | model.ts]… [port] [--web <dir>]` — the web app, with those folders' files as a writable project store.
+//! `topo site <out-dir> <dir>… [--web <dir>]` — the web app and those folders' files, for any static web server.
 //! `topo render <model.json> <out-dir>` — render a model from its JSON IR.
 
 use std::fs;
 use std::path::Path;
-use topo_core::{validate, Model, Topology};
-use topo_draw::{DrawingSet, View};
+use topo_core::{Model, Topology};
+use topo_draw::DrawingSet;
 use topo_script::solve::SolveReport;
 use topo_geom::Geometry;
 
 fn usage() -> ! {
-    eprintln!("usage:\n  topo example <garage|garage-as-built> <out-dir>\n  topo run <model.ts> <out-dir>\n  topo serve [model.ts | dir]... [port]\n  topo render <model.json> <out-dir>");
+    eprintln!("usage:\n  topo example <garage|garage-as-built> <out-dir>\n  topo run <model.ts> <out-dir>\n  topo serve [dir | model.ts]... [port] [--web <dir>]\n  topo site <out-dir> <dir>... [--web <dir>]\n  topo render <model.json> <out-dir>");
     std::process::exit(2);
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let web = match args.iter().position(|a| a == "--web") {
+        Some(i) if i + 1 < args.len() => {
+            let w = std::path::PathBuf::from(args.remove(i + 1));
+            args.remove(i);
+            w
+        }
+        _ => serve::default_web_dir(),
+    };
     let (model, out, fit) = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["example", "garage", out] => (topo_timber::examples::garage_studio(), out.to_string(), None),
         ["example", "garage-as-built", out] => (topo_timber::examples::garage_as_built(), out.to_string(), None),
@@ -34,7 +43,15 @@ fn main() {
         ["serve", rest @ ..] => {
             let port = rest.iter().find_map(|a| a.parse::<u16>().ok()).unwrap_or(8765);
             let paths: Vec<std::path::PathBuf> = rest.iter().filter(|a| a.parse::<u16>().is_err()).map(std::path::PathBuf::from).collect();
-            if let Err(e) = serve::serve(&paths, port) {
+            if let Err(e) = serve::serve(&paths, port, &web) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        ["site", out, rest @ ..] if !rest.is_empty() => {
+            let paths: Vec<std::path::PathBuf> = rest.iter().map(std::path::PathBuf::from).collect();
+            if let Err(e) = serve::site(Path::new(out), &paths, &web) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -55,30 +72,7 @@ fn main() {
 
 mod serve;
 
-/// Every validation, geometry and load-path issue for a built model.
-pub(crate) fn all_issues(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<topo_core::Issue> {
-    let mut issues = validate(model, topo);
-    issues.extend(geom.issues.iter().cloned());
-    issues.extend(geom.clash_issues());
-    issues.extend(geom.bearing_issues(model));
-    issues.extend(topo_analysis::load_path_issues(model, topo, geom));
-    let td = topo_analysis::takedown(model, topo, geom);
-    issues.extend(td.issues);
-    issues
-}
-
-/// Cover-sheet tables for a measurement fit.
-pub(crate) fn fit_tables(fit: &SolveReport) -> Vec<View> {
-    use topo_draw::schedule::table;
-    use topo_draw::Align::*;
-    vec![
-        View::paper(
-            "Field measurements",
-            table("Field measurements", &["Measurement", "Measured", "Model", "Diff", ""], &[2.6, 1.0, 1.0, 0.7, 0.6], &[Start, End, End, End, Middle], &fit.measurement_rows()),
-        ),
-        View::paper("Fitted unknowns", table("Fitted unknowns", &["Unknown", "Value", "± 1σ"], &[1.4, 1.6, 1.3], &[Start, End, End], &fit.unknown_rows())),
-    ]
-}
+use topo_app::{all_issues, fit_tables};
 
 fn render(model: &Model, out: &Path, fit: Option<&SolveReport>) -> std::io::Result<()> {
     fs::create_dir_all(out.join("dxf"))?;

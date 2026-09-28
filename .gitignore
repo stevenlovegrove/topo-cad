@@ -4,3 +4,7 @@
 /out-*/
 # Local tool config (machine-specific paths)
 /.claude/
+# The web app's engine, built by web/build.sh
+/web/pkg/
+# Personal projects (real addresses and site data): not published
+/projects/

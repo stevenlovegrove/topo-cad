@@ -140,6 +140,35 @@ pub fn asce7_asd(cases: &[LoadCase], edition: &str) -> Vec<Combination> {
     out
 }
 
+/// Load combinations of the 1976 Uniform Building Code (working stress):
+/// dead load plus each other load at full value, unfactored — roof live load
+/// and snow are alternatives ("in place of", Sec. 2305(d)). Wind and
+/// earthquake use the one-third stress increase (Sec. 2303(d)), carried by the
+/// load-duration factor. Combinations of several transient loads were not
+/// read from the code and are left out.
+pub fn ubc1976(cases: &[LoadCase]) -> Vec<Combination> {
+    use LoadKind::*;
+    let sym = |k: LoadKind| match k {
+        Dead => "D",
+        Live => "L",
+        RoofLive => "Lr",
+        Snow => "S",
+        Wind => "W",
+        Seismic => "E",
+        Other => "O",
+    };
+    let of = |k: LoadKind| cases.iter().filter(move |c| c.kind == k).map(|c| c.id).collect::<Vec<_>>();
+    let mut out = vec![];
+    for terms in [&[Dead][..], &[Dead, Live], &[Dead, RoofLive], &[Dead, Snow], &[Dead, Wind], &[Dead, Seismic]] {
+        if terms.iter().any(|&k| of(k).is_empty()) {
+            continue;
+        }
+        let name = terms.iter().map(|&k| sym(k)).collect::<Vec<_>>().join(" + ");
+        out.push(Combination { name, factors: terms.iter().flat_map(|&k| of(k).into_iter().map(|id| (id, 1.0))).collect() });
+    }
+    out
+}
+
 /// NDS load duration factor C_D for a combination: governed by the
 /// shortest-duration load present (NDS 2.3.2, Table 2.3.2).
 pub fn nds_load_duration(model: &Model, combo: &Combination) -> f64 {

@@ -257,6 +257,20 @@ pub struct MaterialWeight {
     /// Weight (psf).
     pub psf: f64,
     pub verified: bool,
+    /// Thickness for drawing (inches): nominal or estimated, see the source note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thickness_in: Option<f64>,
+    /// Raised ribs (standing-seam panels), for drawing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ribs: Option<Ribs>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Ribs {
+    pub width_in: f64,
+    pub spacing_in: f64,
+    /// `slope` (down the roof) or `run` (along the ridge).
+    pub along: String,
 }
 
 impl Verified for MaterialWeight {

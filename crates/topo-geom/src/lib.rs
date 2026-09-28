@@ -4,9 +4,11 @@ pub mod measure;
 mod mesh;
 mod resolve;
 mod solid;
+pub mod surfaces;
 
 pub use mesh::{to_obj, triangulate, Mesh};
 pub use solid::*;
+pub use surfaces::{surface_panels, Panel};
 
 use serde::{Deserialize, Serialize};
 use topo_core::{Issue, MemberId, Model, Severity, Topology, Vec3};

@@ -31,6 +31,13 @@ pub struct SceneSpec {
     /// Include member self-weight in the dead load (default true).
     #[serde(default)]
     pub self_weight: Option<bool>,
+    /// Load combinations from another code (`ubc-1976`); default ASCE 7.
+    #[serde(default)]
+    pub combinations: Option<String>,
+    #[serde(default)]
+    pub scenarios: Vec<ScenarioInfo>,
+    #[serde(default)]
+    pub scenario: Option<String>,
 }
 
 /// One building: items in its own frame, placed in the world.
@@ -56,6 +63,13 @@ pub struct BuildingSpec {
     pub asce7: Option<String>,
     #[serde(default)]
     pub self_weight: Option<bool>,
+    /// Load combinations from another code (`ubc-1976`); default ASCE 7.
+    #[serde(default)]
+    pub combinations: Option<String>,
+    #[serde(default)]
+    pub scenarios: Vec<ScenarioInfo>,
+    #[serde(default)]
+    pub scenario: Option<String>,
 }
 
 /// Where a building sits: its origin in the world, and the compass bearing
@@ -105,6 +119,9 @@ impl SceneSpec {
             sheets: b.sheets.take(),
             asce7: b.asce7.take(),
             self_weight: b.self_weight.take(),
+            combinations: b.combinations.take(),
+            scenarios: std::mem::take(&mut b.scenarios),
+            scenario: b.scenario.take(),
             buildings: vec![b],
         })
     }
@@ -237,6 +254,9 @@ pub struct WallSpec {
     pub justify: String,
     pub openings: Vec<OpeningSpec>,
     pub cap_breaks: Vec<f64>,
+    /// As-built layout from field measurements.
+    #[serde(default)]
+    pub survey: Option<topo_timber::Survey>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,6 +288,10 @@ pub struct AreaLoadSpec {
     /// bottom-chord extension).
     #[serde(default)]
     pub on: Option<String>,
+    /// The layers the load is made of (top first): recorded as the roof's
+    /// surface build-up for drawings and the 3D view.
+    #[serde(default)]
+    pub layers: Option<Vec<topo_core::Layer>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +409,12 @@ impl Builder {
         for &x in &w.cap_breaks {
             wall = wall.cap_break(x);
         }
+        if let Some(s) = &w.survey {
+            if !w.openings.is_empty() {
+                return Err(format!("wall {}: a surveyed wall lists its openings in the survey, not with .opening()", w.name));
+            }
+            wall = wall.surveyed(s.clone());
+        }
         Ok(wall)
     }
 
@@ -407,7 +437,7 @@ impl Builder {
                 per = per.to(Vec2::new(s.to.0, s.to.1), side);
             }
         }
-        let parts = per.build(&mut self.m);
+        let parts = per.try_build(&mut self.m)?;
         self.m.group_mut(parts.group).parent = Some(self.root);
         // Every bottom plate bears on the foundation.
         let mut nodes: Vec<NodeId> = parts.bottom_plates().iter().flat_map(|&b| self.m.member(b).path.clone()).collect();
@@ -469,6 +499,11 @@ impl Builder {
                 Some("surface") => AreaBasis::Surface,
                 Some(b) => return Err(format!("roof {}: unknown load basis {b} (plan or surface)", r.name)),
             };
+            if let Some(layers) = &l.layers {
+                let region = if l.on.as_deref() == Some("flat") { topo_core::SurfaceRegion::Flat } else { topo_core::SurfaceRegion::Slope };
+                let name = format!("{}: {}", r.name, if region == topo_core::SurfaceRegion::Flat { "flat roof" } else { "sloped roof" });
+                self.m.surfaces.push(topo_core::Surface { name, group: roof.group, region, layers: layers.clone() });
+            }
             match l.on.as_deref() {
                 None | Some("slope") => {
                     self.m.loads.push(Load::Area { case, group: roof.group, pressure: l.pressure, direction: -Vec3::Z, basis, label: l.label.clone() });
@@ -686,6 +721,13 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
         }
         m.standards.asce7 = e.clone();
     }
+    if let Some(c) = &spec.combinations {
+        if c != "ubc-1976" {
+            return Err(format!("unknown load combinations {c} (ubc-1976, or leave out for ASCE 7)"));
+        }
+        m.standards.combinations = Some(c.clone());
+    }
+    m.scenarios = Scenarios { current: spec.scenario.clone(), available: spec.scenarios.clone() };
     if spec.self_weight == Some(false) {
         for c in &mut m.load_cases {
             c.self_weight = false;

@@ -6,16 +6,17 @@
 //! export (a `Building`) is serialized to a [`SceneSpec`] and expanded into a
 //! [`Model`](topo_core::Model) by the Rust generators.
 
+pub mod bundle;
 pub mod measfile;
 pub mod solve;
 pub mod spec;
 
 pub use spec::{build_scene, BuildingSpec, PlacementSpec, SceneSpec};
 
-use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::{CatchResultExt, Context, Ctx, Module, Runtime, Value};
+use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "quickjs")]
 use topo_core::Model;
 
 /// Source of the `topo-cad` module (the TypeScript API).
@@ -80,118 +81,78 @@ fn located(source: &str, d: &oxc_diagnostics::OxcDiagnostic) -> String {
     }
 }
 
-/// Lexically normalizes `a/./b/../c` → `a/c` (no filesystem access).
-fn normalize(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir if matches!(out.components().next_back(), Some(Component::Normal(_))) => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
+/// Evaluates a model script: its default export as JSON, for `params`
+/// overriding its `unknown(...)` values. Implemented by the QuickJS host here
+/// and by the browser host (a Web Worker) in `topo-wasm`.
+pub trait Evaluate {
+    fn eval(&self, params: Option<&BTreeMap<String, f64>>) -> Result<String, ScriptError>;
+}
+
+/// A model script bundled once (see [`bundle`]), evaluated as often as
+/// needed (e.g. by the solver, with different values for its `unknown`s).
+pub struct Script {
+    /// The bundle: evaluates to `(params, scenario) => json`.
+    pub program: String,
+    pub entry: String,
+    /// The scenario to evaluate (see `scenarios(...)` in topo-cad.ts).
+    pub scenario: Option<String>,
+}
+
+impl Script {
+    /// From a model's files by id (e.g. paths) and its entry.
+    pub fn from_files(files: &BTreeMap<String, String>, entry: &str) -> Result<Script, ScriptError> {
+        Ok(Script { program: bundle::bundle(files, entry)?, entry: entry.into(), scenario: None })
     }
-    out
-}
 
-/// Resolves `topo-cad` and relative `./x` / `../x` imports (`.ts` implied).
-struct ModelResolver;
-
-impl Resolver for ModelResolver {
-    fn resolve<'js>(&mut self, _ctx: &Ctx<'js>, base: &str, name: &str, _a: Option<ImportAttributes<'js>>) -> rquickjs::Result<String> {
-        if name == "topo-cad" {
-            return Ok(name.into());
-        }
-        if !(name.starts_with("./") || name.starts_with("../")) {
-            return Err(rquickjs::Error::new_resolving_message(base, name, "only \"topo-cad\" and relative imports (./file) are supported"));
-        }
-        // `.ts` is implied unless given (`./x.measured` → `./x.measured.ts`).
-        let file = if name.ends_with(".ts") { name.to_string() } else { format!("{name}.ts") };
-        let p = Path::new(base).parent().unwrap_or(Path::new("")).join(file);
-        Ok(normalize(&p).to_string_lossy().into_owned())
-    }
-}
-
-/// Loads the API module and TypeScript files from disk, stripping types.
-struct ModelLoader {
-    api_js: String,
-}
-
-impl Loader for ModelLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str, _a: Option<ImportAttributes<'js>>) -> rquickjs::Result<Module<'js>> {
-        if name == "topo-cad" {
-            return Module::declare(ctx.clone(), name, self.api_js.clone());
-        }
-        let src = std::fs::read_to_string(name).map_err(|e| rquickjs::Error::new_loading_message(name, e.to_string()))?;
-        let js = strip_types(&src, name).map_err(|e| rquickjs::Error::new_loading_message(name, e.to_string()))?;
-        Module::declare(ctx.clone(), name, js)
+    /// The model `source` (file `file`), reading the local files it imports from disk.
+    #[cfg(feature = "quickjs")]
+    pub fn compile(source: &str, file: &str) -> Result<Script, ScriptError> {
+        let files = bundle::collect(file, &mut |id| if id == file { Some(source.to_string()) } else { std::fs::read_to_string(id).ok() })?;
+        Script::from_files(&files, file)
     }
 }
 
 /// Evaluates a TypeScript model and returns its default export as JSON.
 /// `file` names the module; relative imports resolve against its directory.
+#[cfg(feature = "quickjs")]
 pub fn run_to_json(source: &str, file: &str) -> Result<String, ScriptError> {
     Script::compile(source, file)?.eval(None)
 }
 
-/// A model script with types stripped once, evaluated as often as needed
-/// (e.g. by the solver, with different values for its `unknown`s).
-pub struct Script {
-    api_js: String,
-    js: String,
-    file: String,
-}
-
-impl Script {
-    pub fn compile(source: &str, file: &str) -> Result<Script, ScriptError> {
-        Ok(Script { api_js: strip_types(API_TS, "topo-cad.ts")?, js: strip_types(source, file)?, file: file.into() })
+/// Runs bundles in QuickJS, a fresh runtime per evaluation.
+#[cfg(feature = "quickjs")]
+impl Evaluate for Script {
+    fn eval(&self, params: Option<&BTreeMap<String, f64>>) -> Result<String, ScriptError> {
+        use rquickjs::{CatchResultExt, Context, Function, Runtime};
+        let rt = Runtime::new().map_err(|e| ScriptError::Runtime(e.to_string()))?;
+        let ctx = Context::full(&rt).map_err(|e| ScriptError::Runtime(e.to_string()))?;
+        ctx.with(|ctx| {
+            // Native helpers the API calls (see `declare const __topo` in topo-cad.ts).
+            let native = || -> rquickjs::Result<()> {
+                let truss = Function::new(ctx.clone(), |req: String| -> String { standard_truss_json(&req) })?;
+                ctx.globals().set("__topo_truss_standard", truss)?;
+                let data = Function::new(ctx.clone(), |name: String| -> String { topo_data::table_json(&name).unwrap_or_else(|| "null".into()) })?;
+                ctx.globals().set("__topo_data", data)?;
+                Ok(())
+            };
+            native().map_err(|e| ScriptError::Runtime(e.to_string()))?;
+            let params = params.map(|p| serde_json::to_string(p).unwrap());
+            let run = || -> rquickjs::Result<String> {
+                let f: Function = ctx.eval(self.program.as_str())?;
+                let p = match &params {
+                    Some(j) => ctx.json_parse(j.as_str())?,
+                    None => rquickjs::Value::new_undefined(ctx.clone()),
+                };
+                f.call((p, self.scenario.clone()))
+            };
+            run().catch(&ctx).map_err(|e| ScriptError::Runtime(e.to_string()))
+        })
     }
-
-    /// Default export as JSON; `params` override `unknown(...)` values.
-    pub fn eval(&self, params: Option<&std::collections::BTreeMap<String, f64>>) -> Result<String, ScriptError> {
-        eval_js(&self.api_js, &self.js, &self.file, params)
-    }
-}
-
-fn eval_js(api: &str, js: &str, file: &str, params: Option<&std::collections::BTreeMap<String, f64>>) -> Result<String, ScriptError> {
-    let api = api.to_string();
-    let rt = Runtime::new().map_err(|e| ScriptError::Runtime(e.to_string()))?;
-    rt.set_loader(ModelResolver, ModelLoader { api_js: api });
-    let ctx = Context::full(&rt).map_err(|e| ScriptError::Runtime(e.to_string()))?;
-    ctx.with(|ctx| {
-        // Native helpers the API calls (see `declare const __topo` in topo-cad.ts).
-        let native = || -> rquickjs::Result<()> {
-            let truss = rquickjs::Function::new(ctx.clone(), |req: String| -> String { standard_truss_json(&req) })?;
-            ctx.globals().set("__topo_truss_standard", truss)?;
-            let data = rquickjs::Function::new(ctx.clone(), |name: String| -> String { topo_data::table_json(&name).unwrap_or_else(|| "null".into()) })?;
-            ctx.globals().set("__topo_data", data)?;
-            if let Some(p) = params {
-                ctx.eval::<(), _>(format!("globalThis.__topo_params = {};", serde_json::to_string(p).unwrap()))?;
-            }
-            Ok(())
-        };
-        native().map_err(|e| ScriptError::Runtime(e.to_string()))?;
-        let run = || -> rquickjs::Result<Option<String>> {
-            let (module, promise) = Module::declare(ctx.clone(), file, js)?.eval()?;
-            promise.finish::<()>()?;
-            let default: Value = module.get("default")?;
-            if default.is_undefined() {
-                return Ok(None);
-            }
-            ctx.json_stringify(default)?.map(|s| s.to_string()).transpose()
-        };
-        match run().catch(&ctx) {
-            Ok(Some(json)) => Ok(json),
-            Ok(None) => Err(ScriptError::Runtime(format!("{file} has no default export (export default a Building or Site)"))),
-            Err(e) => Err(ScriptError::Runtime(e.to_string())),
-        }
-    })
 }
 
 /// `{"kind": .., "span": .., "pitch": .., "overhang": .., ...}` → a standard
-/// truss shape as JSON, or `{"error": "..."}`.
-fn standard_truss_json(req: &str) -> String {
+/// truss shape as JSON, or `{"error": "..."}` (a native helper for scripts).
+pub fn standard_truss_json(req: &str) -> String {
     #[derive(serde::Deserialize)]
     struct Req {
         #[serde(flatten)]
@@ -211,14 +172,23 @@ fn standard_truss_json(req: &str) -> String {
 
 /// Evaluates a TypeScript model and builds it (fitting any `unknown`s to its
 /// measurements first).
+#[cfg(feature = "quickjs")]
 pub fn run(source: &str, file: &str) -> Result<Model, ScriptError> {
     Ok(run_solved(source, file)?.0)
 }
 
 /// Like [`run`], also returning the fit report when the model has unknowns
 /// or measurements.
+#[cfg(feature = "quickjs")]
 pub fn run_solved(source: &str, file: &str) -> Result<(Model, Option<solve::SolveReport>), ScriptError> {
-    let script = Script::compile(source, file)?;
+    run_scenario(source, file, None)
+}
+
+/// Like [`run_solved`], for a named scenario (`None`: the script's default).
+#[cfg(feature = "quickjs")]
+pub fn run_scenario(source: &str, file: &str, scenario: Option<&str>) -> Result<(Model, Option<solve::SolveReport>), ScriptError> {
+    let mut script = Script::compile(source, file)?;
+    script.scenario = scenario.map(Into::into);
     solve::solve(&script)
 }
 

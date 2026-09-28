@@ -13,19 +13,32 @@
   html, body { margin: 0; height: 100%; font: 14px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }
   header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   header b { font-size: 15px; }
+  header select { width: auto; max-width: 260px; }
   #status { color: var(--muted); }
   #project { width: auto; max-width: 260px; font-size: 13px; }
   #status .ok { color: var(--ok); } #status .bad { color: var(--bad); }
   nav { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
   nav button { border: 1px solid var(--line); background: var(--bg); padding: 3px 9px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; }
   nav button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
-  main { display: flex; height: calc(100% - 46px); }
+  body { display: flex; flex-direction: column; }
+  header { flex: none; }
+  main { display: flex; flex: 1; min-height: 0; }
   #viewer { flex: 1; position: relative; overflow: hidden; background: #e9e9e4; cursor: crosshair; }
   #sheet { width: 100%; height: 100%; }
   #sheet svg { width: 100%; height: 100%; display: block; }
   #tip { position: absolute; pointer-events: none; background: rgba(27,27,27,.88); color: #fff; padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
   #hint { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.8); padding: 2px 6px; border-radius: 4px; }
   aside { width: 420px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 4px 14px 20px; }
+  #paneTabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 2px; background: var(--panel); border-bottom: 1px solid var(--line); margin: 0 -14px 4px; padding: 8px 14px 0; }
+  #paneTabs button { border: 1px solid transparent; border-bottom: 0; background: none; padding: 5px 9px; border-radius: 5px 5px 0 0; cursor: pointer; font: inherit; font-size: 12px; color: var(--muted); margin-bottom: -1px; }
+  #paneTabs button:hover { color: var(--ink); }
+  #paneTabs button.on { color: var(--ink); background: var(--panel); border-color: var(--line); font-weight: 600; }
+  #paneTabs .count { display: inline-block; min-width: 14px; padding: 0 4px; border-radius: 7px; background: #eee; color: #555; font-size: 10px; font-weight: 600; }
+  #paneTabs .count.warn { background: #ffe1a8; color: #7a4b00; } #paneTabs .count.err { background: #fdecea; color: var(--bad); }
+  .pane[hidden] { display: none; }
+  .empty { padding: 16px 4px; font-size: 13px; }
+  #structure .std { font-size: 11px; color: var(--muted); margin-top: 8px; }
+  #msg:empty { display: none; }
   aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   button.act { border: 1px solid var(--accent); color: var(--accent); background: #fff; padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
@@ -62,10 +75,20 @@
   #view3d { position: absolute; inset: 0; background: #f7f7f3; cursor: grab; }
   #view3d.dragging { cursor: grabbing; }
   #canvas3d { width: 100%; height: 100%; display: block; }
-  #bar3d { position: absolute; left: 10px; top: 10px; display: flex; gap: 4px; flex-wrap: wrap; }
-  #bar3d button { border: 1px solid var(--line); background: #fff; padding: 3px 8px; border-radius: 4px; cursor: pointer; font: 12px inherit; }
-  #bar3d button:hover { background: #eef; }
-  #compass { position: absolute; right: 12px; top: 12px; width: 120px; height: 138px; pointer-events: none; }
+  #compass { position: absolute; right: 12px; top: 12px; width: 160px; height: 203px; pointer-events: none; user-select: none; }
+  #compass .hot { pointer-events: all; cursor: pointer; }
+  #compass .hot:hover .bg { fill: #dbe7ff; }
+  #compass .hot.cur .bg { fill: #1f5fbf; } #compass .hot.cur text { fill: #fff; }
+  #compass .hot.up.cur .bg { fill: rgba(255,255,255,.01); } #compass .hot.up.cur text { fill: #1d4ed8; }
+  #compass .link { pointer-events: all; cursor: pointer; fill: #1f5fbf; }
+  #compass .link:hover { text-decoration: underline; }
+  #layers3d { position: absolute; right: 12px; bottom: 34px; width: 290px; max-height: calc(100% - 250px); overflow: auto; background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 11px; }
+  #layers3d .hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; }
+  #layers3d .surf { margin-top: 6px; font-weight: 600; }
+  #layers3d .lyr { display: grid; grid-template-columns: 16px 12px 1fr auto; gap: 5px; align-items: center; padding: 1px 0; }
+  #layers3d .sw { width: 12px; height: 12px; border: 1px solid #888; border-radius: 2px; }
+  #layers3d .lyr span.n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #layers3d .lyr span.v { color: var(--muted); font-variant-numeric: tabular-nums; }
   #hint3d { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.85); padding: 2px 6px; border-radius: 4px; }
   #scriptBar { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
   #scriptBar .file { border: 1px solid var(--line); background: var(--bg); padding: 2px 8px; border-radius: 4px; cursor: pointer; font: 12px ui-monospace, monospace; }
@@ -82,12 +105,19 @@
   #src { color: transparent; background: transparent; caret-color: var(--ink); resize: none; outline: none; }
   #src::selection { background: rgba(31,95,191,.25); color: transparent; }
   @media (max-width: 900px) {
-    main { flex-direction: column; height: auto; }
+    main { flex-direction: column; height: auto; flex: none; }
+    body { display: block; }
     #viewer { flex: none; height: 70vh; }
     aside { width: auto; border-left: 0; border-top: 1px solid var(--line); }
     nav { margin-left: 0; }
   }
-  #structure .sum { font-size: 13px; }
+  #structure .sum { font-size: 13px; margin-top: 6px; }
+  .case { border-bottom: 1px solid var(--line); padding: 5px 0; font-size: 12px; }
+  aside .case label { display: flex; flex-direction: row; gap: 6px; align-items: center; color: var(--ink); font-weight: 600; font-size: 12px; }
+  .case ul { margin: 2px 0 0 22px; padding: 0; color: var(--muted); }
+  .case.off { opacity: .5; }
+  #combos td, #combos th { font-size: 11px; }
+  .chip { display: inline-block; background: #eef; border-radius: 3px; padding: 0 4px; margin: 1px; font-variant-numeric: tabular-nums; }
   #structure .sum b.bad { color: var(--bad); } #structure .sum b.ok { color: var(--ok); }
   #structure label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; flex: 1; }
   .legend { height: 10px; border-radius: 3px; margin: 8px 0 2px; background: linear-gradient(90deg, #2b9348 0%, #a7c957 35%, #f4a100 65%, #d62828 80%, #7b1fa2 100%); }
@@ -112,7 +142,8 @@
 </head>
 <body>
 <header>
-  <select id="project" title="Open a project (examples, benchmarks, your projects)"></select>
+  <select id="storage" title="Where your projects are stored"></select>
+  <select id="project" title="Open a project"></select>
   <b id="title">topo-cad</b>
   <span id="status">loading…</span>
   <nav id="tabs"></nav>
@@ -133,74 +164,104 @@
     </div>
     <div id="view3d" hidden>
       <canvas id="canvas3d"></canvas>
-      <div id="bar3d">
-        <button data-view="top" title="Plan: looking down, north up">Top</button>
-        <button data-view="n" title="From the north">N</button>
-        <button data-view="e" title="From the east">E</button>
-        <button data-view="s" title="From the south">S</button>
-        <button data-view="w" title="From the west">W</button>
-        <button data-view="iso" title="From the south-west, above">Iso</button>
-        <button data-view="fit" title="Fit the model">Fit</button>
-        <button id="copyView" title="Copy this view direction as sheet code">Copy view</button>
+      <svg id="compass" viewBox="-60 -60 120 152"></svg>
+      <div id="layers3d" hidden>
+        <div class="hdr"><b id="layersToggle" style="cursor:pointer" title="Collapse or expand">▾ Roof layers</b><label><input type="checkbox" id="layersOn" checked> show</label></div>
+        <div id="layersBody">
+          <div class="muted">Stepped back from the end nearest you: framing, then each layer from the bottom up. Untick to hide a layer.</div>
+          <div id="layersList"></div>
+        </div>
       </div>
-      <svg id="compass" viewBox="-60 -60 120 138"></svg>
       <div id="hint3d">drag to orbit · shift/right-drag to pan · scroll to zoom · click a member for its checks · double-click to fit</div>
     </div>
   </div>
   <aside>
     <div id="banner"></div>
-    <div id="structure">
-      <h3>Structure <span id="asce" class="muted" style="text-transform:none;letter-spacing:0"></span></h3>
-      <div class="sum" id="strSummary">—</div>
-      <div class="row" style="margin-top:8px">
-        <label>Colour by
-          <select id="heatMode">
-            <option value="off">off</option>
-            <option value="utilization">utilization (all checks)</option>
-            <option value="bending">bending</option>
-            <option value="shear">shear</option>
-            <option value="compression">compression</option>
-            <option value="bearing">bearing</option>
-            <option value="deflection">deflection</option>
-            <option value="connections">nailed connections</option>
-          </select>
-        </label>
-        <label>Load combination <select id="heatCombo"></select></label>
-      </div>
-      <div class="legend"></div>
-      <div class="legend-labels"><span>0</span><span>0.5</span><span>0.8</span><span>1.0</span><span>≥ 1.5</span></div>
-      <ul class="worst" id="worst"></ul>
-      <div id="inspector"></div>
-    </div>
-    <h3>New measurement</h3>
-    <div class="row">
-      <button class="act" id="btnDist" title="Pick two features (faces, corners, centrelines)">Distance</button>
-      <button class="act" id="btnLen" title="Pick one member">Member length</button>
-      <button class="act" id="btnCancel" hidden>Cancel</button>
-    </div>
-    <div id="steps"></div>
-    <div id="form" hidden>
-      <div class="field" id="kindField">
-        <span>Measured</span>
-        <select id="kind"></select>
-      </div>
-      <div class="preview" id="modelValue"></div>
-      <div class="field"><span>Name</span><input type="text" id="name" placeholder="e.g. eave tail past chord end"></div>
-      <div class="field"><span>Tape reading</span><input type="text" id="value" placeholder="e.g. 3' 6 5/16&quot; or 42.3&quot;"></div>
-      <div class="preview" id="valuePreview"></div>
-      <div class="field"><span>Note (optional)</span><input type="text" id="note" placeholder="how / where it was measured"></div>
-      <div class="row" style="margin-top:10px"><button class="act primary" id="btnSave">Save measurement</button></div>
-    </div>
     <div id="msg"></div>
-    <h3>Measurements</h3>
-    <table id="meas"></table>
-    <h3>Unknowns</h3>
-    <table id="unk"></table>
-    <h3>Issues</h3>
-    <ul id="issues"></ul>
+    <div id="paneTabs" role="tablist">
+      <button data-tab="checks" class="on">Checks</button>
+      <button data-tab="member">Member</button>
+      <button data-tab="loads">Loads</button>
+      <button data-tab="measure">Measure</button>
+      <button data-tab="issues">Issues <span class="count" id="issueCount"></span></button>
+    </div>
+
+    <section class="pane" data-pane="checks">
+      <div id="structure">
+        <div class="std" id="asce"></div>
+        <div class="sum" id="strSummary">—</div>
+        <div class="row" style="margin-top:10px">
+          <label>Colour by
+            <select id="heatMode">
+              <option value="off">off</option>
+              <option value="utilization">utilization (all checks)</option>
+              <option value="bending">bending</option>
+              <option value="shear">shear</option>
+              <option value="compression">compression</option>
+              <option value="bearing">bearing</option>
+              <option value="deflection">deflection</option>
+              <option value="connections">nailed connections</option>
+            </select>
+          </label>
+          <label>Load combination <select id="heatCombo"></select></label>
+        </div>
+        <div class="legend"></div>
+        <div class="legend-labels"><span>0</span><span>0.5</span><span>0.8</span><span>1.0</span><span>≥ 1.5</span></div>
+        <h3>Highest ratios</h3>
+        <ul class="worst" id="worst"></ul>
+      </div>
+      <div id="noStructure" class="muted empty" hidden>No structural analysis for this model.</div>
+    </section>
+
+    <section class="pane" data-pane="member" hidden>
+      <div id="inspector"><div class="muted empty">Click a member in a drawing or the 3D view to see its diagrams and checks.</div></div>
+    </section>
+
+    <section class="pane" data-pane="loads" hidden>
+      <div id="scenarioBox" hidden>
+        <h3>Scenario</h3>
+        <select id="scenario"></select>
+        <div class="muted" id="scenarioDesc" style="font-size:12px;margin-top:4px"></div>
+      </div>
+      <h3>Load cases <span class="muted" id="loadsSummary" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h3>
+      <div id="loadCases"></div>
+      <h3>Combinations</h3>
+      <table id="combos"></table>
+    </section>
+
+    <section class="pane" data-pane="measure" hidden>
+      <h3>New measurement</h3>
+      <div class="row">
+        <button class="act" id="btnDist" title="Pick two features (faces, corners, centrelines)">Distance</button>
+        <button class="act" id="btnLen" title="Pick one member">Member length</button>
+        <button class="act" id="btnCancel" hidden>Cancel</button>
+      </div>
+      <div id="steps"></div>
+      <div id="form" hidden>
+        <div class="field" id="kindField">
+          <span>Measured</span>
+          <select id="kind"></select>
+        </div>
+        <div class="preview" id="modelValue"></div>
+        <div class="field"><span>Name</span><input type="text" id="name" placeholder="e.g. eave tail past chord end"></div>
+        <div class="field"><span>Tape reading</span><input type="text" id="value" placeholder="e.g. 3' 6 5/16&quot; or 42.3&quot;"></div>
+        <div class="preview" id="valuePreview"></div>
+        <div class="field"><span>Note (optional)</span><input type="text" id="note" placeholder="how / where it was measured"></div>
+        <div class="row" style="margin-top:10px"><button class="act primary" id="btnSave">Save measurement</button></div>
+      </div>
+      <h3>Measurements</h3>
+      <table id="meas"></table>
+      <h3>Unknowns</h3>
+      <table id="unk"></table>
+    </section>
+
+    <section class="pane" data-pane="issues" hidden>
+      <ul id="issues"></ul>
+    </section>
   </aside>
 </main>
-<script>
+<script type="module">
+import { api, storage } from "./app/router.js";
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -210,11 +271,38 @@ let picks = [];           // chosen features: {label, feature, lines, points} or
 let choice = [];          // candidate lists per step (for alternatives)
 let hover = null, pending = false, queued = null;
 
-async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) });
-  const t = r.headers.get("content-type") || "";
-  return t.includes("json") ? r.json() : r.text();
+// ----- storage -------------------------------------------------------------
+function renderStorage() {
+  const sel = $("storage");
+  const cur = storage.store;
+  sel.innerHTML = storage.choices().map((c) => `<option value="${c.kind}">${esc(c.label)}</option>`).join("");
+  const kind = !cur ? "" : cur.constructor.name === "FolderStore" ? "folder" : cur.label === "This browser" ? "browser" : "site";
+  if (kind === "folder") {
+    // Show the folder in use rather than "choose a folder".
+    const o = sel.querySelector('option[value="folder"]');
+    o.textContent = cur.label;
+    const again = document.createElement("option");
+    again.value = "folder-new"; again.textContent = "Another folder…";
+    sel.appendChild(again);
+  }
+  sel.value = kind;
 }
+$("storage").addEventListener("change", async (e) => {
+  const v = e.target.value;
+  try {
+    if (v === "folder-new") storage.folderWaiting = null;
+    await storage.choose(v === "folder-new" ? "folder" : v);
+  } catch (err) {
+    if (err?.name !== "AbortError") alert(err?.message ?? err);
+  }
+  renderStorage();
+});
+storage.onChange(async () => {
+  resetForProject();
+  state = null;
+  renderStorage();
+  await loadProjects();
+});
 
 // ----- state polling -------------------------------------------------------
 async function poll() {
@@ -283,6 +371,9 @@ function renderPanel() {
     ut.appendChild(tr);
   });
   $("issues").innerHTML = s.issues.length ? s.issues.map((i) => `<li>${esc(i)}</li>`).join("") : "<li class=muted>none</li>";
+  const c = $("issueCount"), sev = (w) => s.issues.filter((i) => String(i).includes(`[${w}]`)).length;
+  c.textContent = s.issues.length || "";
+  c.className = "count" + (sev("Error") ? " err" : sev("Warning") ? " warn" : "");
 }
 
 // ----- structure: checks, heatmap, member inspector -------------------------
@@ -302,9 +393,33 @@ function heatColor(r) {
 
 function renderStructure() {
   const a = state.analysis;
+  $("noStructure").hidden = !!a;
   if (!a) { $("structure").hidden = true; return; }
   $("structure").hidden = false;
-  $("asce").textContent = `NDS 2018 ASD · ASCE ${a.asce7}`;
+  // Scenarios.
+  const sc = state.scenarios || { available: [] };
+  $("scenarioBox").hidden = sc.available.length < 2;
+  const ss = $("scenario");
+  ss.innerHTML = sc.available.map((x) => `<option ${x.name === sc.current ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+  const cur = sc.available.find((x) => x.name === sc.current);
+  $("scenarioDesc").textContent = cur && cur.description ? cur.description : "";
+  // Load cases and combinations.
+  const L = state.loads;
+  if (L) {
+    const on = L.cases.filter((c) => !c.excluded).map((c) => c.name);
+    $("loadsSummary").textContent = `— ${on.join(", ")}${L.cases.some((c) => c.excluded) ? " (some left out)" : ""}`;
+    $("loadCases").innerHTML = `<div class="muted" style="font-size:11px;margin:4px 0">${esc(L.standard)}. Untick a case to leave it out of the checks.</div>` +
+      L.cases.map((c) => `<div class="case ${c.excluded ? "off" : ""}"><label><input type="checkbox" data-case="${esc(c.name)}" ${c.excluded ? "" : "checked"}> ${esc(c.name)} <span class="muted" style="font-weight:400">${esc(c.kind)}</span></label><ul>${c.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></div>`).join("");
+    for (const box of $("loadCases").querySelectorAll("input[data-case]")) {
+      box.onchange = async () => {
+        const off = [...$("loadCases").querySelectorAll("input[data-case]")].filter((b) => !b.checked).map((b) => b.dataset.case);
+        await api("/api/exclude", off);
+      };
+    }
+    $("combos").innerHTML = `<tr><th>Combination</th><th>Factors</th><th class=num>C<sub>D</sub></th></tr>` +
+      L.combos.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.factors.map(([n, f]) => `<span class="chip">${f === 1 ? "" : f + "×"}${esc(n)}</span>`).join("")}</td><td class=num title="${esc(c.cd_why)}">${c.cd.toFixed(2)}</td></tr>`).join("");
+  }
+  $("asce").textContent = `NDS 2018 ASD · ${a.combinations || "ASCE " + a.asce7}`;
   const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : `<b class="ok">all within capacity</b>`;
   const ind = a.indicative_over ? ` · <span class="muted" title="Members designed by others (e.g. manufactured trusses): checked for information only">${a.indicative_over} indicative over 1.0</span>` : "";
   $("strSummary").innerHTML = `${a.checked} members checked · ${over}${ind} · max ratio ${a.max.toFixed(2)}` +
@@ -346,6 +461,7 @@ function drawHeat() {
 }
 
 $("heatMode").addEventListener("change", loadHeat);
+$("scenario").addEventListener("change", async (e) => { await api("/api/scenario", { path: e.target.value }); });
 $("heatCombo").addEventListener("change", () => { loadHeat(); if (inspected) inspect(inspected, true); });
 
 function chart(t, v, title, unit, color, down) {
@@ -370,6 +486,7 @@ function fmtNum(v) { const a = Math.abs(v); return a >= 100 ? v.toFixed(0) : a >
 
 async function inspect(path, keep) {
   inspected = path;
+  if (!keep) showTab("member");
   const r = await api(`/api/member?path=${encodeURIComponent(path)}&combo=${encodeURIComponent($("heatCombo").value)}`);
   if (r.error) { $("inspector").innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
   const sup = r.supports.map((s) => `${esc(s.by)} at ${s.at_ft.toFixed(2)} ft${s.transfer === "Fastened" ? " (nails only)" : ""}`).join("; ");
@@ -425,6 +542,7 @@ async function load3d(force) {
     });
     center3d = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
     if (!cam.scale) fit3d();
+    renderLayersLegend();
   }
   await loadRatios3d();
   draw3d();
@@ -484,6 +602,10 @@ function draw3d() {
   const cr = dot3(center3d, r), cu = dot3(center3d, u);
   const X = (sx) => w / 2 + cam.pan[0] + (sx - cr) * cam.scale;
   const Y = (sy) => h / 2 + cam.pan[1] - (sy - cu) * cam.scale;
+  const P = (p) => [X(dot3(p, r)), Y(dot3(p, u))];
+  const layerDraws = layers3dOn() ? layerPolys(t) : [];
+  covers3d = [];
+  paintLayers(g, P, layerDraws.filter((d) => !d.over));
   const heatOn = $("heatMode").value !== "off";
   const colour = (m) => { const rt = ratios3d[m.path]; return heatOn ? (rt ? heatColor(rt.ratio) : "#9a9a92") : "#222"; };
   g.lineCap = "round";
@@ -499,6 +621,7 @@ function draw3d() {
       g.strokeStyle = colour(m); g.lineWidth = heatOn ? 1.6 : 0.8;
       g.beginPath(); g.moveTo(seg[1], seg[2]); g.lineTo(seg[3], seg[4]); g.stroke();
     }
+    paintLayers(g, P, layerDraws.filter((d) => d.over), true);
     for (const seg of special) {
       const m = mesh3d.members[seg[0]];
       g.strokeStyle = m.path === hover3d ? "#1f5fbf" : heatOn ? colour(m) : "#000";
@@ -518,20 +641,33 @@ function draw3d() {
       g.closePath(); g.stroke();
     }
     g.globalAlpha = 1;
+    paintLayers(g, P, layerDraws.filter((d) => d.over), true);
     $("hint3d").textContent = "preview (hidden lines not removed) — release to render exactly";
     if (!drag3dActive) requestExact();
   }
   drawCompass(r, u, t);
 }
 
+const VIEW_PRESETS = { top: [180, 89.9], n: [0, 0], e: [90, 0], s: [180, 0], w: [270, 0], ne: [45, 30], se: [135, 30], sw: [225, 30], nw: [315, 30] };
+const PRESET_TITLES = { top: "Plan: looking down, north up", n: "Elevation from the north", e: "Elevation from the east", s: "Elevation from the south", w: "Elevation from the west", ne: "From the north-east, above", se: "From the south-east, above", sw: "From the south-west, above", nw: "From the north-west, above" };
+function currentPreset() {
+  const a = ((cam.az % 360) + 360) % 360;
+  return Object.keys(VIEW_PRESETS).find((k) => Math.abs(VIEW_PRESETS[k][0] - a) < 0.5 && Math.abs(VIEW_PRESETS[k][1] - cam.el) < 0.5) || null;
+}
+/// The compass is also the view control: click a letter for an elevation
+/// from that side, a corner dot for a view from above that corner, the
+/// centre for plan; "fit" and "copy view" below.
 function drawCompass(r, u, t) {
   const svgc = $("compass");
   const R = 44;
+  const cur = currentPreset();
+  const hot = (key, inner) => `<g class="hot${cur === key ? " cur" : ""}" data-view="${key}"><title>${PRESET_TITLES[key]}</title>${inner}</g>`;
   const dirs = [["N", [0, 1, 0], "#d62828"], ["E", [1, 0, 0], "#333"], ["S", [0, -1, 0], "#333"], ["W", [-1, 0, 0], "#333"]];
-  let html = `<circle r="${R + 8}" fill="rgba(255,255,255,.88)" stroke="#bbb"/>`;
+  let html = `<circle r="${R + 8}" fill="rgba(255,255,255,.9)" stroke="#bbb"/>`;
   // The ground plane seen from this view: an ellipse flattened by the elevation.
   const flat = Math.abs(Math.sin(cam.el * D2R));
-  html += `<ellipse rx="${R}" ry="${Math.max(R * flat, 1)}" fill="none" stroke="#ddd" transform="rotate(0)"/>`;
+  html += `<ellipse rx="${R}" ry="${Math.max(R * flat, 1)}" fill="none" stroke="#ddd"/>`;
+  let labels = "";
   for (const [name, v, col] of dirs) {
     const x = dot3(v, r) * R, y = -dot3(v, u) * R;
     const len = Math.hypot(x, y);
@@ -539,21 +675,144 @@ function drawCompass(r, u, t) {
     html += `<line x1="0" y1="0" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${col}" stroke-width="${name === "N" ? 3 : 1.5}" ${behind ? 'stroke-dasharray="3 2"' : ""}/>`;
     if (name === "N") html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="${col}"/>`;
     const k = len > 1e-6 ? (len + 10) / len : 0;
-    html += `<text x="${(x * k).toFixed(1)}" y="${(y * k + 4).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="${col}" font-family="sans-serif">${name}</text>`;
+    const [lx, ly] = [x * k, y * k];
+    labels += hot(name.toLowerCase(), `<circle class="bg" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="8" fill="rgba(255,255,255,.01)"/><text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="${col}" font-family="sans-serif">${name}</text>`);
   }
-  // Up.
+  // Corner dots: views from above each corner.
+  for (const [key, az] of [["ne", 45], ["se", 135], ["sw", 225], ["nw", 315]]) {
+    const v = [Math.sin(az * D2R), Math.cos(az * D2R), 0];
+    const x = dot3(v, r) * R * 0.8, y = -dot3(v, u) * R * 0.8;
+    labels += hot(key, `<circle class="bg" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="#fff" stroke="#888"/>`);
+  }
+  // Up, and the centre: plan view.
   const ux = dot3([0, 0, 1], r) * R * 0.6, uy = -dot3([0, 0, 1], u) * R * 0.6;
-  html += `<line x1="0" y1="0" x2="${ux.toFixed(1)}" y2="${uy.toFixed(1)}" stroke="#1d4ed8" stroke-width="1.5"/><text x="${ux.toFixed(1)}" y="${(uy - 4).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1d4ed8" font-family="sans-serif">up</text>`;
+  html += `<line x1="0" y1="0" x2="${ux.toFixed(1)}" y2="${uy.toFixed(1)}" stroke="#1d4ed8" stroke-width="1.5"/>`;
+  // "up" (and a wide invisible stroke along its arrow) also gives the plan view.
+  labels += `<g class="hot up" data-view="top"><title>${PRESET_TITLES.top}</title><line x1="0" y1="0" x2="${ux.toFixed(1)}" y2="${uy.toFixed(1)}" stroke="transparent" stroke-width="8"/><rect class="bg" x="${(ux - 9).toFixed(1)}" y="${(uy - 12).toFixed(1)}" width="18" height="11" rx="3" fill="rgba(255,255,255,.01)"/><text x="${ux.toFixed(1)}" y="${(uy - 4).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1d4ed8" font-family="sans-serif">up</text></g>`;
+  labels += hot("top", `<circle class="bg" r="6" fill="#fff" stroke="#1d4ed8"/><text y="3" text-anchor="middle" font-size="7" fill="#1d4ed8" font-family="sans-serif">▼</text>`);
   const bearing = ((cam.az % 360) + 360) % 360;
   const names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-  html += `<text x="0" y="${R + 26}" text-anchor="middle" font-size="10" fill="#555" font-family="sans-serif">from ${names[Math.round(bearing / 45) % 8]} ${bearing.toFixed(0)}°, ${cam.el.toFixed(0)}° up</text>`;
+  html += labels;
+  html += `<text x="0" y="${R + 24}" text-anchor="middle" font-size="10" fill="#555" font-family="sans-serif">from ${names[Math.round(bearing / 45) % 8]} ${bearing.toFixed(0)}°, ${cam.el.toFixed(0)}° up</text>`;
+  html += `<text class="link" data-act="fit" x="-8" y="${R + 38}" text-anchor="end" font-size="10" font-family="sans-serif"><title>Fit the model (or double-click)</title>fit</text>`;
+  html += `<text x="0" y="${R + 38}" text-anchor="middle" font-size="10" fill="#999" font-family="sans-serif">·</text>`;
+  html += `<text class="link" data-act="copy" x="8" y="${R + 38}" text-anchor="start" font-size="10" font-family="sans-serif"><title>Copy this view direction as sheet code</title>copy view</text>`;
   svgc.innerHTML = html;
+}
+
+// ----- roof layers in 3D ---------------------------------------------------
+let covers3d = [];
+const hiddenLayers = new Set();
+const layerKey = (s, i) => `${s.name}|${i}`;
+function layers3dOn() { return mesh3d && mesh3d.surfaces && mesh3d.surfaces.length && $("layersOn").checked; }
+function layerColour(name) {
+  const n = name.toLowerCase();
+  if (/standing|steel|metal/.test(n)) return "#9fb3c6";
+  if (/tpo/.test(n)) return "#efefe9";
+  if (/underlayment|polystick|felt|membrane/.test(n)) return "#50555e";
+  if (/plywood|osb|wsp/.test(n)) return "#dfc088";
+  if (/board/.test(n)) return "#b98a52";
+  if (/shingle/.test(n)) return "#707070";
+  if (/gypsum/.test(n)) return "#f3f1ea";
+  return "#c9c9c0";
+}
+function shade(hex, k) {
+  const v = parseInt(hex.slice(1), 16);
+  const c = [v >> 16, (v >> 8) & 255, v & 255].map((x) => Math.round(Math.max(0, Math.min(255, x * k))));
+  return `rgb(${c.join(",")})`;
+}
+function renderLayersLegend() {
+  const S = (mesh3d && mesh3d.surfaces) || [];
+  $("layers3d").hidden = !S.length;
+  const fmtIn = (m) => { const i = m / 0.0254; return i >= 0.1 ? `${i.toFixed(i < 1 ? 3 : 2).replace(/0+$/, "").replace(/\.$/, "")}"` : `${(i * 1000).toFixed(0)} mil`; };
+  $("layersList").innerHTML = S.map((s) => `<div class="surf">${esc(s.name)} <span class="muted" style="font-weight:400">${fmtIn(s.thickness)}, ${s.psf.toFixed(2)} psf</span></div>` +
+    s.layers.map((l, i) => `<label class="lyr" title="${esc(l.name)}${l.verified ? "" : " (unverified)"}"><input type="checkbox" data-layer="${esc(layerKey(s, i))}" ${hiddenLayers.has(layerKey(s, i)) ? "" : "checked"}><span class="sw" style="background:${layerColour(l.name)}"></span><span class="n">${esc(l.name)}</span><span class="v">${fmtIn(l.thickness)} · ${l.psf.toFixed(2)}${l.verified ? "" : "*"}</span></label>`).join("")).join("");
+  for (const b of $("layersList").querySelectorAll("input[data-layer]")) {
+    b.onchange = () => { if (b.checked) hiddenLayers.delete(b.dataset.layer); else hiddenLayers.add(b.dataset.layer); draw3d(); };
+  }
+}
+/// Filled polygons for every shown layer: stepped back along the ridge from
+/// the end facing the viewer; `over` when seen from above (drawn over the
+/// framing), in back-to-front order.
+function layerPolys(t) {
+  const add = (...vs) => vs.reduce((a, [v, k]) => [a[0] + v[0] * k, a[1] + v[1] * k, a[2] + v[2] * k], [0, 0, 0]);
+  const panels = [];
+  for (const s of mesh3d.surfaces) {
+    const shown = s.layers.map((l, i) => ({ l, i })).filter(({ i }) => !hiddenLayers.has(layerKey(s, i)));
+    for (const pn of s.panels) {
+      const c = add([pn.origin, 1], [pn.slope, 0.5], [pn.run, 0.5]);
+      panels.push({ s, pn, shown, depth: dot3(c, t), over: dot3(pn.normal, t) >= 0 });
+    }
+  }
+  panels.sort((a, b) => a.depth - b.depth);
+  const out = [];
+  for (const { s, pn, shown, over } of panels) {
+    const runLen = Math.hypot(...pn.run), slopeLen = Math.hypot(...pn.slope);
+    const atEnd = dot3(pn.run, t) > 0;  // the r = 1 end faces the viewer
+    const L = shown.length, step = Math.min(0.12, 0.5 / Math.max(L, 1));
+    // Base of each layer: the thickness of every layer below it (shown or not).
+    const base = s.layers.map((_, i) => s.layers.slice(i + 1).reduce((a, l) => a + l.thickness, 0));
+    const pt = (sp, rp, z) => add([pn.origin, 1], [pn.slope, sp], [pn.run, rp], [pn.normal, z]);
+    const quad = (s0, s1, r0, r1, z) => [pt(s0, r0, z), pt(s1, r0, z), pt(s1, r1, z), pt(s0, r1, z)];
+    // A face across the layer's thickness along a panel edge.
+    const edge = (a0, a1, b0, b1, z0, z1) => [pt(a0, b0, z0), pt(a1, b1, z0), pt(a1, b1, z1), pt(a0, b0, z1)];
+    const sd = dot3(pn.slope, t) > 0, rd = dot3(pn.run, t) > 0;  // which strip sides face the viewer
+    [...shown].reverse().forEach(({ l, i }, j) => {
+      const [r0, r1] = atEnd ? [0, 1 - (j + 1) * step] : [(j + 1) * step, 1];
+      if (r1 <= r0) return;
+      const z0 = base[i], z1 = base[i] + l.thickness, col = layerColour(l.name);
+      const st = l.strips;
+      const push = (pts, fill, cover) => out.push({ pts, fill, over, cover });
+      if (!st || st.sheet) {
+        const zs = st ? Math.min(z1, z0 + 0.0008) : z1;
+        push(quad(0, 1, r0, r1, zs), col, true);
+        push(atEnd ? edge(0, 1, r1, r1, z0, zs) : edge(0, 1, r0, r0, z0, zs), shade(col, 0.7), false);
+      }
+      if (st) {
+        const [len, along] = st.along === "run" ? [slopeLen, "s"] : [runLen, "r"];
+        for (let c = st.width / 2; c < len; c += st.spacing) {
+          const a0 = Math.max(0, (c - st.width / 2) / len), a1 = Math.min(1, (c + st.width / 2) / len);
+          if (along === "s") {
+            push(edge(sd ? a1 : a0, sd ? a1 : a0, r0, r1, z0, z1), shade(col, 0.72), false);
+            push(quad(a0, a1, r0, r1, z1), col, true);
+          } else {
+            if (a1 < r0 || a0 > r1) continue;
+            const b0 = Math.max(a0, r0), b1 = Math.min(a1, r1), side = rd ? b1 : b0;
+            push([pt(0, side, z0), pt(1, side, z0), pt(1, side, z1), pt(0, side, z1)], shade(col, 0.72), false);
+            push(quad(0, 1, b0, b1, z1), shade(col, 1.06), true);
+          }
+        }
+      }
+    });
+  }
+  return out;
+}
+function paintLayers(g, P, draws, cover) {
+  for (const d of draws) {
+    const q = d.pts.map(P);
+    g.beginPath(); q.forEach(([x, y], k) => k ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath();
+    g.fillStyle = d.fill; g.fill();
+    g.strokeStyle = "rgba(0,0,0,.35)"; g.lineWidth = 0.5; g.stroke();
+    if (cover && d.cover) covers3d.push(q);
+  }
+}
+function coveredAt(x, y) {
+  for (const q of covers3d) {
+    let inside = false;
+    for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+      const [xi, yi] = q[i], [xj, yj] = q[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    if (inside) return true;
+  }
+  return false;
 }
 
 /// The member whose visible edge is nearest the cursor (within 7 px).
 function pick3d(x, y) {
   let best = null, bd = 7;
   for (const [mi, x0, y0, x1, y1] of drawn3d) {
+    if (covers3d.length && coveredAt((x0 + x1) / 2, (y0 + y1) / 2)) continue;
     const dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
     const k = l2 > 0 ? Math.max(0, Math.min(1, ((x - x0) * dx + (y - y0) * dy) / l2)) : 0;
     const d = Math.hypot(x - (x0 + k * dx), y - (y0 + k * dy));
@@ -567,7 +826,7 @@ function pick3d(x, y) {
   let drag = null;
   el.addEventListener("contextmenu", (e) => e.preventDefault());
   el.addEventListener("mousedown", (e) => {
-    if (e.target.closest("#bar3d")) return;
+    if (e.target.closest("#compass .hot, #compass .link") || e.target.closest("#layers3d")) return;
     drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2, moved: false, az: cam.az, elv: cam.el, p: cam.pan.slice() };
     drag3dActive = !drag.pan;
     el.classList.add("dragging");
@@ -614,21 +873,22 @@ function pick3d(x, y) {
     cam.scale *= f;
     draw3d();
   }, { passive: false });
-  el.addEventListener("dblclick", (e) => { if (!e.target.closest("#bar3d")) { fit3d(); draw3d(); } });
-  const presets = { top: [180, 89.9], n: [0, 0], e: [90, 0], s: [180, 0], w: [270, 0], iso: [225, 30] };
-  for (const b of $("bar3d").querySelectorAll("button[data-view]")) {
-    b.onclick = () => {
-      const v = b.dataset.view;
-      if (v !== "fit") [cam.az, cam.el] = presets[v];
-      fit3d(); draw3d();
-    };
-  }
-  $("copyView").onclick = async () => {
+  el.addEventListener("dblclick", (e) => { if (!e.target.closest("#compass .hot, #compass .link") && !e.target.closest("#layers3d")) { fit3d(); draw3d(); } });
+  el.addEventListener("wheel", (e) => { if (e.target.closest("#layers3d")) e.stopPropagation(); }, { capture: true });
+  $("layersOn").onchange = () => draw3d();
+  $("layersToggle").onclick = () => { const b = $("layersBody"); b.hidden = !b.hidden; $("layersToggle").textContent = (b.hidden ? "▸" : "▾") + " Roof layers"; };
+  const copyView = async () => {
     const { t } = basis3d();
     const code = `iso(undefined, { from: [${t.map((x) => x.toFixed(3)).join(", ")}] })`;
     try { await navigator.clipboard.writeText(code); msg(`Copied: ${code} — paste into a sheet(...) in your script (a world direction toward the viewer).`, false); }
     catch (_) { msg(`View: ${code}`, false); }
   };
+  $("compass").addEventListener("click", (e) => {
+    const v = e.target.closest("[data-view]"), a = e.target.closest("[data-act]");
+    if (v) { [cam.az, cam.el] = VIEW_PRESETS[v.dataset.view]; fit3d(); draw3d(); }
+    else if (a && a.dataset.act === "fit") { fit3d(); draw3d(); }
+    else if (a && a.dataset.act === "copy") copyView();
+  });
   window.addEventListener("resize", () => draw3d());
 })();
 
@@ -661,7 +921,7 @@ $("project").addEventListener("change", async (e) => {
   const v = e.target.value;
   if (files.some((f) => f.text !== f.saved) && !confirm("Discard unsaved script edits?")) { await loadProjects(); return; }
   if (v === "__new__") {
-    const name = prompt("Name for the new project (saved in ./projects):");
+    const name = prompt("Name for the new project (saved in projects/):");
     if (!name) { await loadProjects(); return; }
     const r = await api("/api/new", { path: name });
     if (r.error) { alert(r.error); await loadProjects(); return; }
@@ -1112,6 +1372,15 @@ $("btnSave").onclick = async () => {
   cancel();
 };
 
+// ----- side panel tabs -------------------------------------------------------
+function showTab(name) {
+  for (const b of document.querySelectorAll("#paneTabs button")) b.classList.toggle("on", b.dataset.tab === name);
+  for (const p of document.querySelectorAll("aside .pane")) p.hidden = p.dataset.pane !== name;
+  try { localStorage.setItem("topo.tab", name); } catch (_) {}
+}
+for (const b of document.querySelectorAll("#paneTabs button")) b.onclick = () => showTab(b.dataset.tab);
+try { const t = localStorage.getItem("topo.tab"); if (t && t !== "member") showTab(t); } catch (_) {}
+
 function msg(text, isErr) {
   const m = $("msg");
   m.className = text ? (isErr ? "err" : "ok") : "";
@@ -1120,7 +1389,8 @@ function msg(text, isErr) {
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
 
-loadProjects();
+// Storage first (its change handler lists the projects), then keep the view in step.
+await storage.boot();
 poll();
 </script>
 </body>

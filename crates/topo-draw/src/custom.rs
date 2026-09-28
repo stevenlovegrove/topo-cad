@@ -95,6 +95,36 @@ fn reactions_table(model: &Model, r: Results) -> crate::Drawing {
     crate::schedule::table("Foundation reactions (unfactored, by load case)", &hs, &widths, &aligns, &body)
 }
 
+/// Sheathing and finish build-ups, layer by layer (top first).
+fn layers_table(model: &Model) -> crate::Drawing {
+    let inches = |m: f64| {
+        let i = m / 0.0254;
+        if i <= 0.0 {
+            "—".to_string()
+        } else if i < 0.1 {
+            format!("{:.0} mil", i * 1000.0)
+        } else {
+            format!("{}\"", format!("{i:.3}").trim_end_matches('0').trim_end_matches('.'))
+        }
+    };
+    let mut body: Vec<Vec<String>> = vec![];
+    for s in &model.surfaces {
+        for (i, l) in s.layers.iter().enumerate() {
+            let pattern = match &l.strips {
+                Some(st) => format!("{} @ {} o.c.", topo_core::units::fmt_inches(st.width), topo_core::units::fmt_inches(st.spacing)),
+                None => String::new(),
+            };
+            body.push(vec![if i == 0 { s.name.clone() } else { String::new() }, format!("{}{}", l.name, if l.verified { "" } else { " *" }), inches(l.thickness), pattern, format!("{:.2}", l.psf)]);
+        }
+        body.push(vec![String::new(), "Total".into(), inches(s.thickness()), String::new(), format!("{:.2}", s.psf())]);
+    }
+    if body.is_empty() {
+        body.push(vec!["(no build-ups: give a roof's dead load with layers(...))".into(), String::new(), String::new(), String::new(), String::new()]);
+    }
+    let aligns = [crate::Align::Start, crate::Align::Start, crate::Align::End, crate::Align::Start, crate::Align::End];
+    crate::schedule::table("Build-ups (top first; * unverified)", &["Surface", "Layer", "Thickness", "Strips", "psf"], &[1.8, 5.2, 0.8, 1.2, 0.6], &aligns, &body)
+}
+
 /// Members and groups named by `of` selectors (groups by path tail, else
 /// members); empty selects the whole model.
 pub fn select(model: &Model, sels: &[String]) -> Result<(Vec<MemberId>, Vec<GroupId>), String> {
@@ -175,8 +205,9 @@ pub fn view(ctx: &Ctx, spec: &ViewSpec, avail: (f64, f64), extras: &[View], resu
                 "junctions" => View::paper("Junctions", schedule::junction_table(ctx.topo)),
                 "checks" => View::paper("Member checks", checks_table(model, ctx.marks, results.ok_or("no structural results")?, 40)),
                 "reactions" => View::paper("Foundation reactions", reactions_table(model, results.ok_or("no structural results")?)),
+                "layers" => View::paper("Build-ups", layers_table(model)),
                 other => extras.iter().find(|v| v.title.eq_ignore_ascii_case(other)).cloned().ok_or_else(|| {
-                    let mut known = vec!["members".to_string(), "connections".into(), "junctions".into(), "checks".into(), "reactions".into()];
+                    let mut known = vec!["members".to_string(), "connections".into(), "junctions".into(), "checks".into(), "reactions".into(), "layers".into()];
                     known.extend(extras.iter().map(|v| v.title.clone()));
                     format!("unknown schedule \"{other}\" (one of {})", known.join(", "))
                 })?,

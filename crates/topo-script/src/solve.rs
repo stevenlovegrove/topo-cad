@@ -8,7 +8,7 @@
 //! measurements leave undetermined.
 
 use crate::spec::{build_scene, SceneSpec, UnknownSpec};
-use crate::{parse_spec, Script, ScriptError};
+use crate::{parse_spec, Evaluate, ScriptError};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use topo_core::{Model, Topology};
@@ -71,7 +71,7 @@ fn residuals(model: &Model, geom: &Geometry, ms: &[Measurement]) -> Vec<Result<f
 }
 
 struct Problem<'a> {
-    script: &'a Script,
+    script: &'a dyn Evaluate,
     unknowns: Vec<UnknownSpec>,
     measurements: Vec<Measurement>,
 }
@@ -149,7 +149,7 @@ fn cost(r: &[f64]) -> f64 {
 }
 
 /// Builds the script's model, fitting unknowns to measurements if it has any.
-pub fn solve(script: &Script) -> Result<(Model, Option<SolveReport>), ScriptError> {
+pub fn solve(script: &dyn Evaluate) -> Result<(Model, Option<SolveReport>), ScriptError> {
     let spec0 = parse_spec(&script.eval(None)?)?;
     if spec0.unknowns.is_empty() && spec0.measurements.is_empty() {
         return Ok((build(&spec0)?.0, None));

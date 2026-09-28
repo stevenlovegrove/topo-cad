@@ -1,22 +1,19 @@
 [package]
-name = "topo-cli"
-description = "Command-line renderer for topo-cad models"
+name = "topo-app"
+description = "The topo-cad app engine: a model session (build, analysis, drawings, 3D, measurements) behind a JSON request API, for any host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "topo"
-path = "src/main.rs"
-
 [dependencies]
+serde.workspace = true
 serde_json.workspace = true
 topo-core.workspace = true
 topo-geom.workspace = true
 topo-draw.workspace = true
 topo-timber.workspace = true
 topo-analysis.workspace = true
+topo-script.workspace = true
+
+[dev-dependencies]
 topo-script = { workspace = true, features = ["quickjs"] }
-topo-app.workspace = true
-tiny_http = "0.12"
-serde = { workspace = true }

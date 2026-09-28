@@ -242,6 +242,21 @@ pub struct Bond {
     pub connection: ConnectionId,
 }
 
+/// Named alternatives a script offers (e.g. "current code" vs "as built"),
+/// each evaluated as its own model.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Scenarios {
+    pub current: Option<String>,
+    pub available: Vec<ScenarioInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioInfo {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// Editions of the standards the model's loads are based on. The load
 /// combinations must match the source of the loads: ASCE 7-22 ground snow
 /// loads are strength-level (ASD uses 0.7S); ASCE 7-16 values are not.
@@ -249,11 +264,27 @@ pub struct Bond {
 pub struct Standards {
     /// `7-16` or `7-22`.
     pub asce7: String,
+    /// Load combinations from another code instead of ASCE 7: `ubc-1976`
+    /// (the 1976 Uniform Building Code: unfactored sums, with its own
+    /// load-duration increases), e.g. to check a building as permitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combinations: Option<String>,
 }
 
 impl Default for Standards {
     fn default() -> Self {
-        Standards { asce7: "7-16".into() }
+        Standards { asce7: "7-16".into(), combinations: None }
+    }
+}
+
+impl Standards {
+    /// The code the load combinations follow, for labels.
+    pub fn combinations_label(&self) -> String {
+        match self.combinations.as_deref() {
+            Some("ubc-1976") => "1976 UBC".into(),
+            Some(o) => o.into(),
+            None => format!("ASCE {}", self.asce7),
+        }
     }
 }
 
@@ -316,6 +347,9 @@ pub struct Model {
     /// Which editions of the design standards the loads follow.
     #[serde(default)]
     pub standards: Standards,
+    /// The named scenarios the script offers, and the one this model is.
+    #[serde(default)]
+    pub scenarios: Scenarios,
     pub units: UnitSystem,
     pub nodes: Vec<Node>,
     pub members: Vec<Member>,
@@ -328,6 +362,13 @@ pub struct Model {
     pub supports: Vec<Support>,
     pub load_cases: Vec<LoadCase>,
     pub loads: Vec<Load>,
+    /// Findings made while building the model (e.g. survey checks), reported
+    /// with the validation issues.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<crate::validate::Issue>,
+    /// Sheathing and finish build-ups over framing groups.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surfaces: Vec<crate::surfaces::Surface>,
     /// The drawing set, in sheet order; `None` for the standard set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheets: Option<Vec<crate::sheets::SheetSpec>>,

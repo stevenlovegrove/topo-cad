@@ -14,7 +14,7 @@ pub mod takedown;
 pub use code::*;
 pub use loadpath::{load_path_issues, support_graph, SupportEdge, Transfer};
 pub use model::{AnalysisModel, Element};
-pub use nds::{nds_asd, Analysis};
+pub use nds::{combinations, load_duration_factor, nds_asd, nds_asd_excluding, Analysis};
 pub use takedown::{takedown, Behaviour, Diagram, MemberInfo, Reaction, SupportPt, Takedown};
 
 #[cfg(test)]

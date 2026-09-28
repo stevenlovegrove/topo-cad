@@ -39,6 +39,8 @@ interface MaterialWeightRow {
   readonly description: string;
   readonly psf: number;
   readonly verified: boolean;
+  readonly thickness_in?: number;
+  readonly ribs?: { readonly width_in: number; readonly spacing_in: number; readonly along: "slope" | "run" };
 }
 interface DataTable<T> {
   readonly source: { readonly publication: string; readonly edition: string; readonly table: string };
@@ -100,12 +102,25 @@ export function roofSnow(site: SiteHazards, o: { ce: number; ct: number; is?: nu
   };
 }
 
+/** One layer of a build-up (top, weather side, first in a list). */
+export interface Layer {
+  readonly name: string;
+  /** Weight, psf of surface. */
+  readonly psf: number;
+  /** Thickness (m), for drawing. */
+  readonly thickness: number;
+  /** Parallel strips (spaced boards, standing-seam ribs): width and spacing (m), and their direction; `sheet` if a continuous sheet lies under them. */
+  readonly strips?: { readonly width: number; readonly spacing: number; readonly along: "slope" | "run"; readonly sheet: boolean };
+  readonly verified: boolean;
+}
+
 /**
  * A layer of boards, as a `layers(...)` item: weight from the species'
  * specific gravity (NDS Table 12.3.3A, via the lumber table) at about 12 %
  * moisture, the dressed size, and the board spacing (default: laid tight).
+ * Boards run along the ridge (across the rafters or top chords).
  */
-export function boards(size: Nominal, o: { grade?: Grade; spacing?: Length } = {}): readonly [string, number] {
+export function boards(size: Nominal, o: { grade?: Grade; spacing?: Length } = {}): Layer {
   const grade = o.grade ?? DFL.No2;
   const t = dataTable<{ species: string; grade: string; g: number }>("nds-lumber");
   const row = t.rows.find((r) => r.species === grade.species && r.grade === grade.grade) ?? t.rows.find((r) => r.species === grade.species);
@@ -114,39 +129,55 @@ export function boards(size: Nominal, o: { grade?: Grade; spacing?: Length } = {
   const pcf = 62.4 * row.g * 1.12;
   const spacingIn = o.spacing === undefined ? wd : o.spacing / 0.0254;
   const psfValue = (pcf * (tk / 12) * wd) / spacingIn;
-  return [`${size[0]}x${size[1]} ${grade.species} boards ${o.spacing === undefined ? "laid tight" : `@ ${spacingIn.toFixed(1)}" o.c.`} (G ${row.g}: ${pcf.toFixed(1)} pcf)`, psfValue];
+  return {
+    name: `${size[0]}x${size[1]} ${grade.species} boards ${o.spacing === undefined ? "laid tight" : `@ ${spacingIn.toFixed(1)}" o.c.`} (G ${row.g}: ${pcf.toFixed(1)} pcf)`,
+    psf: psfValue,
+    thickness: inch(tk),
+    strips: o.spacing === undefined ? undefined : { width: inch(wd), spacing: o.spacing, along: "run", sheet: false },
+    verified: true,
+  };
 }
 
-/** A dead load built from layers: total pressure plus the breakdown for reports. */
+/** A dead load: total pressure, the breakdown for reports, and the layers when built from them. */
 export interface DeadLoad {
   readonly pressure: number;
   readonly label: string;
+  readonly layers?: readonly Layer[];
 }
 /**
- * Dead load from material layers looked up in the material-weights table
- * (ASCE 7 Table C3.1-1a), e.g. `layers("asphalt shingles", "roofing felt", "osb 7/16")`.
- * A `[key, count]` pair repeats a layer; a `[description, psf]` with a number
- * adds your own value.
+ * Dead load from material layers, top (weather side) first, looked up in the
+ * material-weights table (ASCE 7 Table C3.1-1a and product sheets), e.g.
+ * `layers("asphalt shingles", "roofing felt", "osb 7/16")`. A `[key, count]`
+ * pair repeats a layer; a `[description, psf]` with a number adds your own
+ * value (no thickness); a `Layer` (e.g. from `boards(...)`) is used as is.
  */
-export function layers(...items: (string | readonly [string, number])[]): DeadLoad {
+export function layers(...items: (string | readonly [string, number] | Layer)[]): DeadLoad {
   const t = dataTable<MaterialWeightRow>("material-weights");
-  let total = 0;
+  const out: Layer[] = [];
   const parts: string[] = [];
   for (const it of items) {
-    const [key, n] = typeof it === "string" ? [it, 1] : it;
+    if (typeof it === "object" && !Array.isArray(it)) {
+      const l = it as Layer;
+      out.push(l);
+      parts.push(`${l.name} ${l.psf.toFixed(2)}${l.verified ? "" : "*"}`);
+      continue;
+    }
+    const [key, n] = typeof it === "string" ? [it, 1] : (it as readonly [string, number]);
     const row = t.rows.find((r) => r.key === key);
     if (row) {
-      total += row.psf * n;
+      const strips = row.ribs && { width: inch(row.ribs.width_in), spacing: inch(row.ribs.spacing_in), along: row.ribs.along, sheet: true };
+      for (let k = 0; k < n; k++) out.push({ name: row.description, psf: row.psf, thickness: inch(row.thickness_in ?? 0), strips, verified: row.verified });
       parts.push(`${n === 1 ? "" : n + " × "}${row.description} ${row.psf}${row.verified ? "" : "*"}`);
     } else if (typeof it !== "string") {
-      total += n;
+      out.push({ name: key, psf: n, thickness: 0, verified: false });
       parts.push(`${key} ${n.toFixed(2)}`);
     } else {
       throw new Error(`no material "${key}" in ${t.source.publication} ${t.source.table} (known: ${t.rows.map((r) => r.key).join(", ")})`);
     }
   }
+  const total = out.reduce((a, l) => a + l.psf, 0);
   const star = parts.some((p) => p.includes("*")) ? " (* unverified)" : "";
-  return { pressure: psf(total), label: `${parts.join(" + ")} = ${total.toFixed(1)} psf, ${t.source.publication} ${t.source.edition} ${t.source.table}${star}` };
+  return { pressure: psf(total), label: `${parts.join(" + ")} = ${total.toFixed(1)} psf, ${t.source.publication} ${t.source.edition} ${t.source.table}${star}`, layers: out };
 }
 
 // ----- materials -----------------------------------------------------------
@@ -232,6 +263,208 @@ export class Opening {
   }
 }
 
+// ----- surveyed walls -------------------------------------------------------
+
+/**
+ * An end of a wall: `"start"` / `"end"` (the order the perimeter path
+ * visits its corners), or a compass direction — `"south"` is whichever end
+ * lies to the south, so you don't have to remember which way the path ran.
+ */
+export type WallEnd = "start" | "end" | "north" | "south" | "east" | "west";
+
+interface OffsetSpec {
+  readonly distance: Length;
+  readonly note: string;
+}
+interface DatumSpec {
+  readonly datum: { readonly kind: "corner"; readonly end: WallEnd; readonly face: "inside" | "outside" } | { readonly kind: "member"; readonly name: string; readonly toward: WallEnd };
+  readonly offsets: readonly OffsetSpec[];
+}
+
+/**
+ * Where the tape or laser sits for a reading along a wall. Readings measure
+ * away from a corner along the wall (or, from a member, toward the end
+ * named). Shift it with `.offset(...)` when it sits on something the model
+ * doesn't frame, e.g. drywall:
+ *
+ *   Datum.corner("south").offset(inch(0.5), "1/2\" drywall on the house wall")
+ */
+export class Datum {
+  private constructor(readonly spec: DatumSpec) {}
+  /**
+   * A corner of the wall being surveyed. `"inside"` (default): the framing
+   * face of the wall met there, from inside the building. `"outside"`: the
+   * outside corner of the footprint (the traverse point).
+   */
+  static corner(end: WallEnd, face: "inside" | "outside" = "inside"): Datum {
+    return new Datum({ datum: { kind: "corner", end, face }, offsets: [] });
+  }
+  /** The face of a named member of this survey on its `toward` side; readings go on toward that end. */
+  static member(name: string, toward: WallEnd): Datum {
+    return new Datum({ datum: { kind: "member", name, toward }, offsets: [] });
+  }
+  /**
+   * Moves the datum `distance` into the space being measured, e.g. the
+   * thickness of drywall or trim the laser sits on. Say what it is: the note
+   * is kept with the reading.
+   */
+  offset(distance: Length, note: string): Datum {
+    if (!note.trim()) throw new Error("Datum.offset: say what the offset is (e.g. \"1/2\\\" drywall\")");
+    return new Datum({ ...this.spec, offsets: [...this.spec.offsets, { distance, note }] });
+  }
+  toJSON() {
+    return this.spec;
+  }
+}
+
+/** Which face of the member a reading reaches: nearer the datum (default), its centre, or the far face. */
+export type Hit = "near" | "centre" | "far";
+
+interface HeightSpec {
+  readonly level: "slab" | "plate_top" | "under_top_plate";
+  readonly offsets: readonly OffsetSpec[];
+  readonly distance: Length;
+}
+/**
+ * A vertical datum in a wall: `Level.slab` (bottom of the bottom plate) and
+ * `Level.plateTop` measure up; `Level.underTopPlate` measures down.
+ * `Level.slab.offset(inch(0.75), "floor mat").at(inch(82.5))`.
+ */
+export class Level {
+  private constructor(readonly level: HeightSpec["level"], readonly offsets: readonly OffsetSpec[]) {}
+  static readonly slab = new Level("slab", []);
+  static readonly plateTop = new Level("plate_top", []);
+  static readonly underTopPlate = new Level("under_top_plate", []);
+  offset(distance: Length, note: string): Level {
+    if (!note.trim()) throw new Error("Level.offset: say what the offset is");
+    return new Level(this.level, [...this.offsets, { distance, note }]);
+  }
+  at(distance: Length): HeightSpec {
+    return { level: this.level, offsets: this.offsets, distance };
+  }
+}
+const height = (h: Length | HeightSpec): HeightSpec => (typeof h === "number" ? Level.slab.at(h) : h);
+
+type PostRole = "stud" | "king" | "jack" | "cripple";
+type SurveyItemSpec =
+  | { readonly item: "post"; readonly role: PostRole; readonly at: { readonly from: DatumSpec; readonly distance: Length; readonly hit: Hit }; readonly plies: number; readonly name?: string }
+  | {
+      readonly item: "opening";
+      readonly label: string;
+      readonly kind: "door" | "window";
+      readonly head?: HeightSpec;
+      readonly sill?: HeightSpec;
+      readonly header: readonly [number, number, number];
+      readonly header_flush: boolean;
+    };
+interface SurveySpec {
+  readonly items: readonly SurveyItemSpec[];
+  readonly checks: readonly { readonly from: DatumSpec; readonly to: DatumSpec; readonly distance: Length; readonly tolerance: Length }[];
+}
+
+/** Options for one reading. */
+export interface ReadingOptions {
+  /** Datum for this reading only (default: the survey's current one). */
+  readonly from?: Datum;
+  /** Face of the member reached (default: the survey's, normally `"near"`). */
+  readonly hit?: Hit;
+  /** Plies side by side along the wall, e.g. 2 for a doubled stud. */
+  readonly plies?: number;
+  /** A name, to measure other members from (`Datum.member`) and in reports. */
+  readonly name?: string;
+}
+
+/**
+ * A wall as built, from field measurements: each stud, king, jack and
+ * cripple at an absolute reading from an explicit datum (errors don't
+ * accumulate as they would with spacings), and the openings between them.
+ * Positions come from the readings, so the list can jump — e.g. half the
+ * wall from one corner, then the rest from the other:
+ *
+ *   Survey.from(Datum.corner("south"))
+ *     .stud(inch(0))                         // tight to the corner
+ *     .stud(inch(15.25)).stud(inch(31.25))
+ *     .king(inch(40)).jack(inch(41.5))
+ *     .window("W1", { head: inch(82.5), sill: inch(46.5), header: [2, 2, 8] })
+ *     .jack(inch(77.5)).king(inch(79))
+ *     .from(Datum.corner("north").offset(inch(0.5), "1/2\" drywall"))
+ *     .stud(inch(50)).stud(inch(34)) …
+ *     .check(Datum.corner("south"), Datum.corner("north"), inch(229.0625))
+ *
+ * An opening spans between the posts listed either side of it in the list
+ * (after any cripples listed next to it): jacks, then the king. With no jacks the
+ * header is carried by the kings through nails alone — that is modelled,
+ * and flagged by the checks. Readings are to the face nearer the datum
+ * unless `hit` says otherwise.
+ */
+export class Survey {
+  private constructor(readonly datum: Datum, readonly hit: Hit, readonly items: readonly SurveyItemSpec[], readonly checks: SurveySpec["checks"]) {}
+  /** Starts a survey whose readings are from `datum`, to the `hit` face (default `"near"`). */
+  static from(datum: Datum, o: { hit?: Hit } = {}): Survey {
+    return new Survey(datum, o.hit ?? "near", [], []);
+  }
+  /** Following readings are from `datum` (and to the `hit` face, if given). */
+  from(datum: Datum, o: { hit?: Hit } = {}): Survey {
+    return new Survey(datum, o.hit ?? this.hit, this.items, this.checks);
+  }
+  private post(role: PostRole, d: Length, o: ReadingOptions): Survey {
+    const item: SurveyItemSpec = { item: "post", role, at: { from: (o.from ?? this.datum).spec, distance: d, hit: o.hit ?? this.hit }, plies: o.plies ?? 1, name: o.name };
+    return new Survey(this.datum, this.hit, [...this.items, item], this.checks);
+  }
+  /** A full-height stud. */
+  stud(d: Length, o: ReadingOptions = {}): Survey {
+    return this.post("stud", d, o);
+  }
+  /** A full-height stud beside an opening, carrying the header's end. */
+  king(d: Length, o: ReadingOptions = {}): Survey {
+    return this.post("king", d, o);
+  }
+  /** A jack (trimmer) under the header, beside the opening. */
+  jack(d: Length, o: ReadingOptions = {}): Survey {
+    return this.post("jack", d, o);
+  }
+  /** A cripple within an opening (under the sill and/or over the header). List it next to its opening. */
+  cripple(d: Length, o: ReadingOptions = {}): Survey {
+    return this.post("cripple", d, o);
+  }
+  private opening(kind: "door" | "window", label: string, o: { head?: Length | HeightSpec; sill?: Length | HeightSpec; header?: readonly [number, number, number]; flushHeader?: boolean }): Survey {
+    const item: SurveyItemSpec = {
+      item: "opening",
+      label,
+      kind,
+      head: o.head === undefined ? undefined : height(o.head),
+      sill: o.sill === undefined ? undefined : height(o.sill),
+      header: o.header ?? [2, 2, 8],
+      header_flush: o.flushHeader ?? false,
+    };
+    return new Survey(this.datum, this.hit, [...this.items, item], this.checks);
+  }
+  /**
+   * A window between the posts before and after it. `head` (top of the rough
+   * opening) and `sill` are from the slab unless given as `Level…at(...)`.
+   * `header`: (plies, nominal thickness, nominal depth).
+   */
+  window(label: string, o: { head: Length | HeightSpec; sill: Length | HeightSpec; header?: readonly [number, number, number] }): Survey {
+    return this.opening("window", label, o);
+  }
+  /** A door between the posts before and after it; `flushHeader` sets the header tight under the top plate. */
+  door(label: string, o: { head?: Length | HeightSpec; header?: readonly [number, number, number]; flushHeader?: boolean }): Survey {
+    if (o.head === undefined && !o.flushHeader) throw new Error(`door ${label}: give its head height or flushHeader: true`);
+    return this.opening("door", label, o);
+  }
+  /**
+   * A tie-out: a distance measured between two datums (e.g. corner to
+   * corner), compared with the model and reported; a warning if it differs
+   * by more than `tolerance` (default 1/4").
+   */
+  check(from: Datum, to: Datum, distance: Length, o: { tolerance?: Length } = {}): Survey {
+    return new Survey(this.datum, this.hit, this.items, [...this.checks, { from: from.spec, to: to.spec, distance, tolerance: o.tolerance ?? inch(0.25) }]);
+  }
+  toJSON(): SurveySpec {
+    return { items: this.items, checks: this.checks };
+  }
+}
+
 // ----- walls ---------------------------------------------------------------
 
 interface WallSpec {
@@ -244,6 +477,7 @@ interface WallSpec {
   readonly justify: "exterior" | "center";
   readonly openings: readonly OpeningSpec[];
   readonly cap_breaks: readonly Length[];
+  readonly survey?: SurveySpec;
 }
 
 /**
@@ -290,6 +524,13 @@ export class Wall {
   opening(o: Opening): Wall {
     if (o.spec.center === undefined) throw new Error(`opening ${o.spec.label} has no position: use .at(center)`);
     return this.with({ openings: [...this.spec.openings, o.spec] });
+  }
+  /**
+   * Frame this wall exactly as measured (see `Survey`) instead of by layout
+   * rules; its openings are part of the survey.
+   */
+  surveyed(s: Survey): Wall {
+    return this.with({ survey: s.toJSON() });
   }
   /** Interrupt the cap plate at `x` (where a partition tees in and laps over). */
   capBreak(x: Length): Wall {
@@ -687,7 +928,7 @@ export class TrussRoof {
    * Uniform load on the roof, in pascals (use `psf`). `basis`: per unit of
    * plan area (default; snow and roof live loads) or of sloped surface.
    */
-  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string; on?: "slope" | "flat" } = {}): TrussRoof {
+  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string; on?: "slope" | "flat"; layers?: readonly Layer[] } = {}): TrussRoof {
     return new TrussRoof({ ...this.spec, loads: [...this.spec.loads, { kind, pressure, ...o }] });
   }
   /**
@@ -699,7 +940,7 @@ export class TrussRoof {
   }
   /** Roofing dead load along the slope (or on the flat part), from `layers(...)`. */
   dead(d: DeadLoad, o: { on?: "slope" | "flat" } = {}): TrussRoof {
-    return this.load("dead", d.pressure, { basis: "surface", label: d.label, ...o });
+    return this.load("dead", d.pressure, { basis: "surface", label: d.label, layers: d.layers, ...o });
   }
   get name(): string {
     return this.spec.name;
@@ -896,6 +1137,40 @@ export interface Placeable<T> {
  */
 export function repeat<T extends Placeable<T>>(item: T, count: number, step: Point3): T[] {
   return Array.from({ length: count }, (_, i) => item.moved([step[0] * i, step[1] * i, step[2] * i]).named(`${item.name} #${i + 1}`));
+}
+
+// ----- scenarios ---------------------------------------------------------------
+
+interface ScenarioInfo {
+  readonly name: string;
+  readonly description?: string;
+}
+const scenarioRegistry: ScenarioInfo[] = [];
+let scenarioDefault: string | undefined;
+
+/**
+ * Named alternatives, one of which is in effect: returns the value for the
+ * scenario being evaluated (chosen in `topo serve`, else `default`, else the
+ * first). Use it for anything that differs — loads, code editions, even
+ * geometry ("before" / "after"):
+ *
+ *   const basis = scenarios({
+ *     "Current code": { snow: roofSnow(site, …), asce7: "7-16" },
+ *     "As built (1979)": { snow: { pressure: psf(25), label: "…" }, combinations: "ubc-1976" },
+ *   }, { describe: { "As built (1979)": "1976 UBC as adopted by King County" } });
+ */
+export function scenarios<T>(choices: Record<string, T>, o: { describe?: Record<string, string>; default?: string } = {}): T {
+  const names = Object.keys(choices);
+  if (!names.length) throw new Error("scenarios: give at least one choice");
+  for (const n of names) if (!scenarioRegistry.some((s) => s.name === n)) scenarioRegistry.push({ name: n, description: o.describe?.[n] });
+  scenarioDefault = scenarioDefault ?? o.default ?? names[0];
+  return choices[currentScenario() in choices ? currentScenario() : (o.default ?? names[0])];
+}
+
+/** The scenario being evaluated. */
+export function currentScenario(): string {
+  const want = (globalThis as { __topo_scenario?: string }).__topo_scenario;
+  return want !== undefined && scenarioRegistry.some((s) => s.name === want) ? want : (scenarioDefault ?? "");
 }
 
 // ----- unknowns and field measurements --------------------------------------
@@ -1100,7 +1375,8 @@ export const utilization = (of?: Target | readonly Target[], o: ViewOptions = {}
 /**
  * A table: `"members"`, `"connections"`, `"junctions"`, `"checks"` (the
  * governing check of each member), `"reactions"` (foundation reactions by
- * load case), or a tool table such as `"Field measurements"`.
+ * load case), `"layers"` (roof build-ups from `layers(...)`), or a tool
+ * table such as `"Field measurements"`.
  */
 export const schedule = (table: string, o: { title?: string } = {}): ViewSpec => ({ kind: "schedule", table, title: o.title });
 /** A block of notes. */
@@ -1142,6 +1418,13 @@ export interface BuildingPlacement {
 
 export interface DesignBasis {
   readonly asce7?: "7-16" | "7-22";
+  /**
+   * Load combinations from another code instead of ASCE 7: `"ubc-1976"` (the
+   * 1976 Uniform Building Code, as adopted by King County in 1978: loads
+   * summed unfactored, with its load-duration increases) — to check a
+   * building against the code it was permitted under.
+   */
+  readonly combinations?: "ubc-1976";
   readonly selfWeight?: boolean;
 }
 
@@ -1216,6 +1499,9 @@ export class Building {
       sheets: this.sheets_,
       asce7: this.basis_.asce7,
       self_weight: this.basis_.selfWeight,
+      combinations: this.basis_.combinations,
+      scenarios: scenarioRegistry,
+      scenario: scenarioRegistry.length ? currentScenario() : undefined,
     };
   }
 }
@@ -1247,6 +1533,9 @@ export class Site {
     return new Site(this.name, this.info_, this.buildings, this.measurements, [...(this.sheets_ ?? []), ...(s.flat() as SheetSpec[])]);
   }
   toJSON() {
-    return { type: "site", name: this.name, info: this.info_, buildings: this.buildings, measurements: this.measurements, unknowns: unknownRegistry, sheets: this.sheets_ };
+    return {
+      type: "site", name: this.name, info: this.info_, buildings: this.buildings, measurements: this.measurements, unknowns: unknownRegistry, sheets: this.sheets_,
+      scenarios: scenarioRegistry, scenario: scenarioRegistry.length ? currentScenario() : undefined,
+    };
   }
 }

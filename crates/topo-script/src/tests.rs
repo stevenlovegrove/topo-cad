@@ -751,3 +751,48 @@ fn syntax_errors_have_a_line() {
     let e = run("import { Building } from \"topo-cad\";\n\nconst x = (1;\nexport default Building.named(\"x\");\n", "broken.ts").unwrap_err().to_string();
     assert!(e.contains("broken.ts:3:"), "{e}");
 }
+
+/// A surveyed wall from TypeScript: compass-named corners, a drywall offset,
+/// a window on kings only (no jacks), half the readings from each end, a
+/// check, and errors that name the problem.
+#[test]
+fn surveyed_wall_from_typescript() {
+    let src = r#"
+        import { Building, Datum, DFL, ft, inch, Perimeter, Survey, Wall } from "topo-cad";
+        const w = Wall.template({ height: ft(8), grade: DFL.No2 }).studs([2, 6], inch(16));
+        // The west wall runs north from the south-west corner.
+        const west = Survey.from(Datum.corner("south"))
+          .stud(0).stud(inch(15.25))
+          .king(inch(30))
+          .window("W1", { head: inch(82.5), sill: inch(46.5), header: [2, 2, 8] })
+          .king(inch(77.5))
+          .from(Datum.corner("north").offset(inch(0.5), "1/2\" drywall"))
+          .stud(inch(0)).stud(inch(15)).stud(inch(31)).stud(inch(47)).stud(inch(63))
+          .check(Datum.corner("south"), Datum.corner("north"), ft(12) - inch(11));
+        const p = Perimeter.start("P", [0, 0])
+          .by([ft(20), 0], w)
+          .by([0, ft(12)], w)
+          .by([-ft(20), 0], w)
+          .close(w.named("West").surveyed(west));
+        export default Building.named("S").add(p);
+    "#;
+    let m = run(src, "s.ts").unwrap_or_else(|e| panic!("{e}"));
+    let west: Vec<&topo_core::Member> = m.members.iter().filter(|x| m.member_path(x.id).contains("/West/")).collect();
+    let n = |r: &str| west.iter().filter(|x| x.role == r).count();
+    assert_eq!((n("stud"), n("king_stud"), n("jack_stud"), n("header"), n("sill")), (7, 2, 0, 1, 1));
+    // From the north: inside face of the north wall (144 − 5.5), less the
+    // drywall, less 0, to the near face; centre 0.75" further.
+    let ys: Vec<f64> = west.iter().filter(|x| x.role == "stud").map(|x| m.pos(x.start()).y / 0.0254).collect();
+    assert!(ys.iter().any(|y| (y - (144.0 - 5.5 - 0.5 - 0.75)).abs() < 1e-6), "{ys:?}");
+    let chk = m.issues.iter().find(|i| i.code == "survey-check").expect("check");
+    assert_eq!(chk.severity, topo_core::Severity::Info, "{}", chk.message);
+
+    // Two readings for the same place.
+    let bad = src.replace(".stud(0).stud(inch(15.25))", ".stud(0).stud(inch(0.5))");
+    let e = run(&bad, "s.ts").unwrap_err().to_string();
+    assert!(e.contains("overlap by 1\""), "{e}");
+    // An offset must say what it is.
+    let bad = src.replace("\"1/2\\\" drywall\"", "\"\"");
+    let e = run(&bad, "s.ts").unwrap_err().to_string();
+    assert!(e.contains("say what the offset is"), "{e}");
+}

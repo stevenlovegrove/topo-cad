@@ -3,7 +3,7 @@
   "publication": "ASCE 7 Table C3.1-1a / HUD Residential Structural Design Guide (2000) Table 3.2",
   "edition": "see rows",
   "table": "minimum design dead loads",
-  "note": "Assembly values (keys starting with an assembly name) are from HUD Table 3.2 and verified. Individual layers are from ASCE 7 Table C3.1-1a, which could not be read (paywalled): unverified. Product rows cite their own sources in the description."
+  "note": "Assembly values (keys starting with an assembly name) are from HUD Table 3.2 and verified. Individual layers are from ASCE 7 Table C3.1-1a, which could not be read (paywalled): unverified. Product rows cite their own sources in the description. Thicknesses (thickness_in) are for drawing only: nominal from the product name where it gives one (plywood, OSB, gypsum, 60 mil TPO, 24 ga sheet), otherwise estimates; a standing-seam panel's thickness is its rib height, with its ribs (width, spacing, direction) for drawing."
  },
  "rows": [
   {
@@ -52,85 +52,104 @@
    "key": "asphalt shingles",
    "description": "Asphalt shingles (ASCE 7 C3.1-1a)",
    "psf": 2.0,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.25
   },
   {
    "key": "roofing felt",
    "description": "Roofing felt, 3-ply (ASCE 7 C3.1-1a)",
    "psf": 1.5,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.1
   },
   {
    "key": "osb 7/16",
    "description": "OSB or plywood, 7/16\" (0.4 psf per 1/8\", ASCE 7 C3.1-1a)",
    "psf": 1.4,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.4375
   },
   {
    "key": "plywood 1/2",
    "description": "Plywood, 1/2\" (0.4 psf per 1/8\", ASCE 7 C3.1-1a)",
    "psf": 1.6,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.5
   },
   {
    "key": "gypsum 1/2",
    "description": "Gypsum board, 1/2\" (0.55 psf per 1/8\", ASCE 7 C3.1-1a)",
    "psf": 2.2,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.5
   },
   {
    "key": "plywood 15/32",
    "description": "Plywood 15/32\" (APA Panel Design Specification D510C, Table 6)",
    "psf": 1.4,
-   "verified": true
+   "verified": true,
+   "thickness_in": 0.4688
   },
   {
    "key": "plywood 19/32",
    "description": "Plywood 19/32\" (APA Panel Design Specification D510C, Table 6)",
    "psf": 1.8,
-   "verified": true
+   "verified": true,
+   "thickness_in": 0.5938
   },
   {
    "key": "plywood 23/32",
    "description": "Plywood 23/32\" (APA Panel Design Specification D510C, Table 6)",
    "psf": 2.2,
-   "verified": true
+   "verified": true,
+   "thickness_in": 0.7188
   },
   {
    "key": "steel sheet 24ga galvanized",
    "description": "Galvanized steel sheet 24 ga, 0.0276\" (Manufacturers' Standard Gauge; secondary chart)",
    "psf": 1.156,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.0276
   },
   {
    "key": "standing seam 24ga steel",
    "description": "Standing-seam steel roofing 24 ga, 16\" panels with 1.5\" ribs (\u2248 20\" coil per 16\" coverage \u00d7 1.156 psf; estimate, no published product weight)",
    "psf": 1.45,
-   "verified": false
+   "verified": false,
+   "thickness_in": 1.5,
+   "ribs": {
+    "width_in": 1.0,
+    "spacing_in": 16.0,
+    "along": "slope"
+   }
   },
   {
    "key": "self-adhered underlayment",
    "description": "Self-adhered (peel-and-stick) roof underlayment, typical (estimate; check the product sheet)",
    "psf": 0.3,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.04
   },
   {
    "key": "synthetic underlayment",
    "description": "Synthetic roof underlayment, typical (estimate; check the product sheet)",
    "psf": 0.05,
-   "verified": false
+   "verified": false,
+   "thickness_in": 0.02
   },
   {
    "key": "polystick mts",
    "description": "Polyglass Polystick MTS self-adhered HT underlayment: 70 lb per 200 sq ft coverage (Polyglass PDS, \u00a92011)",
    "psf": 0.35,
-   "verified": true
+   "verified": true,
+   "thickness_in": 0.04
   },
   {
    "key": "tpo 60 mil",
    "description": "TPO membrane, 60 mil: 0.31 psf (Duro-Last Duro-TECH TPO 60-mil PDS, 2024-10-14)",
    "psf": 0.31,
-   "verified": true
+   "verified": true,
+   "thickness_in": 0.06
   }
  ]
 }

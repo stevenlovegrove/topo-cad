@@ -11,6 +11,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde_json.workspace = true
 wasm-bindgen = "0.2"
+js-sys = "0.3"
+topo-app.workspace = true
+topo-script.workspace = true
+topo-data.workspace = true
 topo-core.workspace = true
 topo-geom.workspace = true
 topo-draw.workspace = true

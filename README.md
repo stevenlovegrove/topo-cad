@@ -7,12 +7,30 @@ schedules and the analytical model are derived. See [DESIGN.md](DESIGN.md).
 ```bash
 cargo test --workspace
 cargo run --release -p topo-cli -- run examples/garage-as-built.ts out   # TypeScript model
-cargo run --release -p topo-cli -- serve examples                         # web UI: http://127.0.0.1:8765
+web/build.sh                                                             # the web app's engine (wasm) → web/pkg
+cargo run --release -p topo-cli -- serve examples                         # web app: http://127.0.0.1:8765
+cargo run --release -p topo-cli -- site site-out examples                 # the app + examples for any static web server
 cargo run --release -p topo-cli -- example garage out                    # built-in Rust example
 cargo run --release -p topo-cli -- render out/model.json out2            # JSON IR
-cargo build -p topo-wasm --target wasm32-unknown-unknown --release
 tsc -p examples                                                          # type-check models
 ```
+
+### The web app
+
+The app is static files ([web/](web)): the page, a Web Worker running the
+engine compiled to wasm, and the model scripts run by the browser's own
+JavaScript engine. It needs no server of its own. Projects live in one of:
+
+- **Site files**: `.ts` files beside the app on any web server, listed in
+  `files/manifest.json` (`topo site` writes both). Read-only there; your
+  edits are kept in your browser.
+- **A folder on this computer** (Chrome, Edge): your real files, read and
+  written in place; edits made elsewhere (an editor, an LLM helper) show up
+  within a second.
+- **This browser**: projects kept in the browser's storage.
+
+`topo serve` is a small local server for the same app that also lets it save
+to the folders you give it (`PUT /files/<id>`), and notices outside edits.
 
 Models are TypeScript modules importing `topo-cad` ([ts/topo-cad.ts](ts/topo-cad.ts));
 see [examples/garage-as-built.ts](examples/garage-as-built.ts),
@@ -59,9 +77,10 @@ sheet (paper space) and per view (full-size model space), `model.json` (the IR),
 | `topo-timber` | lumber + NDS data, fastening presets, wall/floor generators, examples |
 | `topo-analysis` | analytical model, support graph, gravity load takedown, plane-frame solver, ASCE 7 combinations, NDS checks |
 | `topo-data` | reference tables with provenance: NDS values and factors, fasteners, material weights |
-| `topo-script` | runs TypeScript models (QuickJS + oxc) → scene spec → model |
-| `topo-wasm` | wasm-bindgen `Project` API |
-| `topo-cli` | `topo` binary |
+| `topo-script` | TypeScript models → one JS bundle (oxc) → scene spec → model; runs natively in QuickJS |
+| `topo-app` | the app engine: a model session answering the UI's requests (no server, files or clock) |
+| `topo-wasm` | wasm-bindgen: the app engine for the browser, and the `Project` API |
+| `topo-cli` | `topo` binary: run/render models; `serve` and `site` for the web app |
 
 ## Minimal example
 

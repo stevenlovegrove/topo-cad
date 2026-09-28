@@ -230,8 +230,10 @@ and as-built conditions.
 | `topo-draw` | views, HLR, annotations, schedules, sheets, SVG + DXF writers |
 | `topo-timber` | lumber catalog, NDS reference data, connection presets, wall/floor generators, examples |
 | `topo-analysis` | analytical-model extraction, load/combination types, `DesignCode` trait, `CalcTrace` (M2 grows here) |
-| `topo-wasm` | wasm-bindgen façade: JSON model in → SVG/DXF/report out |
-| `topo-cli` | renders examples / JSON models to files |
+| `topo-script` | model scripts → one JavaScript bundle (oxc strips types, rewrites modules to functions) → scene spec → model; QuickJS host |
+| `topo-app` | the app engine: `Session` (files → build → state/sheets/3D/checks/measurements as JSON) for any host |
+| `topo-wasm` | wasm-bindgen: the app engine for the browser worker; JSON model in → SVG/DXF/report out |
+| `topo-cli` | renders examples / JSON models to files; `serve` (local app + writable files) and `site` (static bundle) |
 
 ## 8. Scripting: functional TypeScript
 
@@ -290,14 +292,37 @@ A script declares `unknown(...)` parameters and `measured(...)` readings;
 per trial, and reports values ± 1σ, misfits, and undetermined unknowns. The
 script stays the source of truth: there is no separate solved state.
 
-`topo serve model.ts` is the visual companion: pick faces, corners and
-members on the drawings (server-side hit testing against the exact solids),
+The web app is the visual companion: pick faces, corners and
+members on the drawings (hit testing against the exact solids, in the engine),
 see the model's value, type the tape reading, and it is appended as readable
 TypeScript to `model.measured.ts`. File changes trigger a re-fit; measurements
 are drawn on the sheets coloured by fit. The tabs are the model's sheets, plus
 a **3D** tab (orthographic orbit/pan/zoom with a compass rose, view presets, members coloured by utilization, click to inspect, and "copy view" to reuse the direction as `iso(…, { from })` on a sheet), and a **Script** tab: an editor for the model file and the local files it imports
 (and its sidecar); saving rebuilds, and a syntax error marks its line. Only
 those files can be written.
+
+### The app runs in the browser
+
+Decision: the app needs no special hosting, so anyone can reproduce a
+project from its files. Everything is computed client-side:
+
+* **Engine**: `topo-app` (build, fit, analysis, drawings, hidden lines, hit
+  testing, measurements) compiled to wasm, in a Web Worker. It has no
+  filesystem, server or clock; a new measurement comes back as the sidecar's
+  new text for the host to store.
+* **Scripts**: `topo-script` bundles a model's modules into one program
+  (types stripped by oxc, `import`/`export` rewritten to plain functions with
+  specifiers resolved ahead of time). The bundle evaluates to
+  `(params, scenario) => json` and runs synchronously in any JavaScript
+  engine — QuickJS natively, the browser's own in the worker — so both hosts
+  behave the same and the measurement fit can re-evaluate the model freely.
+* **Storage** ([web/app/store.js](web/app/store.js)): one interface (`list`,
+  `read`, `write`, `stat`) over site files (a manifest on any static server;
+  writable under `topo serve`), a local folder (File System Access API),
+  browser storage (IndexedDB), and an overlay that keeps edits to read-only
+  files in the browser. Change detection is by polling `stat`.
+* **UI**: the page keeps its request API (`/api/...`), now answered in-page
+  by [web/app/router.js](web/app/router.js) from the worker and the store.
 
 ## 9. Roadmap
 

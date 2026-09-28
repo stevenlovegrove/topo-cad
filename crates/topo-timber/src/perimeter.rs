@@ -74,6 +74,44 @@ impl Perimeter {
     }
 
     pub fn build(&self, m: &mut Model) -> PerimeterParts {
+        self.try_build(m).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// The inside framing face of side `i`'s wall, as a plan line (point, direction).
+    fn inside_line(&self, i: usize, interior_left: bool) -> Option<(Vec2, Vec2)> {
+        let Side::Wall(w) = &self.sides[i] else { return None };
+        let (a, b) = self.seg(i);
+        let d = (b - a).normalized();
+        let n = if interior_left { Vec2::new(-d.y, d.x) } else { Vec2::new(d.y, -d.x) };
+        let off = match w.justify {
+            crate::wall::Justify::Exterior => w.thickness(),
+            crate::wall::Justify::Center => w.thickness() / 2.0,
+        };
+        Some((a + n * off, d))
+    }
+
+    /// Where the inside faces of the walls at each end of side `i` cross its
+    /// own inside face, as distances along it from its start point.
+    fn corner_inside(&self, i: usize, interior_left: bool) -> [Option<f64>; 2] {
+        let ns = self.sides.len();
+        let Some((p, d)) = self.inside_line(i, interior_left) else { return [None, None] };
+        let (a0, _) = self.seg(i);
+        let meet = |j: Option<usize>| -> Option<f64> {
+            let (q, e) = self.inside_line(j?, interior_left)?;
+            let den = d.cross(e);
+            if den.abs() < 1e-9 {
+                return None;
+            }
+            let s = (q - p).cross(e) / den;
+            // Measured from the outside corner, along the wall.
+            Some((p + d * s - a0).dot(d))
+        };
+        let prev = if i > 0 { Some(i - 1) } else if self.closed { Some(ns - 1) } else { None };
+        let next = if i + 1 < ns { Some(i + 1) } else if self.closed { Some(0) } else { None };
+        [meet(prev), meet(next)]
+    }
+
+    pub fn try_build(&self, m: &mut Model) -> Result<PerimeterParts, String> {
         let ns = self.sides.len();
         assert_eq!(ns, if self.closed { self.points.len() } else { self.points.len() - 1 }, "one side per segment");
         // Orientation decides which side is the interior.
@@ -136,7 +174,8 @@ impl Perimeter {
             w.start_inset = start_inset[i];
             w.end_inset = end_inset[i];
             w.parent = Some(g);
-            walls.push(Some(w.build(m)));
+            w.corner_inside = self.corner_inside(i, interior_left);
+            walls.push(Some(w.try_build(m)?));
         }
         // Interleave the top plate plies at every corner: the wall built first
         // runs its lower plate through, so the other wall's cap runs through.
@@ -160,7 +199,7 @@ impl Perimeter {
                 }
             }
         }
-        PerimeterParts { group: g, walls }
+        Ok(PerimeterParts { group: g, walls })
     }
 }
 
@@ -169,7 +208,7 @@ mod tests {
     use super::*;
     use crate::lumber::graded;
     use crate::wall::Opening;
-    use topo_core::units::{ft, ft_in};
+    use topo_core::units::{ft, ft_in, inch};
     use topo_geom::Geometry;
 
     fn check(m: &Model) {
@@ -304,5 +343,87 @@ mod tests {
         let g = Geometry::build(&m, &Topology::build(&m));
         let bb = g.members.iter().fold(BBox3::EMPTY, |b, x| b.union(x.bbox()));
         assert!(bb.min.x > -1e-9 && bb.min.y > -1e-9 && bb.max.x < ft(12.0) + 1e-9 && bb.max.y < ft(10.0) + 1e-9);
+    }
+
+    /// A wall framed as surveyed: readings from the inside faces of the walls
+    /// at each end (one with drywall), a window whose header is nailed to its
+    /// kings (no jacks), a door with jacks and a cripple, a tie-out check, and
+    /// a warning for a gap where a stud was not recorded.
+    #[test]
+    fn surveyed_wall() {
+        use crate::survey::*;
+        let mut m = Model::new("survey");
+        let w = template(&mut m).studs(2, 6, inch(16.0));
+        let (lx, ly) = (ft(20.0), ft(12.0));
+        let start = |_: f64| DatumRef { datum: Datum::Corner { end: "start".into(), face: CornerFace::Inside }, offsets: vec![] };
+        let drywall = || DatumRef {
+            datum: Datum::Corner { end: "end".into(), face: CornerFace::Inside },
+            offsets: vec![Offset { distance: inch(0.5), note: "1/2\" drywall".into() }],
+        };
+        let post = |role, from: DatumRef, d: f64| SurveyItem::Post { role, at: Reading { from, distance: inch(d), hit: Hit::Near }, plies: 1, name: None };
+        let _ = start(0.0);
+        let s = Survey {
+            items: vec![
+                post(PostRole::Stud, start(0.0), 0.0),
+                post(PostRole::Stud, start(0.0), 15.25),
+                post(PostRole::King, start(0.0), 30.0),
+                SurveyItem::Opening {
+                    label: "W1".into(),
+                    kind: "window".into(),
+                    head: Some(Height { level: Level::Slab, offsets: vec![], distance: inch(82.5) }),
+                    sill: Some(Height { level: Level::Slab, offsets: vec![], distance: inch(46.5) }),
+                    header: (2, 2, 8),
+                    header_flush: false,
+                },
+                post(PostRole::King, start(0.0), 77.5),
+                // 79" to 120": no stud recorded here (warning).
+                post(PostRole::King, start(0.0), 120.0),
+                post(PostRole::Jack, start(0.0), 121.5),
+                SurveyItem::Opening { label: "D1".into(), kind: "door".into(), head: Some(Height { level: Level::Slab, offsets: vec![], distance: inch(82.5) }), sill: None, header: (2, 2, 10), header_flush: false },
+                post(PostRole::Cripple, start(0.0), 140.0),
+                post(PostRole::Jack, start(0.0), 160.5),
+                post(PostRole::King, start(0.0), 162.0),
+                // The rest measured from the far corner, which has drywall.
+                post(PostRole::Stud, drywall(), 50.0),
+                post(PostRole::Stud, drywall(), 34.0),
+                post(PostRole::Stud, drywall(), 18.0),
+                post(PostRole::Stud, drywall(), 2.0),
+                post(PostRole::Stud, drywall(), -0.5), // tight to the framing, behind the drywall line
+            ],
+            checks: vec![SurveyCheck {
+                from: start(0.0),
+                to: DatumRef { datum: Datum::Corner { end: "end".into(), face: CornerFace::Inside }, offsets: vec![] },
+                distance: lx - inch(11.0) + inch(0.0625),
+                tolerance: inch(0.25),
+            }],
+        };
+        let p = Perimeter::start("R", Vec2::new(0.0, 0.0))
+            .to(Vec2::new(lx, 0.0), Side::Wall(w.clone().named("S").surveyed(s)))
+            .to(Vec2::new(lx, ly), Side::Wall(w.clone()))
+            .to(Vec2::new(0.0, ly), Side::Wall(w.clone()))
+            .close(Side::Wall(w.clone()));
+        let parts = p.try_build(&mut m).unwrap_or_else(|e| panic!("{e}"));
+        // The survey's own findings are checked below; the framing must be sound.
+        let issues = std::mem::take(&mut m.issues);
+        check(&m);
+        let wall = parts.walls[0].as_ref().unwrap();
+        assert_eq!(wall.headers.len(), 2);
+        assert_eq!(wall.bottom_plates.len(), 2, "the door interrupts the bottom plate");
+        let studs: Vec<&Member> = wall.studs.iter().map(|&i| m.member(i)).collect();
+        let count = |r: &str| studs.iter().filter(|x| x.role == r).count();
+        assert_eq!((count("stud"), count("king_stud"), count("jack_stud"), count("cripple")), (7, 4, 2, 1));
+        // The first stud is tight to the inside face of the west wall (5.5"),
+        // the last to the east wall's framing: x = 240 − 5.5 − 0.75.
+        let xs: Vec<f64> = studs.iter().filter(|x| x.role == "stud").map(|x| m.pos(x.start()).x / inch(1.0)).collect();
+        assert!(xs.iter().any(|x| (x - 6.25).abs() < 1e-6), "{xs:?}");
+        assert!(xs.iter().any(|x| (x - 233.75).abs() < 1e-6), "{xs:?}");
+        // Drywall offset: 50" from the drywall face = 240 − 5.5 − 0.5 − 50 − 0.75.
+        assert!(xs.iter().any(|x| (x - 183.25).abs() < 1e-6), "{xs:?}");
+        // The window header hangs on its kings; the door's on its jacks.
+        assert_eq!(issues.iter().filter(|i| i.code == "survey-gap").count(), 1, "{issues:#?}");
+        assert!(issues.iter().any(|i| i.code == "survey-gap" && i.message.contains("between king stud at 83 3/4\" from the west outside corner and king stud at 126 1/4\" from the west outside corner")), "{issues:#?}");
+        let chk = issues.iter().find(|i| i.code == "survey-check").expect("check reported");
+        assert_eq!(chk.severity, Severity::Info, "{}", chk.message);
+        assert!(chk.message.contains("+0.0625") || chk.message.contains("+1/16"), "{}", chk.message);
     }
 }
