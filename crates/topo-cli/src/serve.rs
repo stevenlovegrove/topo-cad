@@ -263,7 +263,7 @@ pub fn serve(paths: &[PathBuf], port: u16, web: &Path, scan: Option<&str>) -> Re
     eprintln!("  app: {}", web.display());
     eprintln!("  files: {} ({})", files.base.display(), files.roots.iter().map(|r| r.strip_prefix(&files.base).unwrap_or(r).display().to_string()).collect::<Vec<_>>().join(", "));
     if work.is_some() {
-        eprintln!("  scan workspace: agents attach at http://127.0.0.1:{port}/mcp?as=NAME");
+        eprintln!("  scan workspace: agents attach at http://127.0.0.1:{port}/mcp/NAME");
     }
     // A thread per request: event streams and agents' waits stay open.
     for req in server.incoming_requests() {

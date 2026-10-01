@@ -11,7 +11,7 @@
 //! - `GET /api/cloud`: the thinned scan; `GET /api/slab?o=&n=&half=&max=`:
 //!   every point of a slab (both as `topo_scan::cloud` bytes, scan frame).
 //! - `POST /api/pick` `{origin, dir, z?, slab?}`: what a ray meets.
-//! - `POST /mcp[?as=NAME]`: the same tools for an agent (MCP).
+//! - `POST /mcp/NAME`: the same tools for an agent of that name (MCP).
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -96,7 +96,7 @@ impl Work {
     }
 
     pub fn handles(url: &str) -> bool {
-        url.starts_with("/api/") || url == "/mcp"
+        url.starts_with("/api/") || url == "/mcp" || url.starts_with("/mcp/")
     }
 
     /// A file of the project was saved from the app.
@@ -116,6 +116,11 @@ impl Work {
     }
 
     pub fn handle(&self, mut req: Request, url: &str, q: &HashMap<String, String>) {
+        // An agent names itself in the address: /mcp/NAME (or /mcp?as=NAME).
+        let (url, named) = match url.strip_prefix("/mcp/") {
+            Some(n) if !n.is_empty() => ("/mcp", Some(n.to_string())),
+            _ => (url, None),
+        };
         let method = req.method().clone();
         let mut body = String::new();
         if method == Method::Post && req.as_reader().read_to_string(&mut body).is_err() {
@@ -178,7 +183,7 @@ impl Work {
                 }
             }
             (Method::Post, "/mcp") => {
-                let who = q.get("as").cloned().unwrap_or_else(|| "agent".into());
+                let who = q.get("as").cloned().or(named).unwrap_or_else(|| "agent".into());
                 let reply = match serde_json::from_str::<Value>(&body) {
                     Ok(Value::Array(batch)) => {
                         let rs: Vec<Value> = batch.iter().filter_map(|m| topo_scan::mcp::handle(&self.ws, &who, m)).collect();

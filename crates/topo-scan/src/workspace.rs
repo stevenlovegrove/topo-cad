@@ -32,7 +32,7 @@ and a translation. Tools take `frame: \"model\"` (the default) or `\"scan\"`. Ev
 its faces, and sensor rays that pass through its solid (it is not there, or not exactly there) or end on it.\n\
 The work is organised as issues: questions and faults pinned to places, each with a thread. Start with `status`, \
 then `issues` (list gives the order to work in). Take an issue by setting it `doing` (it is then assigned to you), \
-look (`render_section`, `members`, `walls`, `studs`, `measure`, `probe`, `fit_surface`), and say what you found in \
+look (`render_view` for a 3D picture to find where, `render_section` to see and measure, `members`, `walls`, `studs`, `measure`, `probe`, `fit_surface`, people's `selections`), and say what you found in \
 its thread, briefly. Pass `issue: N` to a tool to record its use in that thread. You cannot move anyone's view: \
 attach a `view` to a comment instead (a partial view state: only the fields that matter, e.g. a section and its \
 colouring), with a `view_label`; people follow it as a link and can go back. To change the model, `propose` a \

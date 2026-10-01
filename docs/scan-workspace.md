@@ -177,7 +177,7 @@ target/release/topo serve MODEL.ts SCAN.ply        # http://127.0.0.1:8765/
 - An agent attaches over MCP, under a name of its own:
 
   ```
-  claude mcp add --transport http topo http://127.0.0.1:8765/mcp?as=claude-1
+  claude mcp add --transport http topo http://127.0.0.1:8765/mcp/claude-1
   ```
 
 Without a scan, `topo serve` and any static host serve the app as before.
