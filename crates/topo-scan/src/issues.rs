@@ -44,11 +44,14 @@ pub struct Place {
     /// A fitted plane's id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plane: Option<String>,
+    /// A slab's or a polyline's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
 }
 
 impl Place {
     pub fn about(p: V3, r: f32) -> Place {
-        Place { min: [p[0] - r, p[1] - r, p[2] - r], max: [p[0] + r, p[1] + r, p[2] + r], member: None, selection: None, plane: None }
+        Place { min: [p[0] - r, p[1] - r, p[2] - r], max: [p[0] + r, p[1] + r, p[2] + r], member: None, selection: None, plane: None, object: None }
     }
     pub fn centre(&self) -> V3 {
         std::array::from_fn(|k| 0.5 * (self.min[k] + self.max[k]))

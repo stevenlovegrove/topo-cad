@@ -76,6 +76,8 @@ impl Workspace {
             "rooms": self.items.rooms,
             "surfaces": self.items.surfaces,
             "selections": self.items.selections,
+            "slabs": self.items.slabs,
+            "polylines": self.items.polylines,
         })
     }
 
@@ -116,14 +118,14 @@ impl Workspace {
     /// where that is in the model, and the nearest member. `z` (model
     /// frame) and `slab` (origin, unit normal, half thickness; scan frame)
     /// are the viewer's cuts: points outside them are not shown, so not hit.
-    pub fn pick_json(&mut self, origin: V3, dir: V3, z: Option<[f32; 2]>, slab: Option<(V3, V3, f32)>) -> Result<Value> {
+    pub fn pick_json(&mut self, origin: V3, dir: V3, z: Option<[f32; 2]>, slab: Option<(V3, [V3; 3], V3)>) -> Result<Value> {
         let pl = self.placement()?;
         self.scan()?;
         let scan = self.scan.as_ref().unwrap().clone();
         let n = crate::norm(dir).max(1e-9);
         let dir = crate::scale(dir, 1.0 / n);
         let keep = move |p: V3| {
-            z.is_none_or(|z| p[2] - pl.t[2] >= z[0] && p[2] - pl.t[2] <= z[1]) && slab.is_none_or(|(o, n, half)| crate::dot(n, crate::sub(p, o)).abs() <= half)
+            z.is_none_or(|z| p[2] - pl.t[2] >= z[0] && p[2] - pl.t[2] <= z[1]) && slab.is_none_or(|(c, axes, half)| crate::cloud::inside(p, c, &axes, half))
         };
         // A narrow ray first; where the points are sparse, a wider one.
         let Some((i, t)) = scan.ray_hit(origin, dir, 0.015, 0.004, 1, &keep).or_else(|| scan.ray_hit(origin, dir, 0.04, 0.012, 1, &keep)) else {
@@ -131,8 +133,15 @@ impl Workspace {
         };
         let p = scan.xyz[i as usize];
         let pm = pl.inverse(p);
-        let near = self.nearest_member(pm, 0.5).map(|(k, d, off)| json!({"path": self.model.as_ref().unwrap().pred.members[k].path, "distance": d, "offset": off}));
-        Ok(json!({"hit": mm(p), "model": mm(pm), "range": t, "member": near}))
+        // The member there, with the normal of its face nearest the point (model frame).
+        let near = self.model.as_ref().and_then(|m| {
+            let (s, d) = m.samples.nearest(pm, 0.5)?;
+            let (k, nm, q) = (m.samples.member[s as usize] as usize, m.samples.normals[s as usize], m.samples.pts[s as usize]);
+            Some(json!({"path": m.pred.members[k].path, "distance": d, "offset": crate::dot(nm, crate::sub(pm, q)), "normal": mm(nm)}))
+        });
+        // The surface the point lies on in the scan: its normal, in the model frame.
+        let surface = self.index.as_ref().and_then(|ix| ix.normal_at(p)).map(|n| mm(pl.unrotate(n)));
+        Ok(json!({"hit": mm(p), "model": mm(pm), "range": t, "member": near, "normal": surface}))
     }
 }
 

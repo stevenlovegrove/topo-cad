@@ -73,8 +73,9 @@ impl Workspace {
                 };
                 let pl = self.placement()?;
                 let (vp, rect) = (nums("vp", 16)?, nums("rect", 4)?);
-                let slab = match (arr3(&args["slab"]["origin"]), arr3(&args["slab"]["normal"]), args["slab"]["half"].as_f64()) {
-                    (Some(o), Some(n), Some(h)) => Some((o, n, h as f32)),
+                let b = &args["slab"];
+                let obb = match (arr3(&b["c"]), arr3(&b["u"]), arr3(&b["v"]), arr3(&b["n"]), arr3(&b["h"])) {
+                    (Some(c), Some(u), Some(v), Some(n), Some(h)) => Some((c, [u, v, n], h)),
                     _ => None,
                 };
                 How::Window {
@@ -84,7 +85,8 @@ impl Workspace {
                     forward: arr3(&args["forward"]).context("forward")?,
                     // Heights are given in the model's frame.
                     z: args.get("z").and_then(|v| v.as_array()).filter(|a| a.len() == 2).map(|a| [a[0].as_f64().unwrap_or(-1e9) as f32 + pl.t[2], a[1].as_f64().unwrap_or(1e9) as f32 + pl.t[2]]),
-                    slab,
+                    slab: None,
+                    obb,
                     front_only: args.get("front_only").and_then(|v| v.as_bool()).unwrap_or(true),
                 }
             }

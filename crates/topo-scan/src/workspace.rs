@@ -136,6 +136,10 @@ pub struct Items {
     pub surfaces: Vec<Surface>,
     #[serde(default)]
     pub selections: Vec<crate::selection::Selection>,
+    #[serde(default)]
+    pub slabs: Vec<crate::tools_obj::Slab>,
+    #[serde(default)]
+    pub polylines: Vec<crate::tools_obj::Polyline>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -436,6 +440,8 @@ impl Workspace {
             "fit_surface" => self.fit_surface(who, args),
             "surfaces" => self.surfaces(who, args),
             "selections" => self.selections(who, args),
+            "slabs" => self.slabs(who, args),
+            "polylines" => self.polylines(who, args),
             "rooms" => self.rooms(who, args),
             "views" => self.views(who, args),
             "sections" => self.sections(who, args),
@@ -854,7 +860,12 @@ impl Workspace {
         let model = Self::frame_is_model(args)?;
         if let Some(id) = args.get("selection").and_then(|v| v.as_str()) {
             let s = self.items.selections.iter().find(|s| s.id == id).with_context(|| format!("no selection {id}"))?;
-            return Ok(Some(Place { min: s.min, max: s.max, member: None, selection: Some(id.to_string()), plane: None }));
+            return Ok(Some(Place { min: s.min, max: s.max, member: None, selection: Some(id.to_string()), plane: None, object: None }));
+        }
+        // A slab or a polyline, by its id.
+        if let Some(id) = args.get("slab").or(args.get("polyline")).and_then(|v| v.as_str()) {
+            let (min, max) = self.object_box(id)?;
+            return Ok(Some(Place { min, max, member: None, selection: None, plane: None, object: Some(id.to_string()) }));
         }
         if let Some(id) = args.get("plane").and_then(|v| v.as_str()) {
             // A plane's patch, as a box in the scan.
@@ -868,7 +879,7 @@ impl Workspace {
                     hi[k] = hi[k].max(q[k] + 0.02);
                 }
             }
-            return Ok(Some(Place { min: lo, max: hi, member: None, selection: None, plane: Some(s.id.clone()) }));
+            return Ok(Some(Place { min: lo, max: hi, member: None, selection: None, plane: Some(s.id.clone()), object: None }));
         }
         if let Some(f) = args.get("member").and_then(|v| v.as_str()) {
             let pl = self.placement()?;
@@ -885,12 +896,12 @@ impl Workspace {
                     hi[a] = hi[a].max(q[a]);
                 }
             }
-            return Ok(Some(Place { min: lo, max: hi, member: Some(if ks.len() == 1 { m.pred.members[ks[0]].path.clone() } else { f.to_string() }), selection: None, plane: None }));
+            return Ok(Some(Place { min: lo, max: hi, member: Some(if ks.len() == 1 { m.pred.members[ks[0]].path.clone() } else { f.to_string() }), selection: None, plane: None, object: None }));
         }
         if let Some(b) = args.get("box") {
             let (a, c) = (arr3(&b["min"]).context("box: {min, max}")?, arr3(&b["max"]).context("box: {min, max}")?);
             let (a, c) = (self.to_scan(a, model)?, self.to_scan(c, model)?);
-            return Ok(Some(Place { min: std::array::from_fn(|k| a[k].min(c[k])), max: std::array::from_fn(|k| a[k].max(c[k])), member: None, selection: None, plane: None }));
+            return Ok(Some(Place { min: std::array::from_fn(|k| a[k].min(c[k])), max: std::array::from_fn(|k| a[k].max(c[k])), member: None, selection: None, plane: None, object: None }));
         }
         if let Some(p) = args.get("point").and_then(arr3) {
             return Ok(Some(Place::about(self.to_scan(p, model)?, 0.1)));

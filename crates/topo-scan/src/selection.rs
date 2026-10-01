@@ -29,6 +29,9 @@ pub enum How {
         z: Option<[f32; 2]>,
         #[serde(default)]
         slab: Option<(V3, V3, f32)>,
+        /// A view's clip box (centre, unit axes, half sizes).
+        #[serde(default)]
+        obb: Option<(V3, [V3; 3], V3)>,
         /// Only the surface nearest the viewer (what was seen), not what lies behind it.
         #[serde(default)]
         front_only: bool,
@@ -70,7 +73,7 @@ pub fn select(scan: &Scan, how: &How) -> Vec<u32> {
                 (0..3).all(|a| p[a] >= min[a] && p[a] <= max[a])
             }).collect()
         }
-        How::Window { vp, rect, eye, forward, z, slab, front_only } => {
+        How::Window { vp, rect, eye, forward, z, slab, obb, front_only } => {
             let (x0, x1, y0, y1) = (rect[0].min(rect[2]), rect[0].max(rect[2]), rect[1].min(rect[3]), rect[1].max(rect[3]));
             // (index, x and y in the rectangle as 0..1, depth along the view).
             let inside: Vec<(u32, f32, f32, f32)> = scan
@@ -78,7 +81,7 @@ pub fn select(scan: &Scan, how: &How) -> Vec<u32> {
                 .par_iter()
                 .filter_map(|&i| {
                     let p = scan.xyz[i as usize];
-                    if z.is_some_and(|z| p[2] < z[0] || p[2] > z[1]) || slab.is_some_and(|(o, n, half)| crate::dot(n, crate::sub(p, o)).abs() > half) {
+                    if z.is_some_and(|z| p[2] < z[0] || p[2] > z[1]) || slab.is_some_and(|(o, n, half)| crate::dot(n, crate::sub(p, o)).abs() > half) || obb.is_some_and(|(c, axes, half)| !crate::cloud::inside(p, c, &axes, half)) {
                         return None;
                     }
                     let w = vp[3] * p[0] + vp[7] * p[1] + vp[11] * p[2] + vp[15];
@@ -150,7 +153,7 @@ mod tests {
         let scan = Scan::new("t", xyz, Vec::new(), None, None).unwrap();
         // Looking along +x: right = −y, up = z; x is depth. Clip x = −y / 2, y = (z − 1.5).
         let vp = [0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.5, 0.0, 1.0];
-        let window = |front_only| How::Window { vp, rect: [-0.2, -0.5, 0.2, 0.5], eye: [0.0; 3], forward: [1.0, 0.0, 0.0], z: None, slab: None, front_only };
+        let window = |front_only| How::Window { vp, rect: [-0.2, -0.5, 0.2, 0.5], eye: [0.0; 3], forward: [1.0, 0.0, 0.0], z: None, slab: None, obb: None, front_only };
         let front = select(&scan, &window(true));
         assert!(!front.is_empty() && front.iter().all(|&i| scan.xyz[i as usize][0] == 2.0), "only the near wall");
         assert!(front.iter().all(|&i| scan.xyz[i as usize][1].abs() <= 0.4001 && (scan.xyz[i as usize][2] - 1.5).abs() <= 0.5001));

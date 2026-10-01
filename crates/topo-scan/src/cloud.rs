@@ -58,6 +58,12 @@ fn key(p: V3, cell: f32) -> (i32, i32, i32) {
     ((p[0] / cell).floor() as i32, (p[1] / cell).floor() as i32, (p[2] / cell).floor() as i32)
 }
 
+/// Whether `p` is in the box with centre `c`, unit axes and half sizes.
+pub fn inside(p: V3, c: V3, axes: &[V3; 3], half: V3) -> bool {
+    let q = crate::sub(p, c);
+    (0..3).all(|k| crate::dot(q, axes[k]).abs() <= half[k])
+}
+
 /// The scan's surface normals by 6 cm cell, and the thinned cloud.
 pub struct ScanIndex {
     normals: HashMap<(i32, i32, i32), [i8; 3]>,
@@ -122,10 +128,17 @@ impl ScanIndex {
         ScanIndex { normals, thin, voxel }
     }
 
-    /// Every used point within `half` of the plane through `origin` with
-    /// unit normal `n` (scan frame), thinned evenly to at most `max`.
-    pub fn slab(&self, scan: &Scan, origin: V3, n: V3, half: f32, max: usize) -> Cloud {
-        let idx: Vec<u32> = scan.used.par_iter().copied().filter(|&i| crate::dot(n, crate::sub(scan.xyz[i as usize], origin)).abs() <= half).collect();
+    /// The normal of the surface a point lies on (of its cell; toward the
+    /// sensor), if its cell is a clean surface.
+    pub fn normal_at(&self, p: V3) -> Option<V3> {
+        let n = self.normals.get(&key(p, CELL))?;
+        (n != &[0; 3]).then(|| n.map(|x| x as f32 / 127.0))
+    }
+
+    /// Every used point in an oriented box (centre, unit axes, half sizes; scan
+    /// frame), thinned evenly to at most `max`.
+    pub fn in_box(&self, scan: &Scan, c: V3, axes: [V3; 3], half: V3, max: usize) -> Cloud {
+        let idx: Vec<u32> = scan.used.par_iter().copied().filter(|&i| inside(scan.xyz[i as usize], c, &axes, half)).collect();
         let step = idx.len().div_ceil(max.max(1)).max(1);
         let mut c = Cloud::default();
         for &i in idx.iter().step_by(step) {
@@ -166,7 +179,7 @@ mod tests {
         assert!(up > 3500 && east > 3500, "{up} {east}");
         assert_eq!(ix.thin.bytes().len(), 4 + 16 * ix.thin.len());
         // A slab about the wall holds the wall's points (and the floor's edge), thinned to the cap.
-        let s = ix.slab(&scan, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.003, 5000);
+        let s = ix.in_box(&scan, [0.0, 0.0, 0.0], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.003, 100.0, 100.0], 5000);
         assert!(s.len() <= 5000 && s.len() > 4000 && s.xyz.iter().all(|p| p[0].abs() <= 0.003), "{}", s.len());
     }
 }

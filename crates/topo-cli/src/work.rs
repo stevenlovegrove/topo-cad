@@ -162,18 +162,18 @@ impl Work {
             (Method::Get, "/api/slab") => {
                 let (ix, scan) = (self.index.lock().unwrap().clone(), self.ws.lock().unwrap().scan.clone());
                 let (Some(ix), Some(scan)) = (ix, scan) else { return respond_json(req, 503, &json!({"error": "the scan is still loading"})) };
-                let (Some(o), Some(n)) = (v3(q.get("o")), v3(q.get("n"))) else { return respond_json(req, 400, &json!({"error": "o=x,y,z and n=x,y,z"})) };
-                let half = q.get("half").and_then(|x| x.parse().ok()).unwrap_or(0.15);
+                // An oriented box: c (centre), u, v, n (unit axes) and h (half sizes), scan frame.
+                let (Some(c), Some(u), Some(vv), Some(n), Some(h)) = (v3(q.get("c")), v3(q.get("u")), v3(q.get("v")), v3(q.get("n")), v3(q.get("h"))) else { return respond_json(req, 400, &json!({"error": "c, u, v, n and h: x,y,z each"})) };
                 let max = q.get("max").and_then(|x| x.parse().ok()).unwrap_or(2_000_000usize).min(6_000_000);
-                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
-                respond_bytes(req, ix.slab(&scan, o, n.map(|x| x / len), half, max).bytes())
+                respond_bytes(req, ix.in_box(&scan, c, [u, vv, n], h, max).bytes())
             }
             (Method::Post, "/api/pick") => {
                 let Ok(v) = serde_json::from_str::<Value>(&body) else { return fail(req, "the body must be JSON".into()) };
                 let (Some(o), Some(d)) = (arr3(&v["origin"]), arr3(&v["dir"])) else { return fail(req, "origin and dir: [x, y, z] (scan frame)".into()) };
                 let z = v["z"].as_array().filter(|a| a.len() == 2).map(|a| [a[0].as_f64().unwrap_or(-1e9) as f32, a[1].as_f64().unwrap_or(1e9) as f32]);
-                let slab = match (arr3(&v["slab"]["origin"]), arr3(&v["slab"]["normal"]), v["slab"]["half"].as_f64()) {
-                    (Some(o), Some(n), Some(h)) => Some((o, n, h as f32)),
+                let b = &v["slab"];
+                let slab = match (arr3(&b["c"]), arr3(&b["u"]), arr3(&b["v"]), arr3(&b["n"]), arr3(&b["h"])) {
+                    (Some(c), Some(u), Some(vv), Some(n), Some(h)) => Some((c, [u, vv, n], h)),
                     _ => None,
                 };
                 let r = self.ws.lock().unwrap().pick_json(o, d, z, slab);
