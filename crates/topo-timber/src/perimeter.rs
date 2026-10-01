@@ -299,6 +299,25 @@ mod tests {
     }
 
     #[test]
+    fn stud_layout_set_out_as_built() {
+        // A wall with two doors: the layout from a stud 0.1 m along, the pier between the doors from one at 3.0 m.
+        let mut m = Model::new("set-out");
+        let w = template(&mut m)
+            .named("W")
+            .between(Vec3::ZERO, Vec3::new(6.0, 0.0, 0.0))
+            .opening(Opening::door("D1", 2.0, 1.0, 2.0))
+            .opening(Opening::door("D2", 4.0, 1.0, 2.0))
+            .layout_from(&[0.1, 3.0]);
+        w.build(&mut m);
+        let xs: Vec<f64> = m.members.iter().filter(|x| x.role == "stud").map(|x| m.node(x.start()).pos.x).collect();
+        let has = |x: f64| xs.iter().any(|&s| (s - x).abs() < 1e-6);
+        let s = inch(16.0);
+        assert!(has(0.1) && has(0.1 + s) && has(0.1 + 2.0 * s), "the wall's layout: {xs:?}");
+        assert!(has(3.0) && !has(0.1 + 7.0 * s), "the pier's own layout: {xs:?}");
+        assert!(has(0.1 + 12.0 * s), "past the second door, the wall's layout again: {xs:?}");
+    }
+
+    #[test]
     fn acute_corner_clears_studs() {
         let mut m = Model::new("acute");
         let w = template(&mut m);

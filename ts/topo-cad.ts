@@ -472,6 +472,7 @@ interface WallSpec {
   readonly height: Length;
   readonly studs: Nominal;
   readonly spacing: Length;
+  readonly layout_from?: readonly Length[];
   readonly grade: Grade;
   readonly header_grade?: Grade;
   readonly justify: "exterior" | "center";
@@ -510,6 +511,16 @@ export class Wall {
   }
   studs(size: Nominal, spacing?: Length): Wall {
     return this.with({ studs: size, spacing: spacing ?? this.spec.spacing });
+  }
+  /**
+   * As built: the stud layout is set out from a stud whose centre is `x`
+   * along the wall from its start (the others follow at the spacing, either
+   * way), not from the wall's start. Further studs set out the stretch
+   * between openings each is in, where that is framed on its own (a pier
+   * between two doors).
+   */
+  studsFrom(x: Length, ...stretches: Length[]): Wall {
+    return this.with({ layout_from: [x, ...stretches] });
   }
   grade(g: Grade): Wall {
     return this.with({ grade: g });

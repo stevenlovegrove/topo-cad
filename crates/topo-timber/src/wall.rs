@@ -82,6 +82,10 @@ pub struct Wall {
     /// Material for headers (often a higher grade); defaults to `material`.
     pub header_material: Option<MaterialId>,
     pub spacing: f64,
+    /// As built: layout studs' centres along the wall from its start. The first sets the wall's layout out (the
+    /// others follow at `spacing` either way); each further one sets out the stretch between openings it is in.
+    /// Empty: the layout runs from the start (studs at spacing, 2·spacing, …).
+    pub layout_from: Vec<f64>,
     /// Interior on the left of the start→end direction (CCW plan loops).
     pub interior_left: bool,
     pub justify: Justify,
@@ -176,6 +180,7 @@ impl Wall {
             material,
             header_material: None,
             spacing: inch(16.0),
+            layout_from: vec![],
             interior_left: true,
             justify: Justify::Exterior,
             openings: vec![],
@@ -203,6 +208,12 @@ impl Wall {
     pub fn studs(mut self, thick: u32, width: u32, spacing: f64) -> Wall {
         self.stud = (thick, width);
         self.spacing = spacing;
+        self
+    }
+    /// Sets the stud layout out from studs whose centres are at `xs` along the wall (as built), not from the
+    /// wall's start: the first for the wall, each further one for the stretch between openings it is in.
+    pub fn layout_from(mut self, xs: &[f64]) -> Wall {
+        self.layout_from = xs.to_vec();
         self
     }
     pub fn justify(mut self, j: Justify) -> Wall {
@@ -280,7 +291,19 @@ impl Wall {
             })
             .collect();
         let mut blocked: Vec<(f64, f64)> = vec![];
-        let layout: Vec<f64> = (1..).map(|k| k as f64 * self.spacing).take_while(|&x| x < len).collect();
+        let grid = |from: f64, lo: f64, hi: f64| -> Vec<f64> {
+            let from = from.rem_euclid(self.spacing);
+            (0..).map(|k| from + k as f64 * self.spacing).take_while(|&x| x < hi).filter(|&x| x > lo + 1e-9).collect()
+        };
+        let mut layout = grid(self.layout_from.first().copied().unwrap_or(0.0), 0.0, len);
+        for &a in self.layout_from.iter().skip(1) {
+            // The stretch between openings (or the wall's ends) this stud is in.
+            let lo = openings.iter().map(|o| o.center + o.width / 2.0).filter(|&x| x <= a).fold(0.0, f64::max);
+            let hi = openings.iter().map(|o| o.center - o.width / 2.0).filter(|&x| x >= a).fold(len, f64::min);
+            layout.retain(|&x| x <= lo || x >= hi);
+            layout.extend(grid(a, lo, hi));
+        }
+        layout.sort_by(|a, b| a.total_cmp(b));
         for o in &openings {
             let (x0, x1) = (o.center - o.width / 2.0, o.center + o.width / 2.0);
             let nj = o.jacks as f64;
