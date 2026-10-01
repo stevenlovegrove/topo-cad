@@ -86,7 +86,8 @@ export class HttpStore {
   }
   async write(id, text) {
     if (!this.writable) throw new Error(`${this.label} are read-only here`);
-    const r = await fetch(this.url(id), { method: "PUT", body: text });
+    // (`__topoWho`: with a scan workspace, who is saving, so the save is their commit.)
+    const r = await fetch(this.url(id) + (globalThis.__topoWho || ""), { method: "PUT", body: text });
     if (!r.ok) throw new Error(`saving ${id}: ${r.status} ${await r.text()}`);
   }
   /** From the manifest (one request; `topo serve` lists each file's ETag). */

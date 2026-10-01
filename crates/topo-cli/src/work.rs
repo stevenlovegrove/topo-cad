@@ -27,6 +27,8 @@ use topo_scan::workspace::Workspace;
 
 #[derive(Clone)]
 pub struct Work {
+    /// The model, as the id the app opens it by (among the served files).
+    entry: String,
     ws: Arc<Mutex<Workspace>>,
     index: Arc<Mutex<Option<Arc<ScanIndex>>>>,
     /// What is being loaded, for the app to show ("" when ready).
@@ -57,10 +59,10 @@ fn arr3(v: &Value) -> Option<[f32; 3]> {
 
 impl Work {
     /// Opens the project `model` is in, and loads the scan in the background.
-    pub fn start(model: &Path, scan: Option<&str>) -> Result<Work, String> {
+    pub fn start(model: &Path, scan: Option<&str>, entry: String) -> Result<Work, String> {
         let ws = Workspace::open(model, scan).map_err(|e| format!("{e:#}"))?;
         let path = ws.items.scan.clone().ok_or("no scan: give one (a .ply) after the model")?;
-        let work = Work { ws: Arc::new(Mutex::new(ws)), index: Arc::new(Mutex::new(None)), loading: Arc::new(Mutex::new("loading the scan".into())) };
+        let work = Work { entry, ws: Arc::new(Mutex::new(ws)), index: Arc::new(Mutex::new(None)), loading: Arc::new(Mutex::new("loading the scan".into())) };
         let w = work.clone();
         std::thread::spawn(move || {
             let t = Instant::now();
@@ -119,7 +121,7 @@ impl Work {
         }
         let fail = |req: Request, e: String| respond_json(req, 200, &json!({"error": e}));
         match (method, url) {
-            (Method::Get, "/api/workspace") => respond_json(req, 200, &json!({"service": "topo-cad scan workspace", "model": self.ws.lock().unwrap().model_rel})),
+            (Method::Get, "/api/workspace") => respond_json(req, 200, &json!({"service": "topo-cad scan workspace", "entry": self.entry})),
             (Method::Get, "/api/events") => self.events(req, q.get("who").cloned().unwrap_or_default()),
             (Method::Post, "/api/call") => {
                 let Ok(v) = serde_json::from_str::<Value>(&body) else { return fail(req, "the body must be JSON".into()) };

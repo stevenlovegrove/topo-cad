@@ -248,14 +248,16 @@ pub fn serve(paths: &[PathBuf], port: u16, web: &Path, scan: Option<&str>) -> Re
     if !web.join("pkg").join("topo_wasm_bg.wasm").exists() {
         return Err(format!("the app's engine is not built: run web/build.sh (looked in {})", web.join("pkg").display()));
     }
+    // A scan workspace serves its project (and what it imports), not `./projects` too.
+    let files = std::sync::Arc::new(Files::new(&paths, scan.is_none())?);
     let work = match scan {
         Some(scan) => {
             let model = paths.iter().find(|p| p.is_file()).ok_or("a scan needs its model: topo serve MODEL.ts SCAN.ply")?;
-            Some(Work::start(model, Some(scan).filter(|s| !s.is_empty()))?)
+            let entry = model.canonicalize().ok().and_then(|m| files.id(&m)).ok_or("the model is not among the served files")?;
+            Some(Work::start(model, Some(scan).filter(|s| !s.is_empty()), entry)?)
         }
         None => None,
     };
-    let files = std::sync::Arc::new(Files::new(&paths, true)?);
     let server = Server::http(("127.0.0.1", port)).map_err(|e| format!("cannot listen on port {port}: {e}"))?;
     eprintln!("topo serve: http://127.0.0.1:{port}/");
     eprintln!("  app: {}", web.display());

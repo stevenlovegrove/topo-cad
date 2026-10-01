@@ -17,16 +17,38 @@
   #status { color: var(--muted); }
   #project { width: auto; max-width: 260px; font-size: 13px; }
   #status .ok { color: var(--ok); } #status .bad { color: var(--bad); }
-  nav { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
-  nav button { border: 1px solid var(--line); background: var(--bg); padding: 3px 9px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; }
-  nav button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   body { display: flex; flex-direction: column; }
   header { flex: none; }
   main { display: flex; flex: 1; min-height: 0; }
-  #viewer { flex: 1; position: relative; overflow: hidden; background: #e9e9e4; cursor: crosshair; }
+  /* Left: what the project has (drawings, files; with a scan: layers, views). */
+  #browser { width: 190px; flex: none; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); font-size: 12px; min-height: 0; }
+  #browserTabs { display: flex; gap: 2px; padding: 6px 6px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  #browserTabs button { border: 1px solid transparent; border-bottom: 0; background: none; padding: 4px 6px; border-radius: 5px 5px 0 0; cursor: pointer; font: inherit; color: var(--muted); margin-bottom: -1px; }
+  #browserTabs button.on { color: var(--ink); border-color: var(--line); background: var(--panel); font-weight: 600; }
+  #browserTabs button[hidden], .bpane[hidden] { display: none; }
+  .bpane { flex: 1; overflow-y: auto; padding: 6px; }
+  .bpane h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 4px 4px; font-weight: 600; }
+  .bpane ul { list-style: none; margin: 0; padding: 0; }
+  .bpane li { padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bpane li:hover { background: #f1f1ec; }
+  .bpane li.on { background: var(--ink); color: #fff; }
+  .bpane li.dirty::after { content: " ●"; color: var(--pick); }
+  .bpane li .muted { color: inherit; opacity: .65; }
+  /* Centre: panes side by side, each showing one kind of view. */
+  #centre { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #panes { flex: 1; display: flex; min-height: 0; }
+  .slot { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
+  .slot:last-child { border-right: 0; }
+  .slotbar { display: flex; align-items: center; gap: 6px; padding: 3px 6px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; }
+  .slot.focus .slotbar { box-shadow: inset 0 -2px 0 var(--accent); }
+  .slotbar select { width: auto; font-size: 12px; padding: 1px 4px; }
+  .slotbar .sp { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slotbar button { border: 1px solid var(--line); background: var(--bg); border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; padding: 0 6px; line-height: 18px; }
+  .slotbody { flex: 1; position: relative; overflow: hidden; background: #e9e9e4; min-height: 0; }
+  #sheetPane { position: absolute; inset: 0; cursor: crosshair; }
   #sheet { width: 100%; height: 100%; }
   #sheet svg { width: 100%; height: 100%; display: block; }
-  #tip { position: absolute; pointer-events: none; background: rgba(27,27,27,.88); color: #fff; padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
+  #tip { position: fixed; z-index: 50; pointer-events: none; background: rgba(27,27,27,.88); color: #fff; padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
   #hint { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.8); padding: 2px 6px; border-radius: 4px; }
   aside { width: 420px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 4px 14px 20px; }
   #paneTabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 2px; background: var(--panel); border-bottom: 1px solid var(--line); margin: 0 -14px 4px; padding: 8px 14px 0; }
@@ -68,10 +90,7 @@
   #banner .warn { background: #fff4d6; padding: 8px; border-radius: 6px; margin-top: 10px; font-size: 12px; }
   ul#issues { padding-left: 16px; margin: 0; font-size: 12px; }
   .muted { color: var(--muted); }
-  nav button.script { margin-left: 8px; font-family: ui-monospace, monospace; }
-  nav button.script.dirty::after { content: " ●"; color: var(--pick); }
   #script { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fbfbf8; cursor: auto; }
-  #script[hidden], #hint[hidden], #view3d[hidden] { display: none; }
   #view3d { position: absolute; inset: 0; background: #f7f7f3; cursor: grab; }
   #view3d.dragging { cursor: grabbing; }
   #canvas3d { width: 100%; height: 100%; display: block; }
@@ -107,9 +126,9 @@
   @media (max-width: 900px) {
     main { flex-direction: column; height: auto; flex: none; }
     body { display: block; }
-    #viewer { flex: none; height: 70vh; }
+    #browser { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    #centre { flex: none; height: 70vh; }
     aside { width: auto; border-left: 0; border-top: 1px solid var(--line); }
-    nav { margin-left: 0; }
   }
   #structure .sum { font-size: 13px; margin-top: 6px; }
   .case { border-bottom: 1px solid var(--line); padding: 5px 0; font-size: 12px; }
@@ -137,6 +156,75 @@
   .chk .note { color: var(--muted); font-style: italic; margin-top: 2px; }
   .badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; background: #fff4d6; color: #8a5a00; margin-left: 4px; }
   svg.chart { width: 100%; height: 78px; display: block; margin-top: 4px; }
+  /* ----- the scan workspace (app/scan.js; only with the service) ----- */
+  #histNav { margin-left: auto; display: flex; gap: 2px; }
+  #histNav button { border: 1px solid var(--line); background: var(--bg); border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; padding: 1px 8px; }
+  #histNav button:disabled { opacity: .35; cursor: default; }
+  #people { display: flex; gap: 5px; align-items: center; }
+  .who { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 4px; border-radius: 5px; background: var(--who); color: #fff; font-size: 12px; font-weight: 700; vertical-align: middle; }
+  .who.small { min-width: 16px; height: 16px; font-size: 10px; border-radius: 4px; padding: 0 3px; }
+  .who.agent { border-radius: 11px; }
+  .person { position: relative; display: inline-flex; }
+  .person.me { cursor: pointer; outline: 2px solid var(--ink); outline-offset: 1px; border-radius: 6px; }
+  .person i { position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--panel); background: #b9b9b2; }
+  .person.here i { background: var(--ok); } .person.working i { background: #f4a100; } .person.waiting i { background: var(--ok); } .person.away { opacity: .55; }
+  .glpane { position: absolute; inset: 0; background: #16171b; }
+  .glhost { position: absolute; inset: 0; cursor: crosshair; }
+  .glchip { position: absolute; left: 8px; bottom: 8px; max-width: 340px; background: rgba(255,255,255,.95); border-radius: 6px; padding: 6px 8px; font-size: 12px; line-height: 1.35; }
+  .glchip[hidden], .diffbar[hidden] { display: none; }
+  .glchip .row { margin-top: 5px; gap: 4px; }
+  .glchip button, .diffbar button, .bpane button, .entry button { border: 1px solid var(--line); background: #fff; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; padding: 1px 7px; }
+  .ev { font-weight: 600; } .ev.supported { color: var(--ok); } .ev.contradicted { color: var(--bad); } .ev.unseen { color: var(--muted); }
+  .diffbar { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); display: flex; gap: 4px; align-items: center; background: rgba(255,255,255,.95); border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+  .diffbar button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .pin { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; background: var(--pin); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 9px; white-space: nowrap; box-shadow: 0 0 0 1px rgba(0,0,0,.45); }
+  .pin::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: 6px; background: #fff; }
+  .pin.on { outline: 2px solid #fff; z-index: 2; } .pin.dim { opacity: .5; }
+  .bpane label.f { display: flex; flex-direction: column; gap: 2px; margin: 6px 4px; color: var(--muted); }
+  .bpane label.c, aside label.c { display: flex; flex-direction: row; align-items: center; gap: 5px; margin: 3px 4px; font-size: 12px; color: var(--ink); cursor: pointer; }
+  .bpane .row2 { display: flex; gap: 4px; margin: 4px; flex-wrap: wrap; }
+  .bpane .row2 input { width: 0; flex: 1; font: inherit; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; }
+  .bpane .muted { padding: 0 4px; line-height: 1.4; }
+  .bpane li .x { float: right; opacity: .5; padding: 0 3px; } .bpane li .x:hover { opacity: 1; }
+  #issuePanel { margin-top: 8px; font-size: 13px; }
+  .ibar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .ibar select { width: auto; font-size: 12px; padding: 2px 4px; }
+  .draft { margin-top: 8px; } .draft .muted { font-size: 11px; margin-top: 3px; }
+  ul.ilist { list-style: none; padding: 0; margin: 8px 0 0; }
+  ul.ilist li { display: grid; grid-template-columns: 8px 1fr; gap: 2px 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  ul.ilist li:hover { background: #f3f3ee; } ul.ilist li.done .t { color: var(--muted); text-decoration: line-through; }
+  ul.ilist li.mine { background: #fff4d6; } ul.ilist li.none { cursor: default; display: block; }
+  ul.ilist .meta, .board .meta { grid-column: 2; display: flex; gap: 6px; align-items: center; font-size: 11px; }
+  .pri { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; } .pri.p1 { background: #d62828; } .pri.p2 { background: var(--accent); } .pri.p3 { background: #b9b9b2; }
+  .chip.waiting { background: #ffe1a8; color: #7a4b00; } .chip.doing { background: #dbe7ff; color: #173e80; } .chip.open { background: #eee; color: #444; } .chip.done { background: #dff1e3; color: var(--ok); }
+  .cat { color: var(--muted); }
+  .ihead { margin: 10px 0 6px; font-size: 14px; } .ihead .muted { font-size: 11px; margin-top: 2px; } #iTitle { cursor: text; }
+  .entry { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .entry .text { white-space: pre-wrap; margin-top: 2px; }
+  .entry.tool { font-size: 11px; color: var(--muted); border-bottom: 0; padding: 2px 0; } .entry.tool code { display: inline; }
+  .entry.card { border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; margin: 6px 0; }
+  .entry.card .k { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 3px; }
+  .entry.proposal { border-left: 4px solid var(--accent); } .entry.proposal.on { background: #f2f6ff; }
+  .entry.proposal.applied { border-left-color: var(--ok); } .entry.proposal.rejected, .entry.proposal.reverted { border-left-color: #b9b9b2; }
+  .entry .tally { font-size: 12px; margin-top: 2px; } .entry .row { margin-top: 6px; gap: 4px; }
+  .entry button.go { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.viewlink { margin-top: 4px; color: var(--accent); border-color: var(--accent) !important; }
+  .add { color: var(--ok); } .del { color: var(--bad); } .hunk { color: #7b2cbf; }
+  pre.difftext { margin: 6px 0 0; padding: 6px; background: #f7f7f3; border-radius: 4px; font: 11px/1.45 ui-monospace, Menlo, monospace; overflow-x: auto; max-height: 300px; }
+  pre.difftext[hidden] { display: none; }
+  .composer { position: sticky; bottom: -20px; background: var(--panel); padding: 8px 0 12px; }
+  .composer textarea { width: 100%; font: inherit; padding: 5px 6px; border: 1px solid var(--line); border-radius: 4px; resize: vertical; }
+  .composer .row { justify-content: space-between; margin-top: 4px; }
+  .board { position: absolute; inset: 0; display: flex; gap: 8px; padding: 8px; background: var(--bg); overflow: auto; cursor: auto; }
+  .board .col { flex: 1; min-width: 150px; display: flex; flex-direction: column; background: #ecece7; border-radius: 6px; padding: 6px; }
+  .board .col.over { outline: 2px dashed var(--accent); }
+  .board h4 { margin: 2px 4px 6px; font-size: 12px; }
+  .board .cards { flex: 1; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+  .board .card { background: #fff; border-radius: 5px; padding: 6px 8px; font-size: 12px; cursor: grab; border-left: 4px solid var(--accent); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+  .board .card.p1 { border-left-color: #d62828; } .board .card.p3 { border-left-color: #b9b9b2; }
+  .board .card.on { outline: 2px solid var(--ink); } .board .card.mine { background: #fff4d6; } .board .card.drag { opacity: .4; }
+  .board .meta { margin-top: 4px; }
+  #scanStatus { color: var(--muted); font-size: 12px; }
   .tk-k { color: #8a2be2; } .tk-s { color: #1e7b3a; } .tk-c { color: #8b8b84; font-style: italic; } .tk-n { color: #b35900; } .tk-f { color: #1f5fbf; }
 </style>
 </head>
@@ -146,14 +234,30 @@
   <select id="project" title="Open a project"></select>
   <b id="title">topo-cad</b>
   <span id="status">loading…</span>
-  <nav id="tabs"></nav>
 </header>
 <main>
-  <div id="viewer">
-    <div id="sheet"></div>
-    <div id="tip"></div>
-    <div id="hint">scroll to zoom · drag to pan · double-click to fit</div>
-    <div id="script" hidden>
+  <nav id="browser">
+    <div id="browserTabs">
+      <button data-b="drawings" class="on">Drawings</button>
+      <button data-b="files">Files</button>
+    </div>
+    <div class="bpane" data-b="drawings">
+      <ul id="sheetList"></ul>
+      <h4>Model</h4>
+      <ul><li id="open3d" title="Orbit the model in 3D: exact hidden lines, as the sheets draw them">3D, exact lines</li></ul>
+    </div>
+    <div class="bpane" data-b="files" hidden><ul id="fileList"></ul></div>
+  </nav>
+  <div id="centre">
+    <div id="panes"></div>
+  </div>
+  <!-- The views, one of each: shown in a pane, or parked here. -->
+  <div id="parked" hidden>
+    <div id="sheetPane">
+      <div id="sheet"></div>
+      <div id="hint">scroll to zoom · drag to pan · double-click to fit</div>
+    </div>
+    <div id="script">
       <div id="scriptBar">
         <span id="files"></span>
         <button class="act primary" id="btnSaveSrc" title="Save (⌘S / Ctrl+S)">Save</button>
@@ -162,7 +266,7 @@
       </div>
       <div id="editor"><pre id="gutter"></pre><div id="code"><pre id="srchl"></pre><textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div></div>
     </div>
-    <div id="view3d" hidden>
+    <div id="view3d">
       <canvas id="canvas3d"></canvas>
       <svg id="compass" viewBox="-60 -60 120 152"></svg>
       <div id="layers3d" hidden>
@@ -175,6 +279,7 @@
       <div id="hint3d">drag to orbit · shift/right-drag to pan · scroll to zoom · click a member for its checks · double-click to fit</div>
     </div>
   </div>
+  <div id="tip"></div>
   <aside>
     <div id="banner"></div>
     <div id="msg"></div>
@@ -262,6 +367,7 @@
 </main>
 <script type="module">
 import { api, storage } from "./app/router.js";
+import { service } from "./app/service.js";
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -312,10 +418,11 @@ async function poll() {
       if (state && s.file !== state.file) resetForProject();
       state = s;
       // A model that fails before any sheet exists opens on its script.
-      if (s.error && !(s.sheets || []).length && view === "sheet" && !svg) view = "script";
+      if (s.error && !(s.sheets || []).length && shown("sheet") && !shown("script") && !svg) { slots[slots.indexOf("sheet")] = "script"; layoutPanes(); }
       renderPanel();
-      if (view === "script") { $("script").hidden = false; await loadSources(false); }
-      if (view === "3d") await load3d();
+      await loadSources(false);
+      renderTabs();
+      if (shown("3d")) await load3d();
       if (!s.error) await loadSheet();
     }
   } catch (e) { $("status").textContent = "server not reachable"; }
@@ -370,6 +477,8 @@ function renderPanel() {
     tr.innerHTML = `<td>${esc(r[0])}</td><td class=num>${esc(r[1])}</td><td class="num ${r[2] === "NOT DETERMINED" ? "undet" : ""}">${esc(r[2])}</td>`;
     ut.appendChild(tr);
   });
+  // With a scan workspace, the model's checks are a category of its issues (app/scan.js).
+  if (!$("issues")) { window.dispatchEvent(new Event("topo-checks")); return; }
   $("issues").innerHTML = s.issues.length ? s.issues.map((i) => `<li>${esc(i)}</li>`).join("") : "<li class=muted>none</li>";
   const c = $("issueCount"), sev = (w) => s.issues.filter((i) => String(i).includes(`[${w}]`)).length;
   c.textContent = s.issues.length || "";
@@ -434,7 +543,7 @@ function renderStructure() {
 }
 
 async function loadHeat() {
-  if (view === "3d") { await loadRatios3d(); draw3d(); }
+  if (shown("3d")) { await loadRatios3d(); draw3d(); }
   const mode = $("heatMode").value;
   heatData = !svg || !state || state.error ? [] : await api(`/api/heat/${sheet}?mode=${mode === "off" ? "utilization" : mode}&combo=${encodeURIComponent($("heatCombo").value)}`);
   drawHeat();
@@ -593,7 +702,7 @@ async function requestExact() {
 let drag3dActive = false;
 
 function draw3d() {
-  if (view !== "3d" || !mesh3d) return;
+  if (!shown("3d") || !mesh3d) return;
   const { c, w, h, dpr } = canvasSize();
   const g = c.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -835,7 +944,7 @@ function pick3d(x, y) {
     if (!drag) return;
     const d = drag; drag = null; el.classList.remove("dragging");
     if (drag3dActive) { drag3dActive = false; draw3d(); }
-    if (!d.moved && view === "3d") {
+    if (!d.moved && shown("3d") && e.target.closest("#view3d")) {
       const rect = $("canvas3d").getBoundingClientRect();
       const m = pick3d(e.clientX - rect.left, e.clientY - rect.top);
       if (m) inspect(m.path).then(draw3d);
@@ -858,7 +967,7 @@ function pick3d(x, y) {
       const rt = ratios3d[m.path];
       tip.textContent = `${m.label}` + (rt ? ` · ${rt.ratio.toFixed(2)} ${rt.title.toLowerCase()} (${rt.combination})` : "") + " — click for checks";
       tip.style.display = "block";
-      tip.style.left = `${e.clientX - rect.left + 14}px`; tip.style.top = `${e.clientY - rect.top + 14}px`;
+      tip.style.left = `${e.clientX + 14}px`; tip.style.top = `${e.clientY + 14}px`;
     } else tip.style.display = "none";
     if (path !== hover3d) { hover3d = path; draw3d(); }
   });
@@ -943,41 +1052,124 @@ function resetForProject() {
   if (typeof cancel === "function") cancel();
 }
 
-// ----- tabs: sheets (from the script's .sheets(...)) and the script itself --
-let view = "sheet";   // "sheet" | "script"
-function renderTabs() {
-  const tabs = $("tabs");
-  tabs.innerHTML = "";
-  (state.sheets || []).forEach((sh, i) => {
-    const b = document.createElement("button");
-    b.textContent = sh.number;
-    b.title = sh.title;
-    if (view === "sheet" && i === sheet) b.className = "on";
-    b.onclick = () => { sheet = i; viewBox = null; showView("sheet"); loadSheet(); };
-    tabs.appendChild(b);
-  });
-  const b3 = document.createElement("button");
-  b3.textContent = "3D";
-  b3.title = "Orbit the model in 3D";
-  b3.className = "script" + (view === "3d" ? " on" : "");
-  b3.onclick = () => showView("3d");
-  tabs.appendChild(b3);
-  const b = document.createElement("button");
-  b.textContent = "Script";
-  b.title = "The model's TypeScript (edit and save to rebuild)";
-  b.className = "script" + (view === "script" ? " on" : "") + (files.some((f) => f.text !== f.saved) ? " dirty" : "");
-  b.onclick = () => showView("script");
-  tabs.appendChild(b);
+// ----- panes: the centre shows one or more views side by side ---------------
+// There is one of each kind of view; a pane (slot) shows one of them, the
+// rest are parked. Other modules add kinds with `registerPane`.
+const PANES = {
+  sheet: { label: "Drawing", el: "sheetPane" },
+  "3d": { label: "3D, exact lines", el: "view3d", shown: () => load3d() },
+  script: { label: "Script", el: "script" },
+};
+let slots = ["sheet"], focus = 0;
+try {
+  const s = JSON.parse(localStorage.getItem("topo.panes") || "null");
+  if (Array.isArray(s) && s.length && s.every((k) => typeof k === "string")) slots = s.slice(0, 3);
+} catch (_) {}
+const shown = (kind) => slots.includes(kind);
+
+function registerPane(kind, def) {
+  PANES[kind] = def;
+  layoutPanes();
 }
 
-function showView(v) {
-  view = v;
-  $("script").hidden = v !== "script";
-  $("view3d").hidden = v !== "3d";
-  $("hint").hidden = v !== "sheet";
-  if (v === "script") loadSources(false);
-  if (v === "3d") load3d();
+function layoutPanes() {
+  // Kinds not (yet) known are dropped; one pane at least.
+  slots = slots.filter((k, i) => PANES[k] && slots.indexOf(k) === i);
+  if (!slots.length) slots = ["sheet"];
+  focus = Math.min(focus, slots.length - 1);
+  try { localStorage.setItem("topo.panes", JSON.stringify(slots)); } catch (_) {}
+  const panes = $("panes");
+  for (const def of Object.values(PANES)) $("parked").appendChild($(def.el));
+  panes.innerHTML = "";
+  slots.forEach((kind, i) => {
+    const slot = document.createElement("div");
+    slot.className = "slot" + (i === focus && slots.length > 1 ? " focus" : "");
+    const bar = document.createElement("div");
+    bar.className = "slotbar";
+    const sel = document.createElement("select");
+    sel.title = "What this pane shows";
+    sel.innerHTML = Object.entries(PANES).map(([k, d]) => `<option value="${k}" ${k === kind ? "selected" : ""}>${esc(d.label)}</option>`).join("");
+    sel.onchange = () => { focus = i; showView(sel.value); };
+    bar.appendChild(sel);
+    const sp = document.createElement("span");
+    sp.className = "sp";
+    sp.id = `slotinfo-${kind}`;
+    bar.appendChild(sp);
+    if (slots.length < 3) {
+      const b = document.createElement("button");
+      b.textContent = "Split";
+      b.title = "Add a pane beside this one";
+      b.onclick = () => {
+        const next = Object.keys(PANES).find((k) => !shown(k));
+        if (!next) return;
+        slots.splice(i + 1, 0, next);
+        focus = i + 1;
+        layoutPanes(); PANES[next].shown?.(); renderTabs();
+      };
+      bar.appendChild(b);
+    }
+    if (slots.length > 1) {
+      const b = document.createElement("button");
+      b.textContent = "×";
+      b.title = "Close this pane";
+      b.onclick = () => { slots.splice(i, 1); focus = Math.max(0, Math.min(focus, slots.length - 1)); layoutPanes(); renderTabs(); };
+      bar.appendChild(b);
+    }
+    const body = document.createElement("div");
+    body.className = "slotbody";
+    body.appendChild($(PANES[kind].el));
+    slot.addEventListener("mousedown", () => {
+      if (focus === i) return;
+      focus = i;
+      for (const [j, s] of [...panes.children].entries()) s.classList.toggle("focus", j === i);
+    }, true);
+    slot.append(bar, body);
+    panes.appendChild(slot);
+  });
+  // Panes changed size.
+  window.dispatchEvent(new Event("resize"));
+}
+
+/// Shows a kind of view: where it already is, or in the focused pane.
+function showView(kind) {
+  if (shown(kind)) focus = slots.indexOf(kind);
+  else slots[focus] = kind;
+  layoutPanes();
+  PANES[kind].shown?.();
   renderTabs();
+}
+
+// ----- the browser: the project's drawings and files --------------------------
+function renderTabs() {
+  const sl = $("sheetList");
+  sl.innerHTML = "";
+  ((state && state.sheets) || []).forEach((sh, i) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<b>${esc(sh.number)}</b> <span class="muted">${esc(sh.title || "")}</span>`;
+    li.title = `${sh.number} ${sh.title || ""}`;
+    if (shown("sheet") && i === sheet) li.className = "on";
+    li.onclick = () => { sheet = i; viewBox = null; showView("sheet"); loadSheet(); };
+    sl.appendChild(li);
+  });
+  $("open3d").className = shown("3d") ? "on" : "";
+  const fl = $("fileList");
+  fl.innerHTML = "";
+  files.forEach((f, i) => {
+    const li = document.createElement("li");
+    li.textContent = f.name;
+    li.title = f.path;
+    li.className = (shown("script") && i === current ? "on" : "") + (f.text !== f.saved ? " dirty" : "");
+    li.onclick = () => { current = i; showView("script"); renderEditor(); };
+    fl.appendChild(li);
+  });
+  const info = $("slotinfo-sheet");
+  if (info && state && state.sheets && state.sheets[sheet]) info.textContent = `${state.sheets[sheet].number} ${state.sheets[sheet].title || ""}`;
+}
+$("open3d").onclick = () => showView("3d");
+for (const b of document.querySelectorAll("#browserTabs button")) b.onclick = () => showBrowser(b.dataset.b);
+function showBrowser(name) {
+  for (const b of document.querySelectorAll("#browserTabs button")) b.classList.toggle("on", b.dataset.b === name);
+  for (const p of document.querySelectorAll(".bpane")) p.hidden = p.dataset.b !== name;
 }
 
 // ----- script view -----------------------------------------------------------
@@ -1042,11 +1234,12 @@ function errorLine(f) {
   const m = state.error.match(new RegExp(base + ":(\\d+)")) || (current === 0 && state.error.match(/line (\d+)/));
   return m ? Number(m[1]) : 0;
 }
-function markErrorLine() { if (view === "script" && files.length) paintEditor(); }
+function markErrorLine() { if (shown("script") && files.length) paintEditor(); }
 
 async function loadSources(force) {
   if (!force && srcVersion === state.version && files.length) { renderEditor(); return; }
   const r = await api("/api/sources");
+  if (!r.files) return;
   const byPath = new Map(files.map((f) => [f.path, f]));
   files = r.files.map((f) => {
     const old = byPath.get(f.path);
@@ -1224,7 +1417,7 @@ $("sheet").addEventListener("wheel", (e) => {
 $("sheet").addEventListener("mousedown", (e) => { if (svg) drag = { x: e.clientX, y: e.clientY, vb: viewBox.slice(), moved: false }; });
 window.addEventListener("mouseup", (e) => {
   const d = drag; drag = null;
-  if (d && !d.moved && svg && e.target.closest("#viewer")) onClick(e);
+  if (d && !d.moved && svg && e.target.closest("#sheetPane")) onClick(e);
 });
 $("sheet").addEventListener("dblclick", () => { viewBox = fitViews(); svg.setAttribute("viewBox", viewBox.join(" ")); drawOverlays(); drawPicks(); });
 $("sheet").addEventListener("mousemove", (e) => {
@@ -1263,12 +1456,12 @@ async function sendPick() {
       label = `${hover.member_label}` + (h ? ` · ${h.ratio.toFixed(2)} ${h.title.toLowerCase()} (${h.combination})` : "") + " — click for checks";
     }
     tip.textContent = label;
-    const r = $("viewer").getBoundingClientRect();
+    const r = $("sheetPane").getBoundingClientRect();
     tip.style.display = "block";
-    // Keep the tooltip inside the viewer.
-    const left = Math.min(q.x - r.left + 14, r.width - tip.offsetWidth - 6);
-    const top = q.y - r.top + 14 + tip.offsetHeight > r.height ? q.y - r.top - tip.offsetHeight - 10 : q.y - r.top + 14;
-    tip.style.left = `${Math.max(4, left)}px`; tip.style.top = `${top}px`;
+    // Keep the tooltip inside the drawing.
+    const left = Math.min(q.x + 14, r.right - tip.offsetWidth - 6);
+    const top = q.y + 14 + tip.offsetHeight > r.bottom ? q.y - tip.offsetHeight - 10 : q.y + 14;
+    tip.style.left = `${Math.max(r.left + 4, left)}px`; tip.style.top = `${top}px`;
   } else tip.style.display = "none";
   drawPicks();
   if (queued) sendPick();
@@ -1389,8 +1582,28 @@ function msg(text, isErr) {
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
 
+layoutPanes();
 // Storage first (its change handler lists the projects), then keep the view in step.
 await storage.boot();
+// A scan workspace, if this site serves one: its model opens, and the scan's panes,
+// issues and people are added. Without it the app is as it is.
+if (await service.probe()) {
+  globalThis.__topoWho = service.whoQuery();
+  if (service.entry) { await api("/api/open", { path: service.entry }); await loadProjects(); }
+  const { initScan } = await import("./app/scan.js");
+  await initScan({
+    registerPane, showView, shown, showTab, showBrowser, inspect,
+    slots: () => slots.slice(),
+    setSlots: (s) => { slots = s.slice(); layoutPanes(); for (const k of slots) PANES[k]?.shown?.(); renderTabs(); },
+    openBeside: (kind) => { if (slots.length < 3) { slots.push(kind); focus = slots.length - 1; layoutPanes(); PANES[kind].shown?.(); renderTabs(); } else showView(kind); },
+    checks: () => (state && !state.error && state.issues) || [],
+    setStatus: (text) => {
+      let e = $("scanStatus");
+      if (!e) { e = document.createElement("span"); e.id = "scanStatus"; $("status").after(e); }
+      e.textContent = text ? `· ${text}` : "";
+    },
+  });
+}
 poll();
 </script>
 </body>
