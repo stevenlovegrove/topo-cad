@@ -911,6 +911,7 @@ function renderTools(v) {
 function drawCompass(v, cam) {
   const R = 25, names = { N: "north", E: "east", S: "south", W: "west" };
   // The far ones first, so the near ones are drawn over them; letters are outlined, not boxed, so none hides another.
+  // (Styled inline: a drawing sheet, once loaded, brings a page-wide `text { fill: black; stroke: none }`.)
   const dirs = [["N", [0, 1, 0]], ["E", [1, 0, 0]], ["S", [0, -1, 0]], ["W", [-1, 0, 0]]].map(([name, d]) => {
     const w = rot(d);
     return { name, x: vec.dot(w, cam.right) * R, y: -vec.dot(w, cam.up) * R, depth: vec.dot(w, cam.forward) };
@@ -923,7 +924,7 @@ function drawCompass(v, cam) {
     const lx = d.x * 1.22, ly = d.y * 1.22;
     out += `<line x2="${d.x.toFixed(1)}" y2="${d.y.toFixed(1)}" stroke="${col}" stroke-opacity="${far ? 0.35 : 0.8}" stroke-width="${d.name === "N" ? 2 : 1.2}"/>` +
       `<g class="hot" data-dir="${d.name}"><title>Look from the ${names[d.name]}</title><circle class="hit" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="8"/>` +
-      `<text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="700" fill="${col}" fill-opacity="${far ? 0.55 : 1}" stroke="#16171b" stroke-width="2.6" paint-order="stroke">${d.name}</text></g>`;
+      `<text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="middle" style="font: 700 11px sans-serif; fill: ${col}; fill-opacity: ${far ? 0.6 : 1}; stroke: #16171b; stroke-width: 2.6px; paint-order: stroke">${d.name}</text></g>`;
   }
   out += `<g class="hot" data-dir="top"><title>Look straight down</title><circle class="hit" r="7"/><circle r="3.2" fill="#6ea8ff" stroke="#16171b"/></g>`;
   if (v.compassHtml !== out) { v.compassHtml = out; v.compass.innerHTML = out; }
