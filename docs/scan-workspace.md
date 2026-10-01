@@ -138,6 +138,11 @@ Apply or Reject is recorded in the thread.
   board. A script beside a 3D view, a sheet beside its script, or a 3D
   view beside the same scan seen through a slab, is a two-pane
   arrangement.
+  Panes are arranged as a tree of splits, side by side or one over
+  another. The bar between two is dragged to resize them (double-click:
+  equal). A pane is dragged by its title bar onto another: onto its
+  left, right, top or bottom to stand there, onto its middle to change
+  places with it. The arrangement is remembered in the browser.
 - **Right:** issues (list, then the thread), member, loads, measure.
 - **Board:** a strip under the panes that expands, or a pane. Columns by
   status; drag between columns, and within one for priority.

@@ -37,8 +37,19 @@
   /* Centre: panes side by side, each showing one kind of view. */
   #centre { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   #panes { flex: 1; display: flex; min-height: 0; }
-  .slot { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
-  .slot:last-child { border-right: 0; }
+  .slot { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+  /* Panes side by side (row) or one over another (col), with a bar between to drag. */
+  .split { flex: 1; display: flex; min-width: 0; min-height: 0; }
+  .split.over { flex-direction: column; }
+  .gutter { flex: 0 0 5px; background: var(--line); cursor: col-resize; touch-action: none; }
+  .split.over > .gutter { cursor: row-resize; }
+  .gutter:hover, .gutter.on { background: var(--accent); }
+  /* While a pane is dragged by its bar: where it would land in the pane under the cursor. */
+  .slot .drop { position: absolute; inset: 0; z-index: 50; display: none; }
+  #panes.dragging .slot .drop { display: block; }
+  .slot .drop i { position: absolute; background: rgba(31,95,191,.25); border: 2px solid var(--accent); display: none; pointer-events: none; }
+  .slot.moving { opacity: .5; }
+  .slotbar { cursor: grab; }
   .slotbar { display: flex; align-items: center; gap: 6px; padding: 3px 6px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; }
   .slot.focus .slotbar { box-shadow: inset 0 -2px 0 var(--accent); }
   .slotbar select { width: auto; font-size: 12px; padding: 1px 4px; }
@@ -1130,6 +1141,64 @@ const shown = (kind) => slots.includes(kind);
 // What was open last time: kinds added later (by other modules) take their place back.
 const wanted = slots.slice();
 
+// How the panes are arranged: a tree whose leaves ({ kind }) are panes and
+// whose other nodes ({ dir: "row" | "col", children, sizes }) put theirs side
+// by side or one over another, in those proportions. `slots` is its leaves
+// in order; code that only says which kinds are open changes `slots`, and
+// `layoutPanes` makes the tree agree.
+let tree = null, dragKind = null;
+try {
+  const ok = (n) => n && (typeof n.kind === "string" || ((n.dir === "row" || n.dir === "col") && Array.isArray(n.children) && n.children.length && Array.isArray(n.sizes) && n.sizes.length === n.children.length && n.sizes.every((x) => x > 0) && n.children.every(ok)));
+  const t = JSON.parse(localStorage.getItem("topo.layout") || "null");
+  const leaves = (n) => (n.kind ? [n.kind] : n.children.flatMap(leaves));
+  if (ok(t) && leaves(t).slice().sort().join() === slots.slice().sort().join()) tree = t;
+} catch (_) {}
+const treeLeaves = (n) => (!n ? [] : n.kind ? [n.kind] : n.children.flatMap(treeLeaves));
+function findLeaf(n, kind, parent = null) {
+  if (!n) return null;
+  if (n.kind) return n.kind === kind ? { node: n, parent } : null;
+  for (const c of n.children) { const r = findLeaf(c, kind, n); if (r) return r; }
+  return null;
+}
+/// A split left with one pane is that pane.
+function pruned(n) {
+  if (n.kind) return n;
+  const kids = [], sizes = [];
+  n.children.forEach((c, i) => { const p = pruned(c); if (p) { kids.push(p); sizes.push(n.sizes[i]); } });
+  if (kids.length < 2) return kids[0] ?? null;
+  n.children = kids; n.sizes = sizes;
+  return n;
+}
+function removeLeaf(kind) {
+  const f = findLeaf(tree, kind);
+  if (!f) return;
+  if (!f.parent) { tree = null; return; }
+  const i = f.parent.children.indexOf(f.node);
+  f.parent.children.splice(i, 1); f.parent.sizes.splice(i, 1);
+  tree = pruned(tree);
+}
+/// Puts a pane on a side ("left", "right", "top", "bottom") of another (`target`; none: of them all).
+/// It takes half of the target's room, or (`even`) a share like the others beside it.
+function insertLeaf(kind, target, side, even) {
+  const leaf = { kind }, dir = side === "left" || side === "right" ? "row" : "col", after = side === "right" || side === "bottom";
+  if (!tree) { tree = leaf; return; }
+  const f = target ? findLeaf(tree, target) : null, p = f?.parent;
+  if (f && p?.dir === dir) {
+    const i = p.children.indexOf(f.node), s = even ? p.sizes.reduce((a, b) => a + b, 0) / p.sizes.length : p.sizes[i] / 2;
+    if (!even) p.sizes[i] = s;
+    p.children.splice(i + (after ? 1 : 0), 0, leaf); p.sizes.splice(i + (after ? 1 : 0), 0, s);
+    return;
+  }
+  if (!f && tree.dir === dir) {
+    const s = tree.sizes.reduce((a, b) => a + b, 0) / tree.sizes.length;
+    after ? (tree.children.push(leaf), tree.sizes.push(s)) : (tree.children.unshift(leaf), tree.sizes.unshift(s));
+    return;
+  }
+  const old = f ? f.node : tree, split = { dir, children: after ? [old, leaf] : [leaf, old], sizes: [1, 1] };
+  if (p) p.children[p.children.indexOf(old)] = split; else tree = split;
+}
+const saveLayout = () => { try { localStorage.setItem("topo.panes", JSON.stringify(slots)); localStorage.setItem("topo.layout", JSON.stringify(tree)); } catch (_) {} };
+
 function registerPane(kind, def) {
   PANES[kind] = def;
   if (wanted.includes(kind) && !shown(kind)) {
@@ -1142,18 +1211,71 @@ function registerPane(kind, def) {
 
 function layoutPanes() {
   // Kinds not (yet) known are dropped; one pane at least.
+  const focusKind = slots[focus];
   slots = slots.filter((k, i) => PANES[k] && slots.indexOf(k) === i);
   if (!slots.length) slots = ["sheet"];
-  focus = Math.min(focus, slots.length - 1);
-  try { localStorage.setItem("topo.panes", JSON.stringify(slots)); } catch (_) {}
+  // The tree is made to agree with the kinds open: one that took another's place has it;
+  // one closed goes; one new stands to the right of the one before it. (A kind open last
+  // time and not known yet keeps its place for when it is.)
+  const have = treeLeaves(tree);
+  const gone = have.filter((k) => !slots.includes(k) && (PANES[k] || !wanted.includes(k))), added = slots.filter((k) => !have.includes(k));
+  while (gone.length && added.length) findLeaf(tree, gone.shift()).node.kind = added.shift();
+  for (const k of gone) removeLeaf(k);
+  for (const k of added) { const i = slots.indexOf(k); insertLeaf(k, slots[i - 1] ?? null, i ? "right" : "left", true); }
+  slots = treeLeaves(tree).filter((k) => PANES[k]);
+  focus = Math.max(0, slots.indexOf(focusKind));
+  saveLayout();
   const panes = $("panes");
   for (const def of Object.values(PANES)) $("parked").appendChild($(def.el));
   panes.innerHTML = "";
-  slots.forEach((kind, i) => {
+  const resized = () => window.dispatchEvent(new Event("resize"));
+  const slotOf = (kind) => {
+    const i = slots.indexOf(kind);
     const slot = document.createElement("div");
     slot.className = "slot" + (i === focus && slots.length > 1 ? " focus" : "");
     const bar = document.createElement("div");
     bar.className = "slotbar";
+    // The bar is what a pane is dragged by: onto a side of another pane to stand there, onto its middle to change places.
+    if (slots.length > 1) {
+      bar.draggable = true;
+      bar.title = "Drag onto another pane: its left, right, top or bottom to split it, its middle to swap";
+      bar.ondragstart = (e) => {
+        e.dataTransfer.setData("text/topo-pane", kind);
+        e.dataTransfer.effectAllowed = "move";
+        dragKind = kind;
+        // (After the drag has begun: changing the page under it would end it.)
+        setTimeout(() => { panes.classList.add("dragging"); slot.classList.add("moving"); }, 0);
+      };
+      bar.ondragend = () => { dragKind = null; panes.classList.remove("dragging"); slot.classList.remove("moving"); };
+    }
+    const drop = document.createElement("div"), hint = document.createElement("i");
+    drop.className = "drop";
+    drop.appendChild(hint);
+    const zoneAt = (e) => {
+      const r = drop.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+      if (Math.abs(x - 0.5) < 0.2 && Math.abs(y - 0.5) < 0.2) return "swap";
+      const d = { left: x, right: 1 - x, top: y, bottom: 1 - y };
+      return Object.keys(d).reduce((a, b) => (d[b] < d[a] ? b : a));
+    };
+    drop.ondragover = (e) => {
+      if (!dragKind || dragKind === kind) return;
+      e.preventDefault();
+      const z = zoneAt(e);
+      Object.assign(hint.style, { display: "block", left: z === "right" ? "50%" : z === "swap" ? "30%" : "0", top: z === "bottom" ? "50%" : z === "swap" ? "30%" : "0", width: z === "left" || z === "right" ? "50%" : z === "swap" ? "40%" : "100%", height: z === "top" || z === "bottom" ? "50%" : z === "swap" ? "40%" : "100%" });
+    };
+    drop.ondragleave = () => { hint.style.display = "none"; };
+    drop.ondrop = (e) => {
+      if (!dragKind || dragKind === kind) return;
+      e.preventDefault();
+      const z = zoneAt(e), moved = dragKind;
+      dragKind = null;
+      panes.classList.remove("dragging");
+      if (z === "swap") { const a = findLeaf(tree, moved).node, b = findLeaf(tree, kind).node; [a.kind, b.kind] = [b.kind, a.kind]; }
+      else { removeLeaf(moved); insertLeaf(moved, kind, z); }
+      slots = treeLeaves(tree).filter((k) => PANES[k]);
+      focus = slots.indexOf(moved);
+      layoutPanes(); renderTabs();
+    };
     const sel = document.createElement("select");
     sel.title = "What this pane shows";
     sel.innerHTML = Object.entries(PANES).map(([k, d]) => `<option value="${k}" ${k === kind ? "selected" : ""}>${esc(d.label)}</option>`).join("");
@@ -1189,13 +1311,52 @@ function layoutPanes() {
     slot.addEventListener("mousedown", () => {
       if (focus === i) return;
       focus = i;
-      for (const [j, s] of [...panes.children].entries()) s.classList.toggle("focus", j === i);
+      for (const s of panes.querySelectorAll(".slot")) s.classList.toggle("focus", s === slot);
     }, true);
-    slot.append(bar, body);
-    panes.appendChild(slot);
-  });
+    slot.append(bar, body, drop);
+    return slot;
+  };
+  // The bar between two panes: dragged, it gives one what it takes from the other.
+  const gutterOf = (n, ia, ib, a, b) => {
+    const g = document.createElement("div");
+    g.className = "gutter";
+    g.title = "Drag to resize; double-click to make them equal";
+    const set = (fa) => {
+      const total = n.sizes[ia] + n.sizes[ib];
+      n.sizes[ia] = fa * total; n.sizes[ib] = (1 - fa) * total;
+      a.style.flex = `${n.sizes[ia]} 1 0`; b.style.flex = `${n.sizes[ib]} 1 0`;
+      resized();
+    };
+    g.onpointerdown = (e) => {
+      e.preventDefault();
+      g.setPointerCapture(e.pointerId);
+      g.classList.add("on");
+      const row = n.dir === "row", ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const from = row ? ra.left : ra.top, span = (row ? rb.right : rb.bottom) - from - (row ? g.offsetWidth : g.offsetHeight);
+      g.onpointermove = (m) => set(Math.max(0.08, Math.min(0.92, ((row ? m.clientX : m.clientY) - from) / Math.max(1, span))));
+      g.onpointerup = () => { g.onpointermove = g.onpointerup = null; g.classList.remove("on"); saveLayout(); };
+    };
+    g.ondblclick = () => { set(0.5); saveLayout(); };
+    return g;
+  };
+  const build = (n) => {
+    if (n.kind) return PANES[n.kind] ? slotOf(n.kind) : null;
+    const kids = n.children.map((c, i) => [build(c), i]).filter(([e]) => e);
+    if (kids.length < 2) return kids[0]?.[0] ?? null;
+    const box = document.createElement("div");
+    box.className = `split ${n.dir === "col" ? "over" : "beside"}`;
+    kids.forEach(([e, i], j) => {
+      if (j) box.appendChild(gutterOf(n, kids[j - 1][1], i, kids[j - 1][0], e));
+      e.style.flex = `${n.sizes[i]} 1 0`;
+      box.appendChild(e);
+    });
+    return box;
+  };
+  const top = build(tree);
+  top.style.flex = "1 1 0";
+  panes.appendChild(top);
   // Panes changed size.
-  window.dispatchEvent(new Event("resize"));
+  resized();
 }
 
 /// Shows a kind of view: where it already is, or in the focused pane.
