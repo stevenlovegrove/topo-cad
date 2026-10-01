@@ -216,7 +216,8 @@ impl Workspace {
         let repo = Repo::open(model.parent().context("model path")?)?;
         let model_rel = repo.rel(&model)?;
         if repo.head().is_none() {
-            repo.commit(&[&model_rel], "Start of the scan project", "topo-cad")?;
+            // A new repository: everything in it is the project as it starts.
+            repo.commit(&["."], "Start of the scan project", "topo-cad")?;
         }
         let items_path = model.with_extension("scan.json");
         let mut items: Items = std::fs::read_to_string(&items_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();

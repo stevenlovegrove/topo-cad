@@ -245,14 +245,21 @@ impl Store {
     /// Adds to an issue's thread. A question from someone else to the
     /// issue's raiser leaves the card waiting on them; an answer from the
     /// one waited on hands it back.
+    ///
+    /// An agent asking in an issue it raised itself waits on no one in
+    /// particular (`waiting_on` is None): any person's reply hands it back.
     pub fn comment(&mut self, id: u32, who: &str, text: &str, view: Option<Value>, view_label: Option<String>) -> Result<()> {
+        let agent = |id: &str| self.participants.iter().any(|p| p.id == id && p.kind == "agent");
+        let (asker_is_agent, i) = (agent(who), self.get(id)?);
+        let answered = i.status == "waiting" && (i.waiting_on.as_deref() == Some(who) || (i.waiting_on.is_none() && !asker_is_agent));
+        let asks = text.trim_end().ends_with('?') && i.status != "done" && (i.by != who || asker_is_agent);
         let i = self.get_mut(id)?;
-        if i.status == "waiting" && i.waiting_on.as_deref() == Some(who) {
+        if answered {
             i.status = if i.assignee.is_some() { "doing".into() } else { "open".into() };
             i.waiting_on = None;
-        } else if text.trim_end().ends_with('?') && i.status != "done" && i.by != who {
+        } else if asks {
             i.status = "waiting".into();
-            i.waiting_on = Some(i.by.clone());
+            i.waiting_on = (i.by != who).then(|| i.by.clone());
         }
         self.push(id, who, Body::Comment { text: text.to_string(), view, view_label })
     }
@@ -270,7 +277,7 @@ impl Store {
             i.status = s.into();
             if s != "waiting" {
                 i.waiting_on = None;
-            } else if i.waiting_on.is_none() {
+            } else if i.waiting_on.is_none() && i.by != who {
                 i.waiting_on = Some(i.by.clone());
             }
             what.push(format!("status: {s}"));
@@ -336,6 +343,16 @@ mod tests {
         s.comment(id, "browser-1", "Yes, between the studs.", None, None).unwrap();
         assert_eq!(s.get(id).unwrap().status, "doing");
         s.save(id).unwrap();
+
+        // An agent's question in an issue of its own waits on any person.
+        let own = s.create("claude-1", "T7's web looks plumb", "scan", None, 2);
+        s.comment(own, "claude-1", "Is it plumb?", None, None).unwrap();
+        assert_eq!((s.get(own).unwrap().status.as_str(), s.get(own).unwrap().waiting_on.clone()), ("waiting", None));
+        s.comment(own, "claude-1", "(Still looking.)", None, None).unwrap();
+        assert_eq!(s.get(own).unwrap().status, "waiting");
+        s.comment(own, "browser-1", "Yes.", None, None).unwrap();
+        assert_eq!(s.get(own).unwrap().status, "open");
+        s.save(own).unwrap();
 
         let back = Store::load(&dir).unwrap();
         assert_eq!(back.issues, s.issues);

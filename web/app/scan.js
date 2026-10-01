@@ -89,7 +89,7 @@ function modelBounds(filter) {
 function setSection(sec, bounds) {
   const v = views.section;
   let centre = [0, 0], zoom = 4;
-  if (bounds) { centre = [0.5 * (bounds[0] + bounds[1]), 0.5 * (bounds[2] + bounds[3])]; zoom = 0.55 * Math.max(bounds[3] - bounds[2], (bounds[1] - bounds[0]) * 0.7); }
+  if (bounds) { centre = [0.5 * (bounds[0] + bounds[1]), 0.5 * (bounds[2] + bounds[3])]; zoom = 0.52 * Math.max(bounds[3] - bounds[2], (bounds[1] - bounds[0]) / ((v.canvas.clientWidth || 4) / (v.canvas.clientHeight || 3))); }
   else {
     const b = modelBounds();
     if (b) {
@@ -489,6 +489,9 @@ function renderViews() {
 // ----- issues: the list, a thread, the board -------------------------------------------
 
 const STATUS = { waiting: "Waiting", doing: "In hand", open: "Open", done: "Done" };
+// Who an issue waits on: someone, or (an agent asking in its own issue) any person.
+const waitingOn = (i) => (i.waiting_on ? service.participant(i.waiting_on).name : "a person");
+const onMe = (i) => i.status === "waiting" && (i.waiting_on ? i.waiting_on === service.id : true);
 const PRIORITY = { 1: "high", 2: "normal", 3: "low" };
 const when = (t) => {
   const d = Date.now() / 1000 - t;
@@ -541,7 +544,7 @@ function renderIssues() {
   const box = $("issuePanel");
   if (!box || !st) return;
   const open = st.issues.filter((i) => i.status !== "done").length + checkIssues().length;
-  const waiting = st.issues.filter((i) => i.status === "waiting" && i.waiting_on === service.id).length;
+  const waiting = st.issues.filter((i) => onMe(i)).length;
   const c = $("issueCount");
   c.textContent = open || "";
   c.className = "count" + (waiting ? " warn" : "");
@@ -558,10 +561,10 @@ function renderIssues() {
     </div>
     ${sel.drafting ? `<div class="draft"><input type="text" id="draftTitle" placeholder="What is wrong, or what do you want to know?"><div class="muted">${sel.pick?.hit ? `At model ${f3(sel.pick.model)}${sel.pick.member && sel.pick.member.distance < 0.06 ? `, on ${esc(sel.pick.member.path.split("/").slice(-2).join("/"))}` : ""}.` : "Not pinned to a place (pick a point in a scan view to pin it)."} Enter to raise it, Esc to cancel.</div></div>` : ""}
     <ul class="ilist">${all.map((i) => `
-      <li data-id="${i.id}" class="${i.status}${i.waiting_on === service.id ? " mine" : ""}">
+      <li data-id="${i.id}" class="${i.status}${onMe(i) ? " mine" : ""}">
         <span class="pri p${i.priority}" title="${PRIORITY[i.priority]} priority"></span>
         <span class="t">${i.ephemeral ? "" : `<b>#${i.id}</b> `}${esc(i.title)}</span>
-        <span class="meta">${i.assignee ? badge(i.assignee, true) : ""}<span class="chip ${i.status}">${i.status === "waiting" ? `waiting on ${esc(service.participant(i.waiting_on).name)}` : STATUS[i.status]}</span><span class="cat">${i.category}</span></span>
+        <span class="meta">${i.assignee ? badge(i.assignee, true) : ""}<span class="chip ${i.status}">${i.status === "waiting" ? `waiting on ${esc(waitingOn(i))}` : STATUS[i.status]}</span><span class="cat">${i.category}</span></span>
       </li>`).join("") || `<li class="none muted">Nothing here. Pick a point in a scan view and raise what you see.</li>`}</ul>`;
   $("newIssue").onclick = startDraft;
   $("issueFilter").onchange = (e) => { sel.filter = e.target.value; renderIssues(); renderBoard(); };
@@ -619,7 +622,7 @@ function renderThread(box, i) {
       <select id="iAssignee" title="Whose it is"><option value="">nobody's</option>${st.participants.map((p) => `<option value="${esc(p.id)}" ${p.id === i.assignee ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
     </div>
     <div class="ihead"><b>#${i.id}</b> <span id="iTitle" title="Click to rename">${esc(i.title)}</span>
-      <div class="muted">${i.category} · raised by ${esc(service.participant(i.by).name)} ${when(i.time)}${i.place ? ` · <a href="#" id="iGo">${i.place.member ? esc(i.place.member.split("/").slice(-2).join("/")) : "at model " + f3(toModel(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k]))))}</a>` : " · not pinned"}${i.status === "waiting" ? ` · <b>waiting on ${esc(service.participant(i.waiting_on).name)}</b>` : ""}</div></div>
+      <div class="muted">${i.category} · raised by ${esc(service.participant(i.by).name)} ${when(i.time)}${i.place ? ` · <a href="#" id="iGo">${i.place.member ? esc(i.place.member.split("/").slice(-2).join("/")) : "at model " + f3(toModel(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k]))))}</a>` : " · not pinned"}${i.status === "waiting" ? ` · <b>waiting on ${esc(waitingOn(i))}</b>` : ""}</div></div>
     <div class="thread">${i.entries.map((e, k) => entryHtml(i, e, k)).join("") || `<div class="muted" style="padding:8px 2px">Nothing said yet.</div>`}</div>
     <div class="composer"><textarea id="reply" rows="2" placeholder="Reply in #${i.id}… (Enter sends; @name to call someone)"></textarea>
       <div class="row"><label class="c" title="Attach the focused scan view (${esc(describeView())}) as a link others can follow"><input type="checkbox" id="attach" ${attach ? "checked" : ""}> attach my view</label><button class="act primary" id="send">Send</button></div></div>`;
@@ -690,9 +693,9 @@ function renderBoard() {
   box.innerHTML = cols.map((c) => {
     const cards = list.filter((i) => i.status === c);
     return `<div class="col" data-col="${c}"><h4>${STATUS[c]} <span class="muted">${cards.length}</span></h4><div class="cards">${cards.map((i) => `
-      <div class="card p${i.priority}${i.id === sel.issue ? " on" : ""}${i.waiting_on === service.id ? " mine" : ""}" draggable="true" data-id="${i.id}">
+      <div class="card p${i.priority}${i.id === sel.issue ? " on" : ""}${onMe(i) ? " mine" : ""}" draggable="true" data-id="${i.id}">
         <div><b>#${i.id}</b> ${esc(i.title)}</div>
-        <div class="meta">${i.assignee ? badge(i.assignee, true) : ""}<span class="cat">${i.category}</span>${i.entries.length ? `<span class="muted">${i.entries.length}</span>` : ""}${i.status === "waiting" ? `<span class="muted">on ${esc(service.participant(i.waiting_on).name)}</span>` : ""}</div>
+        <div class="meta">${i.assignee ? badge(i.assignee, true) : ""}<span class="cat">${i.category}</span>${i.entries.length ? `<span class="muted">${i.entries.length}</span>` : ""}${i.status === "waiting" ? `<span class="muted">on ${esc(waitingOn(i))}</span>` : ""}</div>
       </div>`).join("")}</div></div>`;
   }).join("");
   for (const card of box.querySelectorAll(".card")) {
