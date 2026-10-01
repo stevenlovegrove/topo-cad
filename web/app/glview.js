@@ -304,10 +304,41 @@ export class GLView {
     const s = this.state;
     if (s.kind === "section" && s.section) {
       const q = sub(centre, s.section.origin);
-      this.set({ centre: [dot(q, s.section.u), dot(q, s.section.v)], zoom: Math.max(0.3, radius * 1.2) });
+      this.animate({ centre: [dot(q, s.section.u), dot(q, s.section.v)], zoom: Math.max(0.3, radius * 1.2) });
     } else {
-      this.set({ target: centre, dist: Math.max(1.5, radius / Math.sin(FOVY / 2) * 1.1), half: Math.max(0.5, radius * 1.2) });
+      this.animate({ target: centre, dist: Math.max(1.5, radius / Math.sin(FOVY / 2) * 1.1), half: Math.max(0.5, radius * 1.2) });
     }
+  }
+
+  /**
+   * Goes to a view smoothly, so it is seen where it went: the camera's
+   * numbers in `patch` (target, az, el, dist, half, centre, zoom) are eased
+   * to; anything else in it is set at once. A drag or a wheel stops it.
+   */
+  animate(patch, ms = 450) {
+    const s = this.state, from = {}, to = {}, rest = {};
+    for (const [k, v] of Object.entries(patch)) {
+      if (["target", "az", "el", "dist", "half", "centre", "zoom"].includes(k) && v != null) { from[k] = structuredClone(s[k]); to[k] = v; }
+      else rest[k] = v;
+    }
+    // A bearing turns the short way round.
+    if ("az" in to) to.az = from.az + ((((to.az - from.az) % 360) + 540) % 360 - 180);
+    if (Object.keys(rest).length) this.set(rest, true);
+    cancelAnimationFrame(this.anim);
+    if (!Object.keys(to).length) return this.onChange?.();
+    const t0 = performance.now(), scaled = new Set(["dist", "half", "zoom"]);
+    const step = (now) => {
+      const x = Math.min(1, (now - t0) / ms), e = x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+      const p = {};
+      for (const k of Object.keys(to)) {
+        const a = from[k], b = to[k];
+        p[k] = Array.isArray(a) ? a.map((v, i) => v + (b[i] - v) * e) : scaled.has(k) ? a * Math.pow(b / a, e) : a + (b - a) * e;
+      }
+      this.set(p, true);
+      if (x < 1) this.anim = requestAnimationFrame(step);
+      else this.onChange?.();
+    };
+    this.anim = requestAnimationFrame(step);
   }
 
   bind() {
@@ -316,6 +347,7 @@ export class GLView {
     c.addEventListener("contextmenu", (e) => e.preventDefault());
     c.addEventListener("pointerdown", (e) => {
       try { c.setPointerCapture(e.pointerId); } catch (_) {}
+      cancelAnimationFrame(this.anim);
       // Shift-drag marks a window of points; right- or alt-drag pans (a section pans with any drag).
       drag = { x: e.clientX, y: e.clientY, select: e.shiftKey && e.button === 0, pan: e.button === 2 || e.altKey || this.state.kind === "section", moved: false, s: this.get() };
     });
@@ -360,14 +392,28 @@ export class GLView {
     });
     c.addEventListener("wheel", (e) => {
       e.preventDefault();
+      cancelAnimationFrame(this.anim);
       const f = Math.exp(e.deltaY * 0.0015), s = this.state;
       if (s.kind === "section" && s.section) {
         // Zoom about the cursor.
         const r = c.getBoundingClientRect(), cam = this.camera();
         const ux = ((e.clientX - r.left) / cam.w * 2 - 1) * cam.hw, vy = (1 - (e.clientY - r.top) / cam.h * 2) * cam.hh;
         this.set({ zoom: s.zoom * f, centre: [s.centre[0] + ux * (1 - f), s.centre[1] + vy * (1 - f)] }, true);
-      } else if (s.ortho) this.set({ half: s.half * f }, true);
-      else this.set({ dist: Math.max(0.2, s.dist * f) }, true);
+      } else {
+        // Zoom toward what is under the cursor, so it stays there: the scan point
+        // it is on (asked of the host, once per place the cursor rests), or until
+        // that is known, the point at the depth of the view's target.
+        const r = c.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, ray = this.ray(x, y), now = performance.now();
+        const z = this.zoomAt;
+        if (!z || Math.hypot(z.x - x, z.y - y) > 12 || now - z.t > 1500) {
+          const fresh = (this.zoomAt = { x, y, t: now, p: null });
+          this.onDepth?.(ray).then((p) => { if (p) fresh.p = p; }).catch(() => {});
+        } else z.t = now;
+        const cam = this.camera(), depth = dot(sub(s.target, cam.eye), cam.forward);
+        const p = this.zoomAt.p ?? add(ray.origin, mulS(ray.dir, cam.ortho ? depth : depth / Math.max(0.2, dot(ray.dir, cam.forward))));
+        const target = add(p, mulS(sub(s.target, p), f));
+        this.set(s.ortho ? { half: s.half * f, target } : { dist: Math.max(0.2, s.dist * f), target }, true);
+      }
       clearTimeout(this.wheelTimer);
       this.wheelTimer = setTimeout(() => this.onChange?.(), 250);
     }, { passive: false });

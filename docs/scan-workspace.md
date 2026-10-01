@@ -238,6 +238,20 @@ Details that were decided in the building:
   floor, point size; in a section, its kind and its slab. The 3D view
   has a compass: click a letter to look from that side of the model, the
   middle to look straight down.
+- **One thing is selected at a time**: a point (a click in a view), a
+  member, a selection or a plane, or an issue. The card over the views
+  says what it is in a line or two, with three small buttons (an issue on
+  it, its menu, let go). Its menu is the same wherever it is opened: on
+  its row in the tree, on the card, or by right-clicking in a view (which
+  also offers what can be done at the point under the cursor, without
+  changing what is selected).
+- **Being taken somewhere is seen**: going to an object (double-click its
+  row, or a pin), following a link, Back, the compass and Fit all fly the
+  camera there over about half a second. A drag or the wheel stops it.
+- **The wheel zooms toward what the cursor is on**: the scan point under
+  it (asked of the service when the cursor comes to rest somewhere), so
+  that point stays under the cursor; until it is known, the point at the
+  depth of the view's target.
 - **Selecting a member** (in a view or the tree) fills the Member tab:
   what the scan shows of it, then its structural checks.
 - **Selections and planes are things with ids** (`s3`, `p2`): shown,

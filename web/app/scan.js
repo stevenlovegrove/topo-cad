@@ -110,8 +110,8 @@ function snapshot() {
   return { slots: app.slots(), scan3d: views.scan3d.get(), section: views.section.get(), proposal: sel.proposal && { ...sel.proposal } };
 }
 function restore(s) {
-  views.scan3d.set(s.scan3d, true);
-  views.section.set(s.section, true);
+  views.scan3d.animate(s.scan3d);
+  views.section.animate(s.section);
   app.setSlots(s.slots);
   selectProposal(s.proposal, true);
   renderLayers(); requestSlab(); rebuildMarks();
@@ -159,7 +159,7 @@ function followLink(link) {
   if (link.clip) { if ("z_min" in link.clip) patch.zMin = link.clip.z_min; if ("z_max" in link.clip) patch.zMax = link.clip.z_max; }
   if (link.layers) patch.layers = link.layers;
   if (link.point_size) patch.pointSize = link.point_size;
-  v.set(patch);
+  v.animate(patch);
   if (link.highlight) { sel.highlight = link.highlight; rebuildModel(); }
   if (link.proposal) {
     const i = st.issues.find((x) => x.id === link.proposal.issue);
@@ -376,10 +376,10 @@ function makeGlPane(kind, glKind) {
     compass.addEventListener("click", (e) => {
       const d = e.target.closest("[data-dir]")?.dataset.dir;
       if (!d) return;
-      if (d === "top") return v.set({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true });
+      if (d === "top") return v.animate({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true });
       // From that side of the model: the viewer stands there, looking back.
       const w = rot({ N: [0, 1, 0], E: [1, 0, 0], S: [0, -1, 0], W: [-1, 0, 0] }[d]);
-      v.set({ az: (Math.atan2(w[0], w[1]) * 180) / Math.PI, el: 12 });
+      v.animate({ az: (Math.atan2(w[0], w[1]) * 180) / Math.PI, el: 12 });
     });
   }
   host.addEventListener("pointerdown", () => { if (active !== kind) { active = kind; renderLayers(); } }, true);
@@ -399,19 +399,22 @@ function makeGlPane(kind, glKind) {
   const pickAt = async (ray) => {
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
-    sel.pick = r.hit ? r : null;
-    sel.member = null;
+    choose(r.hit ? "point" : null, r.hit ? r : null);
     renderChips(); rebuildMarks(); rebuildModel(); renderTree();
     // The member there fills the Member tab (without leaving the tab you are on).
     if (r.member) showMember(r.member.path);
   };
   v.onPick = pickAt;
+  // What the cursor is on, for zooming toward it.
+  v.onDepth = async (ray) => { const cuts = v.cuts(); return (await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab)).hit ?? null; };
   // Right-click: pick what is there, then offer what can be done with it.
   v.onContext = async (ray, e) => {
-    await pickAt(ray);
-    contextMenu(v, e.clientX, e.clientY);
+    // (Looking at what is there does not change what is selected.)
+    const cuts = v.cuts();
+    const p = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
+    contextMenu(v, p, e.clientX, e.clientY);
   };
-  host.addEventListener("dblclick", () => { if (sel.pick?.hit && glKind === "3d") v.set({ target: sel.pick.hit }); });
+  host.addEventListener("dblclick", () => { if (sel.pick?.hit && glKind === "3d") v.animate({ target: sel.pick.hit }); });
   // A window dragged with shift: the points in it become a selection. In 3D only the
   // surface nearest the viewer is taken; in a section, all of the slab's points.
   v.onSelect = async (w) => {
@@ -419,56 +422,72 @@ function makeGlPane(kind, glKind) {
     const r = await service.call("selections", { action: "window", ...w, z: cuts.z, slab: cuts.slab, front_only: glKind === "3d" });
     if (r.error) return setInfo(kind, r.error);
     const id = r.text.match(/selected (s\d+)/)?.[1];
-    if (id) { sel.pick = null; showSelection(id); }
+    if (id) showSelection(id);
   };
   return pane;
 }
 
-/// Shows a selection's points in the scan views (null: none).
-async function showSelection(id) {
-  sel.selection = id;
-  // Asked to be shown: its eye is on (and its group's).
-  if (id) { hidden.delete(`sel:${id}`); hidden.delete("selections"); keep(); }
-  renderChips(); renderLayers();
-  await syncHighlights();
-}
-
-// ----- what is pointed at: a point, the member there, a selection ------------------------
-// One flow for all three: point (click), member (the one at the point), region
-// (shift-drag a selection). The chip says what is pointed at; an issue can be
-// raised on any of them, from the chip, the right-click menu or the Issues tab.
+// ----- the one thing selected ------------------------------------------------------------
+// A point (a click in a view, with the member there), a member, a selection
+// or a plane: one at a time, wherever it was chosen (a view, the tree, a
+// link). The card over the views says what it is; the tree shows it; a new
+// issue is pinned to it. What can be done with it is in its right-click
+// menu, which is the same in the tree, on the card and in the views.
 
 const shortPath = (p) => p.split("/").slice(-2).join("/");
 const theSelection = () => (sel.selection && st?.selections?.find((s) => s.id === sel.selection)) || null;
 const selName = (s) => `${s.id}${s.label ? " " + s.label : ""}`;
-
-/** Where a new issue can go, given what is pointed at: [{ key, label }], the likeliest first. */
-function whereOptions() {
-  const out = [], p = sel.pick, s = theSelection();
-  const onFace = p?.member && p.member.distance < 0.06;
-  // A member chosen in the tree (no point picked).
-  if (!p && sel.member) out.push({ key: "member", label: `Member ${shortPath(sel.member)}` });
-  if (p?.member && onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
-  if (p?.hit) out.push({ key: "point", label: `Point ${f3(p.model)}` });
-  if (p?.member && !onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
-  if (s) out.push({ key: "selection", label: `Selection ${selName(s)}` });
-  const pn = thePlane();
-  if (pn) out.push({ key: "plane", label: `Plane ${planeName(pn)}` });
-  out.push({ key: "none", label: "Not pinned" });
-  // A selection just made is what was meant, unless a point was picked after it.
-  if (s && !p) out.sort((a, b) => (b.key === "selection") - (a.key === "selection"));
-  return out;
-}
-
-// ----- planes: fitted to a selection or about a point, kept, named, referred to -----------
 const thePlane = () => (sel.plane && st?.surfaces?.find((s) => s.id === sel.plane)) || null;
 const planeName = (s) => `${s.id}${s.name ? " " + s.name : ""}`;
 const planeCorners = (s, grow = 0) => [[s.ext[0] - grow, s.ext[2] - grow], [s.ext[1] + grow, s.ext[2] - grow], [s.ext[1] + grow, s.ext[3] + grow], [s.ext[0] - grow, s.ext[3] + grow]].map(([a, b]) => toScan(vec.add(s.centre, vec.add(vec.scale(s.u, a), vec.scale(s.v, b)))));
 
-function showPlane(id) {
-  sel.plane = id;
-  renderChips(); renderLayers(); rebuildMarks();
+/** Selects one thing ("point": a pick; "member": a path; "selection", "plane": an id), letting go of any other; no kind: nothing. */
+function choose(kind, value) {
+  sel.pick = kind === "point" ? value : null;
+  sel.member = kind === "member" ? value : null;
+  sel.selection = kind === "selection" ? value : null;
+  sel.plane = kind === "plane" ? value : null;
+  renderChips(); rebuildMarks(); rebuildModel(); renderTree();
 }
+/** What is selected: { kind, id } or null. */
+function chosen() {
+  if (sel.pick) return { kind: "point", id: null };
+  if (sel.member) return { kind: "member", id: sel.member };
+  if (theSelection()) return { kind: "selection", id: sel.selection };
+  if (thePlane()) return { kind: "plane", id: sel.plane };
+  return null;
+}
+
+/// Makes a selection's points drawn (its eye on, and its group's).
+async function revealSelection(id) {
+  hidden.delete(`sel:${id}`); hidden.delete("selections"); keep();
+  renderTree();
+  await syncHighlights();
+}
+/// Selects a selection and shows its points (null: lets go).
+async function showSelection(id) {
+  choose(id ? "selection" : null, id);
+  if (id) await revealSelection(id);
+}
+function showPlane(id) {
+  choose(id ? "plane" : null, id);
+}
+
+/** Where a new issue can go, given what is selected: [{ key, label }], the likeliest first. */
+function whereOptions() {
+  const out = [], p = sel.pick, s = theSelection(), pn = thePlane();
+  const onFace = p?.member && p.member.distance < 0.06;
+  if (sel.member) out.push({ key: "member", label: `Member ${shortPath(sel.member)}` });
+  if (p?.member && onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
+  if (p?.hit) out.push({ key: "point", label: `Point ${f3(p.model)}` });
+  if (p?.member && !onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
+  if (s) out.push({ key: "selection", label: `Selection ${selName(s)}` });
+  if (pn) out.push({ key: "plane", label: `Plane ${planeName(pn)}` });
+  out.push({ key: "none", label: "Not pinned" });
+  return out;
+}
+
+// ----- planes: fitted to a selection or about a point, kept, named, referred to -----------
 
 /** Fits a plane (to a selection's points, or about a point) and keeps it. What the fit found is kept to read. */
 async function fitPlane(args) {
@@ -477,8 +496,8 @@ async function fitPlane(args) {
   const id = r.text.match(/kept as plane (p\d+)/)?.[1];
   if (!id) return;
   (sel.fits ??= {})[id] = r.text;
-  sel.plane = id;
-  renderChips();
+  hidden.delete(`plane:${id}`); hidden.delete("planes"); keep();
+  choose("plane", id);
 }
 
 /** A section on a plane: the slab about it (a volume between two planes offset from it), seen square on. */
@@ -490,116 +509,108 @@ function gotoPlane(id) {
   const s = st.surfaces?.find((x) => x.id === id);
   if (!s) return;
   pushHistory();
-  showPlane(id);
   const c = planeCorners(s);
   views[active].frame(c[0].map((x, k) => 0.5 * (x + c[2][k])), Math.max(0.8, 0.6 * Math.hypot(...vec.sub(c[2], c[0]))));
 }
-const deletePlane = async (id) => { await service.call("surfaces", { action: "delete", id }); if (sel.plane === id) showPlane(null); };
+const deletePlane = async (id) => { await service.call("surfaces", { action: "delete", id }); if (sel.plane === id) choose(null); };
 
 const sectionAt = (a, q) => followLink({ pane: "section", section: a === "plan" ? { view: "plan", z: [q[2] - 0.05, q[2] + 0.05] } : a === "x" ? { view: "x", at: q[0], thickness: 0.2 } : { view: "y", at: q[1], thickness: 0.2 } });
-const deleteSelection = async (id) => { await service.call("selections", { action: "delete", id }); if (sel.selection === id) showSelection(null); };
+const deleteSelection = async (id) => { await service.call("selections", { action: "delete", id }); if (sel.selection === id) choose(null); };
 const nameSelection = (id, label) => service.call("selections", { action: "label", id, label: label.trim() });
 
-/** Goes to a selection: shows its points and frames the focused scan view on them (Back returns). */
+/** Goes to a selection: frames the focused scan view on its points (Back returns). */
 function gotoSelection(id) {
   const s = st.selections?.find((x) => x.id === id);
   if (!s) return;
   pushHistory();
-  showSelection(id);
+  revealSelection(id);
   views[active].frame(s.min.map((x, k) => 0.5 * (x + s.max[k])), Math.max(0.8, 0.6 * Math.hypot(...vec.sub(s.max, s.min))));
 }
 
-function renderChips() {
-  const s = theSelection(), p = sel.pick, pn = thePlane();
-  for (const v of Object.values(views)) {
-    const mem = !p && sel.member && members?.find((x) => x.path === sel.member);
-    v.chip.hidden = !p && !s && !pn && !mem;
-    if (v.chip.hidden) continue;
-    // Being named: leave it as it is.
-    if (v.chip.contains(document.activeElement) && document.activeElement.classList.contains("selname")) continue;
-    let html = "";
-    if (p) {
-      const m = p.member, ev = m && members?.find((x) => x.path === m.path)?.evidence;
-      html += `<div><b>Point</b> model ${f3(p.model)}</div>` +
-        (m ? `<div><b>Member</b> ${esc(shortPath(m.path))} · ${(m.distance * 1000).toFixed(0)} mm from its face` + (ev ? `<br><span class="ev ${ev.state}">${ev.state}</span> ${ev.points} points, ${ev.rays_through} of ${ev.rays_through + ev.rays_ending} rays through` : "") + `</div>` : `<div class="muted">no member within 0.5 m</div>`);
-    } else if (mem) {
-      const ev = mem.evidence;
-      html += `<div><b>Member</b> ${esc(shortPath(mem.path))}<br><span class="ev ${ev.state}">${ev.state}</span> ${ev.points} points, ${ev.rays_through} of ${ev.rays_through + ev.rays_ending} rays through</div>`;
-    }
-    if (s) {
-      html += `<div><b>Selection</b> ${esc(s.id)} <span class="selname" contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(s.label)}</span> · ${s.count.toLocaleString()} points` +
-        (s.plane ? `<br><span class="muted">best plane of all its points: normal ${f3(unrot(s.plane.normal))}, rms ${(s.plane.rms * 1000).toFixed(1)} mm (not a fit)</span>` : "") + `</div>`;
-    }
-    if (pn) {
-      html += `<div><b>Plane</b> ${esc(pn.id)} <span class="selname" data-plane="1" contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(pn.name)}</span> · facing ${f3(pn.normal)}` +
-        `<br><span class="muted">${pn.count.toLocaleString()} points within the band, rms ${(pn.rms * 1000).toFixed(1)} mm; ${(pn.ext[1] - pn.ext[0]).toFixed(2)} × ${(pn.ext[3] - pn.ext[2]).toFixed(2)} m. What surface it is, is yours to say.</span>` +
-        (sel.fits?.[pn.id] ? `<details><summary>What the fit found</summary><pre>${esc(sel.fits[pn.id])}</pre></details>` : "") + `</div>`;
-    }
-    html += `<div class="row"><button data-a="issue">New issue…</button>${p?.member || mem ? `<button data-a="checks">Checks</button>` : ""}` +
-      (p ? `<button data-a="plan" title="A plan section at this height">Plan</button><button data-a="x" title="A section across the model's x at this point">X</button><button data-a="y" title="A section across the model's y at this point">Y</button>` : "") +
-      (s ? `<button data-a="fit" title="Fit a plane to the selection's points and keep it">Fit plane</button><button data-a="delete" title="Delete the selection">Delete ${esc(s.id)}</button>` : "") +
-      (pn ? `<button data-a="secplane" title="A section on this plane: the slab about it, seen square on">Section on ${esc(pn.id)}</button><button data-a="delplane" title="Delete the plane">Delete ${esc(pn.id)}</button>` : "") +
-      `<button data-a="clear" title="Point at nothing">×</button></div>`;
-    v.chip.innerHTML = html;
-    for (const name of v.chip.querySelectorAll(".selname")) {
-      const plane = !!name.dataset.plane, was = plane ? pn.name : s.label;
-      name.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); name.blur(); } if (e.key === "Escape") { name.textContent = was; name.blur(); } };
-      name.onblur = () => { const t = name.textContent.trim(); if (t !== was) plane ? service.call("surfaces", { action: "label", id: pn.id, label: t }) : nameSelection(s.id, t); };
-    }
-    for (const b of v.chip.querySelectorAll("button")) b.onclick = () => {
-      const a = b.dataset.a;
-      if (a === "clear") { sel.pick = null; sel.plane = null; sel.member = null; sel.selection = null; renderChips(); rebuildMarks(); rebuildModel(); renderTree(); }
-      else if (a === "issue") startDraft();
-      else if (a === "checks") { showMember(p?.member?.path ?? sel.member); app.showTab("member"); }
-      else if (a === "delete") deleteSelection(s.id);
-      else if (a === "fit") fitPlane({ selection: s.id });
-      else if (a === "secplane") sectionOnPlane(pn);
-      else if (a === "delplane") deletePlane(pn.id);
-      else sectionAt(a, p.model);
-    };
-  }
+/** Goes to what a row or a link names, in the focused scan view. */
+function gotoObject(kind, id) {
+  if (kind === "member") gotoMembers(id);
+  else if (kind === "group") gotoMembers(`/${id}/`);
+  else if (kind === "issue") gotoIssue(Number(id));
+  else if (kind === "selection") gotoSelection(id);
+  else if (kind === "plane") gotoPlane(id);
+  else if (kind === "point" && sel.pick?.hit) { pushHistory(); views[active].frame(sel.pick.hit, 1.5); }
 }
 
-/** The right-click menu of a scan view, for what was just picked there. */
-function contextMenu(v, x, y) {
-  closeMenu();
-  const p = sel.pick, s = theSelection(), items = [];
-  const add = (label, run, cls) => items.push({ label, run, cls });
-  for (const w of whereOptions()) if (w.key !== "none") add(`New issue: ${w.label.toLowerCase().startsWith("point") ? "at this point" : "on " + w.label[0].toLowerCase() + w.label.slice(1)}`, () => startDraft(w.key));
-  add("New issue, not pinned", () => startDraft("none"));
-  if (p) {
-    items.push(null);
-    add("Section here: plan", () => sectionAt("plan", p.model));
-    add("Section here: across x", () => sectionAt("x", p.model));
-    add("Section here: across y", () => sectionAt("y", p.model));
-    if (v.state.kind !== "section") add("Orbit about this point", () => v.set({ target: p.hit }));
-    if (p.member) add(`Checks for ${shortPath(p.member.path)}`, () => { showMember(p.member.path); app.showTab("member"); });
-  }
-  if (s) {
-    items.push(null);
-    add(`Name selection ${s.id}…`, () => { const n = v.chip.querySelector(".selname"); if (n) { n.focus(); document.getSelection().selectAllChildren(n); } });
-    add(`Go to selection ${selName(s)}`, () => gotoSelection(s.id));
-    add(`Hide selection ${s.id}`, () => toggleVis(`sel:${s.id}`));
-    add(`Delete selection ${s.id}`, () => deleteSelection(s.id), "danger");
-  }
-  const others = (st.selections || []).filter((o) => o.id !== s?.id);
-  if (others.length) {
-    items.push(null);
-    for (const o of others.slice(-6)) add(`Show selection ${selName(o)}`, () => showSelection(o.id));
-  }
-  // Planes: fitted to the selection or about the point; kept, named and used like selections.
-  const pn = thePlane();
+// ----- menus: what can be done with a thing ------------------------------------------------
+
+/** Puts the caret in the card's name field (of the selection or plane selected). */
+function focusName() {
+  const n = views[active].chip.querySelector(".selname");
+  if (n) { n.focus(); document.getSelection().selectAllChildren(n); }
+}
+
+/** The menu of a point picked in a view `v` (`p`: the pick). */
+function pointMenu(p, v) {
+  const items = [], add = (label, run, cls) => items.push({ label, run, cls });
+  add("New issue at this point", () => { choose("point", p); startDraft("point"); });
+  if (p.member) add(`New issue on ${shortPath(p.member.path)}`, () => { choose("point", p); startDraft("member"); });
   items.push(null);
-  if (s) add(`Fit a plane to selection ${s.id}`, () => fitPlane({ selection: s.id }));
-  if (p) add("Fit a plane here (points within 1 m)", () => fitPlane({ seed: p.hit, frame: "scan", radius: 1.0 }));
-  if (pn) {
-    add(`Section on plane ${planeName(pn)}`, () => sectionOnPlane(pn));
-    add(`Name plane ${pn.id}…`, () => { const n = v.chip.querySelector(".selname[data-plane]"); if (n) { n.focus(); document.getSelection().selectAllChildren(n); } });
-    add(`Go to plane ${pn.id}`, () => gotoPlane(pn.id));
-    add(`Delete plane ${pn.id}`, () => deletePlane(pn.id), "danger");
+  add("Section here: plan", () => sectionAt("plan", p.model));
+  add("Section here: across x", () => sectionAt("x", p.model));
+  add("Section here: across y", () => sectionAt("y", p.model));
+  if (v && v.state.kind !== "section") add("Orbit about this point", () => v.animate({ target: p.hit }));
+  add("Fit a plane here (points within 1 m)", () => fitPlane({ seed: p.hit, frame: "scan", radius: 1.0 }));
+  if (p.member) add(`Checks for ${shortPath(p.member.path)}`, () => { showMember(p.member.path); app.showTab("member"); });
+  return items;
+}
+
+/** The menu of an object: the same in the tree, on the card and in the views. `key`: its row in the tree, for hiding. */
+function objectMenu(kind, id) {
+  const items = [], add = (label, run, cls) => items.push({ label, run, cls });
+  const key = { member: `m:${id}`, group: `g:${id}`, issue: `issue:${id}`, selection: `sel:${id}`, plane: `plane:${id}`, top: id }[kind];
+  const showHide = () => add(vis(key) ? "Hide" : "Show", () => toggleVis(key));
+  if (kind === "member") {
+    add("New issue on this member", () => { selectMember(id); startDraft("member"); });
+    add("Go to it", () => gotoMembers(id));
+    add("Its checks", () => { selectMember(id); app.showTab("member"); });
+    showHide();
+  } else if (kind === "group" || kind === "top") {
+    showHide();
+    if (kind === "group") add("Go to it", () => gotoMembers(`/${id}/`));
+    if (id === "model") add("Show every member", () => { for (const k of [...hidden]) if (k.startsWith("g:") || k.startsWith("m:")) hidden.delete(k); hidden.delete("model"); applyVisibility(); });
+  } else if (kind === "issue") {
+    const i = st.issues.find((x) => x.id === Number(id));
+    add("Open it", () => openIssue(i.id));
+    if (i.place) add("Go to it", () => gotoIssue(i.id));
+    add(i.status === "done" ? "Reopen it" : "Mark it done", () => service.call("issues", { action: "update", id: i.id, status: i.status === "done" ? "open" : "done" }));
+    showHide();
+    items.push(null);
+    add("Delete it", () => { if (confirm(`Delete issue #${i.id} and its thread?\n\n${i.title}`)) service.call("issues", { action: "delete", id: i.id }); }, "danger");
+  } else if (kind === "selection") {
+    add("New issue on this selection", () => { choose("selection", id); startDraft("selection"); });
+    add("Name it…", () => { choose("selection", id); focusName(); });
+    add("Go to it", () => gotoSelection(id));
+    add("Fit a plane to it", () => fitPlane({ selection: id }));
+    showHide();
+    items.push(null);
+    add("Delete it", () => deleteSelection(id), "danger");
+  } else if (kind === "plane") {
+    const s = st.surfaces.find((x) => x.id === id);
+    add("New issue on this plane", () => { choose("plane", id); startDraft("plane"); });
+    add("Name it…", () => { choose("plane", id); focusName(); });
+    add("Go to it", () => gotoPlane(id));
+    add("Section on it", () => sectionOnPlane(s));
+    showHide();
+    items.push(null);
+    add("Delete it", () => deletePlane(id), "danger");
   }
-  for (const o of (st.surfaces || []).filter((o) => o.id !== pn?.id).slice(-6)) add(`Show plane ${planeName(o)}`, () => showPlane(o.id));
-  if (items[items.length - 1] === null) items.pop();
+  return items;
+}
+
+/** The right-click menu of a scan view: for the point under the cursor, then for what is selected. */
+function contextMenu(v, p, x, y) {
+  const items = p?.hit ? pointMenu(p, v) : [{ label: "New issue, not pinned", run: () => startDraft("none") }];
+  const c = chosen();
+  if (c && c.kind !== "point") {
+    const name = c.kind === "member" ? shortPath(c.id) : c.kind === "selection" ? `selection ${selName(theSelection())}` : `plane ${planeName(thePlane())}`;
+    items.push(null, { label: `Selected: ${name}`, run: () => {}, cls: "head" }, ...objectMenu(c.kind, c.id));
+  }
   openMenu(items, x, y);
 }
 
@@ -609,7 +620,7 @@ function openMenu(items, x, y) {
   const menu = el("div", { class: "ctxmenu", id: "ctxmenu" });
   for (const it of items) {
     if (!it) { menu.appendChild(el("hr")); continue; }
-    const b = el("button", { class: it.cls || "" });
+    const b = el(it.cls === "head" ? "div" : "button", { class: it.cls || "" });
     b.textContent = it.label;
     b.onclick = () => { closeMenu(); it.run(); };
     menu.appendChild(b);
@@ -621,6 +632,51 @@ function openMenu(items, x, y) {
 }
 function closeMenu() {
   $("ctxmenu")?.remove();
+}
+
+// ----- the card: what is selected, over the views -----------------------------------------
+// One thing, a line or two about it, and three small buttons: an issue on it,
+// its menu, and letting go of it.
+
+function renderChips() {
+  const c = chosen(), p = sel.pick, s = theSelection(), pn = thePlane();
+  for (const v of Object.values(views)) {
+    v.chip.hidden = !c;
+    if (!c) continue;
+    // Being named: leave it as it is.
+    if (v.chip.contains(document.activeElement) && document.activeElement.classList.contains("selname")) continue;
+    const evLine = (path) => { const e = members?.find((x) => x.path === path)?.evidence; return e ? `<span class="ev ${e.state}">${e.state}</span> · ${e.points.toLocaleString()} points, ${e.rays_through} of ${e.rays_through + e.rays_ending} rays through` : ""; };
+    const nameField = (text, plane) => `<span class="selname" ${plane ? 'data-plane="1"' : ""} contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(text)}</span>`;
+    let head = "", body = "";
+    if (c.kind === "point") {
+      head = `<b>Point</b> ${f3(p.model)}`;
+      body = p.member ? `${(p.member.distance * 1000).toFixed(0)} mm from ${esc(shortPath(p.member.path))} · ${evLine(p.member.path)}` : "no member within 0.5 m";
+    } else if (c.kind === "member") {
+      head = `<b>Member</b> ${esc(shortPath(c.id))}`;
+      body = evLine(c.id);
+    } else if (c.kind === "selection") {
+      head = `<b>Selection</b> ${esc(s.id)} ${nameField(s.label, false)}`;
+      body = `${s.count.toLocaleString()} points${vis("selections", `sel:${s.id}`) ? "" : " · hidden"}`;
+    } else {
+      head = `<b>Plane</b> ${esc(pn.id)} ${nameField(pn.name, true)}`;
+      body = `facing ${f3(pn.normal)} · ${pn.count.toLocaleString()} points, rms ${(pn.rms * 1000).toFixed(1)} mm · ${(pn.ext[1] - pn.ext[0]).toFixed(2)} × ${(pn.ext[3] - pn.ext[2]).toFixed(2)} m` +
+        (sel.fits?.[pn.id] ? `<details><summary>What the fit found</summary><pre>${esc(sel.fits[pn.id])}</pre></details>` : "");
+    }
+    v.chip.innerHTML = `<div class="cardhead"><span>${head}</span><span class="cardbtns"><button data-a="issue" title="New issue on this">＋</button><button data-a="menu" title="What can be done with it (the same as right-clicking it)">⋯</button><button data-a="clear" title="Let go of it">×</button></span></div><div class="muted">${body}</div>`;
+    const name = v.chip.querySelector(".selname");
+    if (name) {
+      const plane = !!name.dataset.plane, was = plane ? pn.name : s.label;
+      name.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); name.blur(); } if (e.key === "Escape") { name.textContent = was; name.blur(); } };
+      name.onblur = () => { const t = name.textContent.trim(); if (t !== was) plane ? service.call("surfaces", { action: "label", id: pn.id, label: t }) : nameSelection(s.id, t); };
+    }
+    for (const b of v.chip.querySelectorAll("button")) b.onclick = (e) => {
+      const a = b.dataset.a;
+      if (a === "clear") choose(null);
+      else if (a === "issue") startDraft();
+      else { const r = b.getBoundingClientRect(); openMenu(c.kind === "point" ? pointMenu(p, v) : objectMenu(c.kind, c.id), r.left, r.top - 4); e.stopPropagation(); }
+    };
+    v.chip.oncontextmenu = (e) => { e.preventDefault(); openMenu(c.kind === "point" ? pointMenu(p, v) : objectMenu(c.kind, c.id), e.clientX, e.clientY); };
+  }
 }
 
 function renderDiffBars() {
@@ -697,9 +753,7 @@ const EYE = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M1.5 8s2.4
 const EYE_OFF = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".45"/><path d="M3 13L13 3" stroke="currentColor" stroke-width="1.3"/></svg>`;
 
 function selectMember(path) {
-  sel.pick = null;
-  sel.member = path;
-  renderChips(); rebuildModel(); rebuildMarks(); renderTree();
+  choose("member", path);
   showMember(path);
 }
 
@@ -761,7 +815,7 @@ function renderTree() {
     walk(node, 1, "");
   }
   html += row(0, "top", "issues", "Issues", { group: true, note: st.issues.filter((i) => i.status !== "done").length });
-  if (open.has("issues")) for (const i of ordered()) html += row(1, "issue", `issue:${i.id}`, `#${i.id} ${i.title}`, { id: i.id, on: i.id === sel.issue, note: i.place ? "" : "not pinned", dot: i.status === "done" ? "unseen" : i.status === "waiting" ? "contradicted" : "" });
+  if (open.has("issues")) for (const i of ordered()) html += row(1, "issue", `issue:${i.id}`, `#${i.id} ${i.title}`, { id: i.id, on: i.id === sel.issue && !chosen(), note: i.place ? "" : "not pinned", dot: i.status === "done" ? "unseen" : i.status === "waiting" ? "contradicted" : "" });
   html += row(0, "top", "selections", "Selections", { group: true, note: (st.selections || []).length || "shift-drag" });
   if (open.has("selections")) for (const s of st.selections || []) html += row(1, "sel", `sel:${s.id}`, selName(s), { id: s.id, on: s.id === sel.selection, note: s.count.toLocaleString() });
   html += row(0, "top", "planes", "Planes", { group: true, note: (st.surfaces || []).length || "right-click: fit" });
@@ -777,71 +831,32 @@ const rowOf = (e) => { const r = e.target.closest(".trow"); return r && { el: r,
 
 function bindTree() {
   const box = $("layersPane");
+  // (A row is drawn again when it is selected, so a double click is told by its timing, not by the browser.)
+  let last = { key: null, t: 0 };
   box.addEventListener("click", (e) => {
     const r = rowOf(e);
     if (!r) return;
     if (e.target.closest("[data-eye]")) return toggleVis(r.key);
-    if (r.kind === "top" || r.kind === "group") {
+    const kind = r.kind === "sel" ? "selection" : r.kind, now = performance.now();
+    const twice = last.key === r.key && now - last.t < 400;
+    last = { key: r.key, t: twice ? 0 : now };
+    // Twice: go to it.
+    if (twice && kind !== "top") return gotoObject(kind, r.id);
+    if (kind === "top" || kind === "group") {
+      // The arrow (or the row, of a group that has no other use) folds it.
       if (r.el.querySelector("[data-tw]")) { open.has(r.key) ? open.delete(r.key) : open.add(r.key); keep(); renderTree(); }
       return;
     }
-    if (r.kind === "member") selectMember(r.id);
-    else if (r.kind === "issue") openIssue(Number(r.id));
-    else if (r.kind === "sel") { sel.selection = r.id; renderChips(); renderTree(); }
-    else if (r.kind === "plane") showPlane(r.id);
-  });
-  box.addEventListener("dblclick", (e) => {
-    const r = rowOf(e);
-    if (!r || e.target.closest("[data-eye]")) return;
-    if (r.kind === "member") gotoMembers(r.id);
-    else if (r.kind === "group") gotoMembers(`/${r.id}/`);
-    else if (r.kind === "issue") gotoIssue(Number(r.id));
-    else if (r.kind === "sel") gotoSelection(r.id);
-    else if (r.kind === "plane") gotoPlane(r.id);
+    if (kind === "member") selectMember(r.id);
+    else if (kind === "issue") openIssue(Number(r.id));
+    else if (kind === "selection") choose("selection", r.id);
+    else if (kind === "plane") choose("plane", r.id);
   });
   box.addEventListener("contextmenu", (e) => {
     const r = rowOf(e);
     if (!r) return;
     e.preventDefault();
-    const items = [], add = (label, run, cls) => items.push({ label, run, cls });
-    const showHide = () => add(vis(r.key) ? "Hide" : "Show", () => toggleVis(r.key));
-    const nameIn = (isPlane) => () => { const n = views[active].chip.querySelector(isPlane ? ".selname[data-plane]" : ".selname:not([data-plane])"); if (n) { n.focus(); document.getSelection().selectAllChildren(n); } };
-    if (r.kind === "member") {
-      add("New issue on this member", () => { selectMember(r.id); startDraft("member"); });
-      add("Go to it", () => gotoMembers(r.id));
-      add("Its checks", () => { selectMember(r.id); app.showTab("member"); });
-      showHide();
-    } else if (r.kind === "group" || r.kind === "top") {
-      showHide();
-      if (r.kind === "group") add("Go to it", () => gotoMembers(`/${r.id}/`));
-      if (r.key === "model") add("Show every member", () => { for (const k of [...hidden]) if (k.startsWith("g:") || k.startsWith("m:")) hidden.delete(k); hidden.delete("model"); applyVisibility(); });
-    } else if (r.kind === "issue") {
-      const i = st.issues.find((x) => x.id === Number(r.id));
-      add("Open it", () => openIssue(i.id));
-      if (i.place) add("Go to it", () => gotoIssue(i.id));
-      add(i.status === "done" ? "Reopen it" : "Mark it done", () => service.call("issues", { action: "update", id: i.id, status: i.status === "done" ? "open" : "done" }));
-      showHide();
-      items.push(null);
-      add("Delete it", () => { if (confirm(`Delete issue #${i.id} and its thread?\n\n${i.title}`)) service.call("issues", { action: "delete", id: i.id }); }, "danger");
-    } else if (r.kind === "sel") {
-      add("New issue on this selection", () => { sel.selection = r.id; sel.pick = null; startDraft("selection"); });
-      add("Name it…", () => { sel.selection = r.id; renderChips(); nameIn(false)(); });
-      add("Go to it", () => gotoSelection(r.id));
-      add("Fit a plane to it", () => fitPlane({ selection: r.id }));
-      showHide();
-      items.push(null);
-      add("Delete it", () => deleteSelection(r.id), "danger");
-    } else if (r.kind === "plane") {
-      const s = st.surfaces.find((x) => x.id === r.id);
-      add("New issue on this plane", () => { sel.plane = r.id; sel.pick = null; startDraft("plane"); });
-      add("Name it…", () => { showPlane(r.id); nameIn(true)(); });
-      add("Go to it", () => gotoPlane(r.id));
-      add("Section on it", () => sectionOnPlane(s));
-      showHide();
-      items.push(null);
-      add("Delete it", () => deletePlane(r.id), "danger");
-    }
-    openMenu(items, e.clientX, e.clientY);
+    openMenu(objectMenu(r.kind === "sel" ? "selection" : r.kind, r.kind === "top" ? r.key : r.id), e.clientX, e.clientY);
   });
 }
 
@@ -875,7 +890,7 @@ function renderTools(v) {
   const target = () => toModel(views.scan3d.state.target);
   const acts = {
     ortho: () => v.set({ ortho: !s.ortho }),
-    top: () => v.set({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true }),
+    top: () => v.animate({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true }),
     fit: () => { const b = modelBounds(); if (b) v.frame(toScan(b.centre), b.radius); },
     noroof: () => v.set({ zMax: s.zMax != null ? null : 2.3 }), nofloor: () => v.set({ zMin: s.zMin != null ? null : 0.1 }),
     smaller: () => v.set({ pointSize: Math.max(1, s.pointSize - 0.5) }), bigger: () => v.set({ pointSize: Math.min(6, s.pointSize + 0.5) }),
@@ -894,15 +909,23 @@ function renderTools(v) {
 
 /** The 3D view's compass: the model's north, east, south and west as the view has them. Click one to look from that side; the middle, straight down. */
 function drawCompass(v, cam) {
-  const R = 26, dirs = [["N", [0, 1, 0]], ["E", [1, 0, 0]], ["S", [0, -1, 0]], ["W", [-1, 0, 0]]];
-  let out = `<circle r="${R + 9}" fill="rgba(22,23,27,.72)" stroke="rgba(255,255,255,.35)"/>`;
-  for (const [name, d] of dirs) {
-    const w = rot(d), x = vec.dot(w, cam.right) * R, y = -vec.dot(w, cam.up) * R, toward = vec.dot(w, cam.forward) < -0.3;
-    out += `<line x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${name === "N" ? "#ff6b5e" : "rgba(255,255,255,.55)"}" stroke-width="${name === "N" ? 2 : 1}" ${toward ? 'stroke-dasharray="2 2"' : ""}/>` +
-      `<g class="hot" data-dir="${name}"><title>Look from the ${{ N: "north", E: "east", S: "south", W: "west" }[name]}</title><circle cx="${(x * 1.18).toFixed(1)}" cy="${(y * 1.18).toFixed(1)}" r="7.5" fill="rgba(22,23,27,.85)"/><text x="${(x * 1.18).toFixed(1)}" y="${(y * 1.18 + 3.6).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="700" fill="${name === "N" ? "#ff6b5e" : "#fff"}">${name}</text></g>`;
-  }
+  const R = 25, names = { N: "north", E: "east", S: "south", W: "west" };
+  // The far ones first, so the near ones are drawn over them; letters are outlined, not boxed, so none hides another.
+  const dirs = [["N", [0, 1, 0]], ["E", [1, 0, 0]], ["S", [0, -1, 0]], ["W", [-1, 0, 0]]].map(([name, d]) => {
+    const w = rot(d);
+    return { name, x: vec.dot(w, cam.right) * R, y: -vec.dot(w, cam.up) * R, depth: vec.dot(w, cam.forward) };
+  }).sort((a, b) => b.depth - a.depth);
+  let out = `<circle r="${R + 12}" fill="rgba(22,23,27,.78)" stroke="rgba(255,255,255,.4)"/>`;
   const up = [vec.dot([0, 0, 1], cam.right) * R * 0.6, -vec.dot([0, 0, 1], cam.up) * R * 0.6];
-  out += `<line x2="${up[0].toFixed(1)}" y2="${up[1].toFixed(1)}" stroke="#6ea8ff" stroke-width="1.5"/><g class="hot" data-dir="top"><title>Look straight down</title><circle r="5" fill="#16171b" stroke="#6ea8ff"/></g>`;
+  out += `<line x2="${up[0].toFixed(1)}" y2="${up[1].toFixed(1)}" stroke="#6ea8ff" stroke-width="1.5"/>`;
+  for (const d of dirs) {
+    const far = d.depth > 0.25, col = d.name === "N" ? "#ff7a6e" : "#ffffff";
+    const lx = d.x * 1.22, ly = d.y * 1.22;
+    out += `<line x2="${d.x.toFixed(1)}" y2="${d.y.toFixed(1)}" stroke="${col}" stroke-opacity="${far ? 0.35 : 0.8}" stroke-width="${d.name === "N" ? 2 : 1.2}"/>` +
+      `<g class="hot" data-dir="${d.name}"><title>Look from the ${names[d.name]}</title><circle class="hit" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="8"/>` +
+      `<text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="700" fill="${col}" fill-opacity="${far ? 0.55 : 1}" stroke="#16171b" stroke-width="2.6" paint-order="stroke">${d.name}</text></g>`;
+  }
+  out += `<g class="hot" data-dir="top"><title>Look straight down</title><circle class="hit" r="7"/><circle r="3.2" fill="#6ea8ff" stroke="#16171b"/></g>`;
   if (v.compassHtml !== out) { v.compassHtml = out; v.compass.innerHTML = out; }
 }
 
@@ -951,13 +974,15 @@ function ordered() {
 }
 
 async function openIssue(id) {
+  // The issue is what is selected now.
+  choose(null);
   sel.issue = id;
   sel.drafting = false;
   app.showTab("issues");
   renderIssues(); rebuildMarks(); rebuildModel(); renderBoard();
   // An issue pinned to a selection shows its points.
   const s = st.issues.find((i) => i.id === id)?.place?.selection;
-  if (s && s !== sel.selection) showSelection(s);
+  if (s) revealSelection(s);
 }
 
 /// Starts a new issue: its title is typed in place; `where` is what it is
@@ -982,7 +1007,7 @@ async function createIssue(title, text) {
   const r = await service.call("issues", args);
   if (r.error) return alert(r.error);
   sel.drafting = false;
-  sel.pick = null;
+  choose(null);
   renderChips();
   const id = Number(r.text.match(/#(\d+)/)?.[1]);
   if (id) openIssue(id);
@@ -1031,7 +1056,7 @@ function renderIssues() {
     if (!id.startsWith("c")) return openIssue(Number(id));
     // A check: keeping it (to discuss it) makes it an issue.
     const chk = checkIssues().find((x) => x.id === id);
-    if (chk && confirm(`Keep this check as an issue to discuss?\n\n${chk.title}`)) { sel.pick = null; const r = await service.call("issues", { action: "create", title: chk.title, category: "check" }); const n = Number(r.text.match(/#(\d+)/)?.[1]); if (n) openIssue(n); }
+    if (chk && confirm(`Keep this check as an issue to discuss?\n\n${chk.title}`)) { const r = await service.call("issues", { action: "create", title: chk.title, category: "check" }); const n = Number(r.text.match(/#(\d+)/)?.[1]); if (n) openIssue(n); }
   };
 }
 
