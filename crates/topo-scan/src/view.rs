@@ -35,8 +35,8 @@ fn members_of(pred: &Prediction, ev: &[Evidence]) -> Vec<Value> {
                 "state": evidence_state(e),
                 "points": e.points,
                 "density": e.density.round(),
-                "offset_mm": (e.mean_offset * 1e4).round() / 10.0,
-                "rms_mm": (e.rms * 1e4).round() / 10.0,
+                "offset_mm": (e.mean_offset as f64 * 1e4).round() / 10.0,
+                "rms_mm": (e.rms as f64 * 1e4).round() / 10.0,
                 "rays_through": e.rays.pierced,
                 "rays_ending": e.rays.ended,
             },
@@ -109,6 +109,28 @@ impl Workspace {
             "changes": changes,
             "diff": self.repo.diff(commit)?,
         }))
+    }
+
+    /// What a ray from a viewer meets first (scan frame): the scan point,
+    /// where that is in the model, and the nearest member. `z` (model
+    /// frame) and `slab` (origin, unit normal, half thickness; scan frame)
+    /// are the viewer's cuts: points outside them are not shown, so not hit.
+    pub fn pick_json(&mut self, origin: V3, dir: V3, z: Option<[f32; 2]>, slab: Option<(V3, V3, f32)>) -> Result<Value> {
+        let pl = self.placement()?;
+        self.scan()?;
+        let scan = self.scan.as_ref().unwrap().clone();
+        let n = crate::norm(dir).max(1e-9);
+        let dir = crate::scale(dir, 1.0 / n);
+        let keep = move |p: V3| {
+            z.is_none_or(|z| p[2] - pl.t[2] >= z[0] && p[2] - pl.t[2] <= z[1]) && slab.is_none_or(|(o, n, half)| crate::dot(n, crate::sub(p, o)).abs() <= half)
+        };
+        let Some((i, t)) = scan.ray_hit(origin, dir, 0.015, 0.004, 1, &keep) else {
+            return Ok(json!({"hit": null}));
+        };
+        let p = scan.xyz[i as usize];
+        let pm = pl.inverse(p);
+        let near = self.nearest_member(pm, 0.5).map(|(k, d, off)| json!({"path": self.model.as_ref().unwrap().pred.members[k].path, "distance": d, "offset": off}));
+        Ok(json!({"hit": mm(p), "model": mm(pm), "range": t, "member": near}))
     }
 }
 

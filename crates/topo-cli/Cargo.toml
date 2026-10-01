@@ -18,5 +18,6 @@ topo-timber.workspace = true
 topo-analysis.workspace = true
 topo-script = { workspace = true, features = ["quickjs"] }
 topo-app.workspace = true
+topo-scan = { path = "../topo-scan" }
 tiny_http = "0.12"
 serde = { workspace = true }

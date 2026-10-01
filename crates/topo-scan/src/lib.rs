@@ -11,12 +11,16 @@
 //! Members are keyed by topo-cad's stable paths (`Model::member_path`), so
 //! evidence can go back to the model (a heatmap, a delta to its script).
 
+#![recursion_limit = "512"]
+
 use std::collections::HashMap;
 
 pub mod axes;
+pub mod cloud;
 pub mod fit;
 pub mod git;
 pub mod issues;
+pub mod mcp;
 pub mod ply;
 pub mod rays;
 pub mod render;

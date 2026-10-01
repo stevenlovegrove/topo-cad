@@ -42,8 +42,10 @@ fn main() {
         }
         ["serve", rest @ ..] => {
             let port = rest.iter().find_map(|a| a.parse::<u16>().ok()).unwrap_or(8765);
-            let paths: Vec<std::path::PathBuf> = rest.iter().filter(|a| a.parse::<u16>().is_err()).map(std::path::PathBuf::from).collect();
-            if let Err(e) = serve::serve(&paths, port, &web) {
+            // A scan (.ply) makes it a scan workspace; `--scan` alone uses the one the project names.
+            let scan = rest.iter().find(|a| a.ends_with(".ply")).copied().or(rest.contains(&"--scan").then_some(""));
+            let paths: Vec<std::path::PathBuf> = rest.iter().filter(|a| a.parse::<u16>().is_err() && !a.ends_with(".ply") && **a != "--scan").map(std::path::PathBuf::from).collect();
+            if let Err(e) = serve::serve(&paths, port, &web, scan) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -71,6 +73,7 @@ fn main() {
 }
 
 mod serve;
+mod work;
 
 use topo_app::{all_issues, fit_tables};
 

@@ -1278,6 +1278,7 @@ dependencies = [
  "topo-core",
  "topo-draw",
  "topo-geom",
+ "topo-scan",
  "topo-script",
  "topo-timber",
 ]
