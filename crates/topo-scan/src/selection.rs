@@ -150,7 +150,7 @@ mod tests {
                 xyz.push([0.1 * i as f32, -2.5 + 0.1 * j as f32, 0.0]);
             }
         }
-        let scan = Scan::new("t", xyz, Vec::new(), None, None).unwrap();
+        let scan = Scan::new("t", xyz, Vec::new(), None, None, 1.0).unwrap();
         // Looking along +x: right = −y, up = z; x is depth. Clip x = −y / 2, y = (z − 1.5).
         let vp = [0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.5, 0.0, 1.0];
         let window = |front_only| How::Window { vp, rect: [-0.2, -0.5, 0.2, 0.5], eye: [0.0; 3], forward: [1.0, 0.0, 0.0], z: None, slab: None, obb: None, front_only };

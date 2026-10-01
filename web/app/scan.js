@@ -293,11 +293,26 @@ function describeView() {
 
 // ----- data: the cloud, the members, a section's slab --------------------------------
 
-async function loadCloud() {
-  cloudLoaded = true;
+/** The thinned scan, as the service has it now (`key`: which points it is of); again when that changes. */
+async function loadCloud(key) {
+  cloudLoaded = key;
   const c = await service.cloud();
   if (!c) { cloudLoaded = false; return; }
-  for (const v of Object.values(views)) v.setCloud("thin", c);
+  for (const v of Object.values(views)) { v.setCloud("thin", c); v.slabWant = null; requestSlab(v); }
+  // (Selections' points are found again in it.)
+  selClouds.clear();
+  for (const v of Object.values(views)) for (const k of [...v.highlights.keys()]) v.setHighlight(k, null);
+  syncHighlights();
+}
+
+/** How near the sensor a scan point may be: asked for, kept with the project; the scan is then loaded again. */
+async function askMinRange() {
+  const now = +(st.scan.min_range ?? 1).toFixed(2);
+  const t = prompt(`Leave out scan points nearer the sensor than (metres):\n\nThis removes whoever carried the scanner. It is kept with the project, for everyone; the scan is then loaded again, which takes a little while.`, String(now));
+  if (t == null || t.trim() === "" || Number(t) === now) return;
+  if (!(Number(t) >= 0)) return alert("A distance in metres, 0 or more.");
+  const r = await service.call("scan_filter", { min_range: Number(t) });
+  if (r.error) alert(r.error);
 }
 
 /** Every scan point in the box a view is clipped to (a moment after it stops changing). */
@@ -317,7 +332,7 @@ function requestSlab(v) {
 }
 
 async function loadMembers() {
-  const key = `${st.model.rev}|${JSON.stringify(st.placement)}`;
+  const key = `${st.model.rev}|${JSON.stringify(st.placement)}|${st.scan.used}`;
   if (key === membersKey || !st.scan.loaded || !st.placement) return;
   membersKey = key;
   const r = await service.members();
@@ -413,8 +428,8 @@ function rebuildMarks() {
   const issue = sel.issue != null && st.issues.find((i) => i.id === sel.issue);
   if (issue?.place && vis("issues", `issue:${issue.id}`)) boxLines(aabb(issue.place.min, issue.place.max), [255, 255, 255], segs);
   // The pick: a small cross.
-  if (sel.pick?.hit) {
-    const p = sel.pick.hit, r = 0.08;
+  if ((sel.pick ?? sel.at)?.hit) {
+    const p = (sel.pick ?? sel.at).hit, r = 0.08;
     for (const a of [[r, 0, 0], [0, r, 0], [0, 0, r]]) segs.push([vec.sub(p, a), vec.add(p, a), [255, 220, 40]]);
   }
   // Rooms (model frame boxes) and fitted surfaces (patches).
@@ -461,6 +476,29 @@ function rebuildMarks() {
     title: `${i.title} — ${STATUS[i.status]}`, colour: PRI[i.priority], on: i.id === sel.issue, dim: i.status === "done",
   }));
   for (const v of Object.values(views)) v.setLabels(pins);
+}
+
+/** The shown member a ray (scan frame) meets first, by its faces: for where the scan has no points to pick. Its path, or null. */
+function memberAt(ray) {
+  const o = toModel(ray.origin), d = unrot(ray.dir);
+  let best = null, bt = Infinity;
+  for (const m of members || []) {
+    if (!memberVisible(m.path)) continue;
+    for (const f of m.faces) {
+      if (f.length < 3) continue;
+      const n = vec.cross(vec.sub(f[1], f[0]), vec.sub(f[2], f[0])), k = vec.dot(n, d);
+      if (Math.abs(k) < 1e-9) continue;
+      const t = vec.dot(n, vec.sub(f[0], o)) / k;
+      if (t <= 0 || t >= bt) continue;
+      const p = vec.add(o, vec.scale(d, t));
+      // Inside the face: on the same side of every edge.
+      let pos = 0, neg = 0;
+      for (let i = 0; i < f.length; i++) { const s = vec.dot(vec.cross(vec.sub(f[(i + 1) % f.length], f[i]), vec.sub(p, f[i])), n); s >= 0 ? pos++ : neg++; }
+      if (pos && neg) continue;
+      bt = t; best = m.path;
+    }
+  }
+  return best;
 }
 
 /** The slab, plane or polyline whose lines (as drawn: the shown ones) a click in a view is on, within a few pixels; the nearest. */
@@ -730,14 +768,22 @@ function makeGlPane(kind) {
   const pickAt = async (ray, e) => {
     if (drawing) return drawPoint(v, ray, e);
     // On the lines of a slab, a plane or a polyline: that is what is meant.
-    const o = objectAt(v, e);
+    const o = !e?.altKey && objectAt(v, e);
     if (o) return choose(o.kind, o.id);
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
-    choose(r.hit ? "point" : null, r.hit ? r : null);
-    renderChips(); rebuildMarks(); rebuildModel(); renderTree();
-    // The member there fills the Member tab (without leaving the tab you are on).
-    if (r.member) showMember(r.member.path);
+    // What is drawn there is what is selected: a shown selection's points, the member the
+    // point is on (or, where the scan has nothing, the member the click is over), else the
+    // point itself. With alt: always the point.
+    const selId = !e?.altKey && (r.selections || []).find((id) => vis("selections", `sel:${id}`));
+    const onMember = !e?.altKey && v.state.layers.model && (r.hit ? (r.member && r.member.distance < 0.06 && memberVisible(r.member.path) ? r.member.path : null) : memberAt(ray));
+    if (selId) choose("selection", selId);
+    else if (onMember) { selectMember(onMember); if (r.hit) { sel.at = r; renderChips(); rebuildMarks(); } }
+    else {
+      choose(r.hit ? "point" : null, r.hit ? r : null);
+      // The member near it fills the Member tab (without leaving the tab you are on).
+      if (r.member) showMember(r.member.path);
+    }
   };
   v.onPick = pickAt;
   // What the cursor is on, for zooming toward it.
@@ -754,7 +800,8 @@ function makeGlPane(kind) {
   host.addEventListener("dblclick", (e) => {
     if (e.target !== v.canvas) return;
     if (drawing) return endDrawing(true);
-    if (sel.pick?.hit) v.animate({ target: sel.pick.hit });
+    const p = sel.pick ?? sel.at;
+    if (p?.hit) v.animate({ target: p.hit });
   });
   // A window dragged with shift: the points in it become a selection. Of the whole scan only the
   // surface nearest the viewer is taken; in a view clipped to a slab, all of the slab's points.
@@ -786,6 +833,8 @@ const planeCorners = (s, grow = 0) => [[s.ext[0] - grow, s.ext[2] - grow], [s.ex
 function choose(kind, value) {
   sel.pick = kind === "point" ? value : null;
   sel.member = kind === "member" ? value : null;
+  // (Where on a member it was clicked, when it was selected in a view.)
+  sel.at = null;
   sel.selection = kind === "selection" ? value : null;
   sel.plane = kind === "plane" ? value : null;
   sel.slab = kind === "slab" ? value : null;
@@ -823,6 +872,7 @@ function whereOptions() {
   const out = [], p = sel.pick, s = theSelection(), pn = thePlane();
   const onFace = p?.member && p.member.distance < 0.06;
   if (sel.member) out.push({ key: "member", label: `Member ${shortPath(sel.member)}` });
+  if (sel.member && sel.at) out.push({ key: "point", label: `Point ${f3(sel.at.model)}` });
   if (p?.member && onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
   if (p?.hit) out.push({ key: "point", label: `Point ${f3(p.model)}` });
   if (p?.member && !onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
@@ -952,6 +1002,7 @@ function objectMenu(kind, id) {
   } else if (kind === "group" || kind === "top") {
     showHide();
     if (kind === "group") add("Go to it", () => gotoMembers(`/${id}/`));
+    if (id === "scan") add(`Leave out points near the sensor… (now within ${+(st.scan.min_range ?? 1).toFixed(2)} m)`, askMinRange);
     if (id === "model") add("Show every member", () => { for (const k of [...hidden]) if (k.startsWith("g:") || k.startsWith("m:")) hidden.delete(k); hidden.delete("model"); applyVisibility(); });
   } else if (kind === "issue") {
     const i = st.issues.find((x) => x.id === Number(id));
@@ -1063,7 +1114,7 @@ function renderChips() {
       body = p.member ? `${(p.member.distance * 1000).toFixed(0)} mm from ${esc(shortPath(p.member.path))} · ${evLine(p.member.path)}` : "no member within 0.5 m";
     } else if (c.kind === "member") {
       head = `<b>Member</b> ${esc(shortPath(c.id))}`;
-      body = evLine(c.id);
+      body = evLine(c.id) + (sel.at ? `<br>clicked at ${f3(sel.at.model)}, ${(sel.at.member.distance * 1000).toFixed(0)} mm from its face <span title="Alt-click picks the point itself">(alt-click: the point)</span>` : "");
     } else if (c.kind === "selection") {
       head = `<b>Selection</b> ${esc(s.id)} ${nameField(s.label)}`;
       body = `${s.count.toLocaleString()} points${vis("selections", `sel:${s.id}`) ? "" : " · hidden"}`;
@@ -1215,7 +1266,7 @@ function renderTree() {
     return `<div class="trow${opts.on ? " on" : ""}${vis(key) ? "" : " off"}" data-kind="${kind}" data-key="${esc(key)}" ${opts.id != null ? `data-id="${esc(opts.id)}"` : ""} style="padding-left:${4 + depth * 12}px" title="${esc(opts.title || name)}">${tw}<span class="eye" data-eye title="Show or hide">${vis(key) ? EYE : EYE_OFF}</span>${opts.dot ? `<i class="dot ${opts.dot}"></i>` : ""}<span class="tn">${esc(name)}</span>${opts.note != null ? `<span class="muted">${esc(opts.note)}</span>` : ""}</div>`;
   };
   const mil = (n) => `${(n / 1e6).toFixed(1)}M`;
-  let html = row(0, "top", "scan", "Scan", { note: st.scan.loaded ? `${mil(st.cloud ?? 0)} of ${mil(st.scan.points)} points` : st.loading || "loading", title: "The scan's points (thinned for the 3D view; a section draws every point of its slab)" });
+  let html = row(0, "top", "scan", "Scan", { note: st.scan.loaded && st.cloud ? `${mil(st.cloud)} of ${mil(st.scan.points)} points` : st.loading || "loading", title: `The scan's points (thinned for the 3D view; a view clipped to a slab draws every point in it). ${st.scan.ranged === false ? "" : `Points nearer the sensor than ${+(st.scan.min_range ?? 1).toFixed(2)} m are left out (${((st.scan.points ?? 0) - (st.scan.used ?? 0)).toLocaleString()} of them): right-click to change that.`}` });
   // The model: its groups, then its members, with their evidence as a dot.
   const list = members || [];
   html += row(0, "top", "model", "Model", { group: true, note: st.tally ? `${list.length} · ${st.tally.contradicted} contradicted` : list.length, title: st.tally ? `${st.tally.supported} members supported by the scan, ${st.tally.contradicted} contradicted, ${st.tally.unseen} unseen` : "Model" });
@@ -1461,7 +1512,7 @@ async function createIssue(title, text) {
   else if (where === "slab") args.slab = sel.slab;
   else if (where === "polyline") args.polyline = sel.polyline;
   else if (where === "member") args.member = sel.pick?.member?.path ?? sel.member;
-  else if (where === "point") { args.frame = "scan"; args.point = sel.pick.hit; }
+  else if (where === "point") { args.frame = "scan"; args.point = (sel.pick ?? sel.at).hit; }
   const r = await service.call("issues", args);
   if (r.error) return alert(r.error);
   sel.drafting = false;
@@ -1690,7 +1741,8 @@ function onState(s) {
   if (live?.done) live = null;
   syncSlabs();
   for (const v of Object.values(views)) { v.zOffset = pl.t[2]; v.floorZ = s.scan.floor_z ?? 0; }
-  if (s.cloud && !cloudLoaded) loadCloud();
+  const cloudKey = `${s.scan.min_range}|${s.cloud}`;
+  if (s.cloud && cloudLoaded !== cloudKey) loadCloud(cloudKey);
   loadMembers();
   app.setStatus(s.loading ? `scan: ${s.loading}…` : !service.connected ? "the workspace service is not answering" : null);
   if (sel.issue != null && !s.issues.some((i) => i.id === sel.issue)) sel.issue = null;

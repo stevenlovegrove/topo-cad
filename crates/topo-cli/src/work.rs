@@ -61,9 +61,27 @@ impl Work {
     /// Opens the project `model` is in, and loads the scan in the background.
     pub fn start(model: &Path, scan: Option<&str>, entry: String) -> Result<Work, String> {
         let ws = Workspace::open(model, scan).map_err(|e| format!("{e:#}"))?;
-        let path = ws.items.scan.clone().ok_or("no scan: give one (a .ply) after the model")?;
-        let work = Work { entry, ws: Arc::new(Mutex::new(ws)), index: Arc::new(Mutex::new(None)), loading: Arc::new(Mutex::new("loading the scan".into())) };
-        let w = work.clone();
+        ws.items.scan.clone().ok_or("no scan: give one (a .ply) after the model")?;
+        let work = Work { entry, ws: Arc::new(Mutex::new(ws)), index: Arc::new(Mutex::new(None)), loading: Arc::new(Mutex::new(String::new())) };
+        work.load();
+        Ok(work)
+    }
+
+    /// Loads the scan in the background, if it is not loaded and not being
+    /// (at the start, and again when how it is filtered is changed).
+    fn load(&self) {
+        let (path, min_range) = {
+            let ws = self.ws.lock().unwrap();
+            let mut loading = self.loading.lock().unwrap();
+            let Some(path) = ws.items.scan.clone() else { return };
+            if ws.scan.is_some() || !loading.is_empty() {
+                return;
+            }
+            *loading = "loading the scan".into();
+            (path, ws.items.min_range())
+        };
+        *self.index.lock().unwrap() = None;
+        let w = self.clone();
         std::thread::spawn(move || {
             let t = Instant::now();
             let say = |s: &str| {
@@ -72,13 +90,19 @@ impl Work {
                 w.ws.lock().unwrap().touch();
             };
             // Outside the lock: the app is usable meanwhile.
-            let scan = match Scan::load(&path) {
+            let scan = match Scan::load(&path, min_range) {
                 Ok(s) => Arc::new(s),
                 Err(e) => return say(&format!("the scan did not load: {e:#}")),
             };
             say("placing the model in the scan");
             {
                 let mut ws = w.ws.lock().unwrap();
+                // (The filter was changed while it loaded: again, with the new one.)
+                if ws.items.min_range() != min_range {
+                    drop(ws);
+                    w.loading.lock().unwrap().clear();
+                    return w.load();
+                }
                 ws.scan = Some(scan.clone());
                 if let Err(e) = ws.evidence() {
                     eprintln!("topo serve: {e:#}");
@@ -91,8 +115,11 @@ impl Work {
             w.ws.lock().unwrap().index = Some(ix.clone());
             *w.index.lock().unwrap() = Some(ix);
             say("");
+            // (Changed again meanwhile: once more.)
+            if w.ws.lock().unwrap().scan.is_none() {
+                w.load();
+            }
         });
-        Ok(work)
     }
 
     pub fn handles(url: &str) -> bool {
@@ -136,7 +163,10 @@ impl Work {
                 if who.is_empty() {
                     return fail(req, "who: your participant id".into());
                 }
-                match topo_scan::mcp::call(&self.ws, who, "person", tool, v.get("args").unwrap_or(&json!({}))) {
+                let r = topo_scan::mcp::call(&self.ws, who, "person", tool, v.get("args").unwrap_or(&json!({})));
+                // (A change to the scan's filter leaves it to be loaded again.)
+                self.load();
+                match r {
                     Ok(content) => respond_json(req, 200, &json!({"content": content})),
                     Err(e) => fail(req, format!("{e:#}")),
                 }
@@ -192,6 +222,7 @@ impl Work {
                     Ok(msg) => topo_scan::mcp::handle(&self.ws, &who, &msg),
                     Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}})),
                 };
+                self.load();
                 match reply {
                     Some(r) => respond_json(req, 200, &r),
                     None => {

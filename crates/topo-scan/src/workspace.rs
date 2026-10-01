@@ -140,6 +140,15 @@ pub struct Items {
     pub slabs: Vec<crate::tools_obj::Slab>,
     #[serde(default)]
     pub polylines: Vec<crate::tools_obj::Polyline>,
+    /// Scan points nearer the sensor than this (m) are left out: whoever carried it. (None: 1 m.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_range: Option<f32>,
+}
+
+impl Items {
+    pub fn min_range(&self) -> f32 {
+        self.min_range.unwrap_or(1.0)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -336,10 +345,35 @@ impl Workspace {
     pub fn load_scan(&mut self) -> Result<()> {
         if self.scan.is_none() {
             let path = self.items.scan.clone().context("the project names no scan: start the service with one")?;
-            self.scan = Some(Arc::new(Scan::load(&path)?));
+            self.scan = Some(Arc::new(Scan::load(&path, self.items.min_range())?));
             self.touch();
         }
         Ok(())
+    }
+
+    /// How the scan's points are filtered: `min_range` (m) leaves out those
+    /// nearer the sensor (whoever carried it). Kept with the project. The
+    /// scan is then loaded again (the service does that), and what was made
+    /// from its points (evidence, the thinned cloud, selections' points) with it.
+    pub(crate) fn scan_filter(&mut self, who: &str, args: &Value) -> Result<Vec<Value>> {
+        let text = |s: String| Ok(vec![json!({"type": "text", "text": s})]);
+        let Some(m) = args.get("min_range").and_then(|v| v.as_f64()) else {
+            return text(format!("points nearer the sensor than {:.2} m are left out{}", self.items.min_range(), if self.scan.as_ref().is_some_and(|s| !s.ranged) { " (but this scan has neither ranges nor a trajectory, so none are)" } else { "" }));
+        };
+        if !(0.0..=20.0).contains(&m) {
+            bail!("min_range: 0 to 20 m");
+        }
+        if self.scan.as_ref().is_some_and(|s| !s.ranged) {
+            bail!("this scan has neither ranges nor a trajectory beside it: how far each point was from the sensor is not known");
+        }
+        self.items.min_range = Some(m as f32);
+        self.save_items(who)?;
+        self.scan = None;
+        self.index = None;
+        self.ev = None;
+        self.sel_cache.clear();
+        self.touch();
+        text(format!("points nearer the sensor than {m:.2} m are now left out; the scan is being loaded again"))
     }
 
     pub(crate) fn scan(&mut self) -> Result<&Scan> {
@@ -442,6 +476,7 @@ impl Workspace {
             "selections" => self.selections(who, args),
             "slabs" => self.slabs(who, args),
             "polylines" => self.polylines(who, args),
+            "scan_filter" => self.scan_filter(who, args),
             "rooms" => self.rooms(who, args),
             "views" => self.views(who, args),
             "sections" => self.sections(who, args),

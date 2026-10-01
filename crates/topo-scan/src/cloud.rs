@@ -178,7 +178,7 @@ mod tests {
             }
         }
         let n = xyz.len();
-        let scan = Scan::new("t", xyz, vec![0.5; n], Some(vec![[1.0, 1.0, 1.0]; n]), None).unwrap();
+        let scan = Scan::new("t", xyz, vec![0.5; n], Some(vec![[1.0, 1.0, 1.0]; n]), None, 1.0).unwrap();
         let ix = ScanIndex::build(&scan, 0.03);
         // 2 m × 2 m of floor and of wall at 3 cm: about 4444 voxels each.
         assert!(ix.thin.len() > 8000 && ix.thin.len() < 10500, "{}", ix.thin.len());

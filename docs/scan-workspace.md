@@ -293,9 +293,19 @@ Details that were decided in the building:
   vertical in 5° steps (alt: freely); its sizes can be typed in the
   card. A view clipped to it follows as it is dragged. A handle that
   would move toward or away from the viewer is not shown.
-- **Slabs, planes and polylines are picked by their lines**: a click
-  within a few pixels of one's outline in a view selects it (a
-  right-click opens its menu); anywhere else picks the scan point. What
+- **The scan's points nearer the sensor than a distance are left out**
+  (1 m unless set): whoever carried the scanner. A point's range is as
+  the file gives it, else its distance from where the trajectory says
+  the sensor was. The distance is set from the Scan row's right-click
+  menu (or by `scan_filter`), is kept with the project
+  (`<model>.scan.json`), and applies to everyone and everything made
+  from the points; changing it loads the scan again in the background.
+- **A click in a view selects what is drawn there**: a slab, plane or
+  polyline by its lines (within a few pixels of its outline); a shown
+  selection by its points; a shown member by a scan point on its faces,
+  or, where the scan has nothing, by its faces themselves; else the scan
+  point. Alt-click always takes the point. A right-click on a slab's,
+  plane's or polyline's lines opens its menu. What
   is hidden (its eye, or its group's) is not drawn, has no handles and
   cannot be picked, selected or not. The selected slab's faces and the
   selected plane's patch are drawn faintly (a slab's more strongly while

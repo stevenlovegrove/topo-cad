@@ -58,8 +58,8 @@ impl Workspace {
             "rev": self.rev,
             "project": {"root": self.repo.root.display().to_string(), "branch": self.repo.branch(), "head": self.repo.head(), "model": self.model_rel},
             "scan": match &self.scan {
-                Some(s) => json!({"path": s.path, "loaded": true, "points": s.xyz.len(), "used": s.used.len(), "floor_z": s.floor_z, "rays": s.sensor.is_some()}),
-                None => json!({"path": self.items.scan, "loaded": false}),
+                Some(s) => json!({"path": s.path, "loaded": true, "points": s.xyz.len(), "used": s.used.len(), "floor_z": s.floor_z, "rays": s.sensor.is_some(), "min_range": s.min_range, "ranged": s.ranged}),
+                None => json!({"path": self.items.scan, "loaded": false, "min_range": self.items.min_range()}),
             },
             "placement": self.items.placement,
             "model": {
@@ -141,7 +141,10 @@ impl Workspace {
         });
         // The surface the point lies on in the scan: its normal, in the model frame.
         let surface = self.index.as_ref().and_then(|ix| ix.normal_at(p)).map(|n| mm(pl.unrotate(n)));
-        Ok(json!({"hit": mm(p), "model": mm(pm), "range": t, "member": near, "normal": surface}))
+        // The selections the point is one of.
+        let ids: Vec<String> = self.items.selections.iter().map(|s| s.id.clone()).collect();
+        let selections: Vec<String> = ids.into_iter().filter(|id| self.selection_indices(id).is_ok_and(|ix| ix.contains(&i))).collect();
+        Ok(json!({"hit": mm(p), "model": mm(pm), "range": t, "member": near, "normal": surface, "selections": selections}))
     }
 }
 
@@ -184,7 +187,7 @@ mod tests {
             }
         }
         let sensor = vec![pl.apply([1.8, 2.4, 1.2]); xyz.len()];
-        Scan::new("synthetic", xyz, Vec::new(), Some(sensor), None).unwrap()
+        Scan::new("synthetic", xyz, Vec::new(), Some(sensor), None, 1.0).unwrap()
     }
 
     #[test]

@@ -17,8 +17,12 @@ pub struct Scan {
     pub intensity: Vec<f32>,
     /// Where each point was seen from, when there is a trajectory.
     pub sensor: Option<Vec<V3>>,
-    /// Points far enough from the sensor to trust (≥ 1 m, when ranges are given).
+    /// Points far enough from the sensor to trust (`min_range` or more, when
+    /// ranges are known): nearer ones are of whoever carried it.
     pub used: Vec<u32>,
+    pub min_range: f32,
+    /// Whether the points' ranges are known (given in the file, or from the trajectory).
+    pub ranged: bool,
     /// Every 60th used point, for registration and scores.
     pub sub: Vec<V3>,
     pub floor_z: f32,
@@ -27,24 +31,30 @@ pub struct Scan {
 
 impl Scan {
     /// Reads a PLY (and the trajectory beside it) and finds its floor and
-    /// wall direction.
-    pub fn load(ply: &str) -> Result<Scan> {
+    /// wall direction. Points nearer the sensor than `min_range` are left
+    /// out (their ranges as the file gives them, else from the trajectory).
+    pub fn load(ply: &str, min_range: f32) -> Result<Scan> {
         let cloud = read_ply(ply)?;
         let sensor = match Trajectory::beside(Path::new(ply))? {
             Some(tr) if cloud.time.len() == cloud.xyz.len() => Some(tr.sensor_positions(&cloud.time, cloud.t0_ns)),
             _ => None,
         };
-        Scan::new(ply, cloud.xyz, cloud.intensity, sensor, (!cloud.range.is_empty()).then_some(&cloud.range[..]))
+        let range: Option<Vec<f32>> = if !cloud.range.is_empty() {
+            Some(cloud.range)
+        } else {
+            sensor.as_ref().map(|s| cloud.xyz.iter().zip(s).map(|(p, o)| crate::norm(crate::sub(*p, *o))).collect())
+        };
+        Scan::new(ply, cloud.xyz, cloud.intensity, sensor, range.as_deref(), min_range)
     }
 
-    pub fn new(path: &str, xyz: Vec<V3>, intensity: Vec<f32>, sensor: Option<Vec<V3>>, range: Option<&[f32]>) -> Result<Scan> {
-        let used: Vec<u32> = (0..xyz.len() as u32).filter(|&i| range.is_none_or(|r| r[i as usize] >= 1.0)).collect();
+    pub fn new(path: &str, xyz: Vec<V3>, intensity: Vec<f32>, sensor: Option<Vec<V3>>, range: Option<&[f32]>, min_range: f32) -> Result<Scan> {
+        let used: Vec<u32> = (0..xyz.len() as u32).filter(|&i| range.is_none_or(|r| r[i as usize] >= min_range)).collect();
         let sub: Vec<V3> = used.iter().step_by(60).map(|&i| xyz[i as usize]).collect();
         // The floor and walls from a thinner sample: they are large.
         let thin: Vec<V3> = used.iter().step_by(7).map(|&i| xyz[i as usize]).collect();
         let floor_z = crate::axes::floor_z(&thin).context("no floor found in the scan")?;
         let wall_axis = crate::axes::wall_axis(&thin, floor_z);
-        Ok(Scan { path: path.to_string(), xyz, intensity, sensor, used, sub, floor_z, wall_axis })
+        Ok(Scan { path: path.to_string(), xyz, intensity, sensor, used, min_range, ranged: range.is_some(), sub, floor_z, wall_axis })
     }
 
     /// The nearest scan point to a ray (the first surface it meets): of the
