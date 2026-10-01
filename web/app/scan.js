@@ -247,7 +247,7 @@ const CHANGE = { added: [60, 200, 90], removed: [235, 70, 60], moved: [60, 200, 
 /** The members to draw, each with its colour, for the proposal's mode (or as they are). */
 function drawList() {
   const hl = (m) => (sel.highlight || []).some((h) => m.path.includes(h)) || (sel.issue != null && st.issues.find((i) => i.id === sel.issue)?.place?.member === m.path);
-  const plain = (m) => ({ m, rgb: hl(m) ? [255, 60, 220] : m.colour.map((c) => Math.round(c * 255)), fill: hl(m) ? 90 : 34, line: 235 });
+  const plain = (m) => ({ m, rgb: hl(m) ? [255, 60, 220] : m.colour.map((c) => Math.round(c * 255)), fill: hl(m) ? 90 : 34, line: 235, change: hl(m) });
   if (!diff || !sel.proposal) return (members || []).map(plain);
   const mode = sel.proposal.mode, ch = diff.changes;
   if (mode === "before") return diff.before.map(plain);
@@ -256,31 +256,47 @@ function drawList() {
   const faint = (m) => ({ m, rgb: [150, 155, 165], fill: 0, line: 60 });
   for (const m of diff.before) {
     const c = ch[m.path];
-    if (c === "removed" || c === "moved") out.push({ m, rgb: CHANGE.from, fill: 70, line: 255 });
+    if (c === "removed" || c === "moved") out.push({ m, rgb: CHANGE.from, fill: 70, line: 255, change: true });
     else out.push(mode === "both" ? plain(m) : faint(m));
   }
   for (const m of diff.after) {
     const c = ch[m.path];
-    if (c === "added" || c === "moved") out.push({ m, rgb: CHANGE.added, fill: 70, line: 255 });
+    if (c === "added" || c === "moved") out.push({ m, rgb: CHANGE.added, fill: 70, line: 255, change: true });
   }
   return out;
 }
+
+/// Whether a view's points are coloured by hue (depth, normal): the model is
+/// then drawn in white outline, so it reads against them. Evidence colours
+/// are for views whose points are grey.
+const neutralModel = (v) => v.state.colour === "depth" || v.state.colour === "normal" || v.state.colour === "height";
 
 function rebuildModel() {
   const list = drawList();
   let nt = 0, nl = 0;
   for (const { m } of list) for (const f of m.faces) { nt += (f.length - 2) * 3; nl += f.length * 2; }
-  const tris = new Float32Array(nt * 3), tcol = new Uint8Array(nt * 4), lines = new Float32Array(nl * 3), lcol = new Uint8Array(nl * 4);
-  let ti = 0, li = 0;
-  const put = (arr, col, k, p, rgb, a) => { arr.set(p, k * 3); col.set([rgb[0], rgb[1], rgb[2], a], k * 4); };
-  for (const { m, rgb, fill, line } of list) {
-    for (const f of m.faces) {
-      const q = f.map(toScan);
-      if (fill) for (let i = 1; i + 1 < q.length; i++) for (const p of [q[0], q[i], q[i + 1]]) put(tris, tcol, ti++, p, rgb, fill);
-      for (let i = 0; i < q.length; i++) { put(lines, lcol, li++, q[i], rgb, line); put(lines, lcol, li++, q[(i + 1) % q.length], rgb, line); }
+  const build = (neutral) => {
+    const tris = new Float32Array(nt * 3), tcol = new Uint8Array(nt * 4), lines = new Float32Array(nl * 3), lcol = new Uint8Array(nl * 4);
+    let ti = 0, li = 0;
+    const put = (arr, col, k, p, rgb, a) => { arr.set(p, k * 3); col.set([rgb[0], rgb[1], rgb[2], a], k * 4); };
+    for (const { m, rgb, fill, line, change } of list) {
+      // A proposal's changes and highlights keep their colours.
+      const plain = neutral && !change;
+      const [c, a] = plain ? [[255, 255, 255], 0] : [rgb, fill];
+      for (const f of m.faces) {
+        const q = f.map(toScan);
+        if (a) for (let i = 1; i + 1 < q.length; i++) for (const p of [q[0], q[i], q[i + 1]]) put(tris, tcol, ti++, p, c, a);
+        for (let i = 0; i < q.length; i++) { put(lines, lcol, li++, q[i], c, plain ? Math.min(line, 200) : line); put(lines, lcol, li++, q[(i + 1) % q.length], c, plain ? Math.min(line, 200) : line); }
+      }
     }
+    return [tris.subarray(0, ti * 3), tcol.subarray(0, ti * 4), lines, lcol];
+  };
+  const made = {};
+  for (const v of Object.values(views)) {
+    const k = neutralModel(v);
+    v.modelNeutral = k;
+    v.setModel(...(made[k] ??= build(k)));
   }
-  for (const v of Object.values(views)) v.setModel(tris.subarray(0, ti * 3), tcol.subarray(0, ti * 4), lines, lcol);
 }
 
 /** Line segments of a box given by corners (8 points). */
@@ -349,7 +365,11 @@ function makeGlPane(kind, glKind) {
   const v = (views[kind] = new GLView(host, glKind));
   v.chip = chip; v.diffbar = bar; v.name = kind;
   host.addEventListener("pointerdown", () => { if (active !== kind) { active = kind; renderLayers(); } }, true);
-  v.onChange = () => { if (kind === "section") { requestSlab(); rebuildMarks(); } renderLayers(); };
+  v.onChange = () => {
+    if (kind === "section") { requestSlab(); rebuildMarks(); }
+    if (v.modelNeutral !== neutralModel(v)) rebuildModel();
+    renderLayers();
+  };
   v.onLabel = (id) => openIssue(id);
   v.onPick = async (ray) => {
     const cuts = v.cuts();
@@ -751,5 +771,5 @@ export async function initScan(hooks) {
   service.onState(onState);
   service.connect();
   // A first look: the scan beside what was open.
-  if (!app.shown("scan3d")) app.openBeside("scan3d");
+  if (!app.shown("scan3d") && !app.shown("section")) app.openBeside("scan3d");
 }

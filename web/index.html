@@ -1066,9 +1066,16 @@ try {
   if (Array.isArray(s) && s.length && s.every((k) => typeof k === "string")) slots = s.slice(0, 3);
 } catch (_) {}
 const shown = (kind) => slots.includes(kind);
+// What was open last time: kinds added later (by other modules) take their place back.
+const wanted = slots.slice();
 
 function registerPane(kind, def) {
   PANES[kind] = def;
+  if (wanted.includes(kind) && !shown(kind)) {
+    slots.splice(Math.min(wanted.indexOf(kind), slots.length), 0, kind);
+    // (The stand-in shown while it was not yet known.)
+    if (!wanted.includes("sheet") && slots.length > 1) slots = slots.filter((k) => k !== "sheet");
+  }
   layoutPanes();
 }
 
