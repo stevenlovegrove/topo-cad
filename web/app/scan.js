@@ -321,7 +321,8 @@ function rebuildMarks() {
   for (const s of st.surfaces || []) {
     const at = (a, b) => toScan(vec.add(s.centre, vec.add(vec.scale(s.u, a), vec.scale(s.v, b))));
     const q = [at(s.ext[0], s.ext[2]), at(s.ext[1], s.ext[2]), at(s.ext[1], s.ext[3]), at(s.ext[0], s.ext[3])];
-    for (let i = 0; i < 4; i++) segs.push([q[i], q[(i + 1) % 4], [40, 210, 200]]);
+    for (let i = 0; i < 4; i++) segs.push([q[i], q[(i + 1) % 4], s.id === sel.plane ? [200, 255, 250] : [40, 210, 200]]);
+    if (s.id === sel.plane) { segs.push([q[0], q[2], [200, 255, 250]]); segs.push([q[1], q[3], [200, 255, 250]]); }
   }
   const build = (extra) => {
     const all = segs.concat(extra);
@@ -378,11 +379,17 @@ function makeGlPane(kind, glKind) {
     pushHistory();
     v.frame(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k])), Math.max(1.2, 0.8 * Math.hypot(...vec.sub(i.place.max, i.place.min))));
   };
-  v.onPick = async (ray) => {
+  const pickAt = async (ray) => {
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
     sel.pick = r.hit ? r : null;
     renderChips(); rebuildMarks();
+  };
+  v.onPick = pickAt;
+  // Right-click: pick what is there, then offer what can be done with it.
+  v.onContext = async (ray, e) => {
+    await pickAt(ray);
+    contextMenu(v, e.clientX, e.clientY);
   };
   host.addEventListener("dblclick", () => { if (sel.pick?.hit && glKind === "3d") v.set({ target: sel.pick.hit }); });
   // A window dragged with shift: the points in it become a selection. In 3D only the
@@ -406,45 +413,182 @@ async function showSelection(id) {
   renderChips(); renderLayers();
 }
 
-function selectionChip(v, s) {
-  const pf = s.plane;
-  v.chip.innerHTML = `<b>${esc(s.id)}${s.label ? " " + esc(s.label) : ""}</b> · ${s.count.toLocaleString()} points` +
-    `<br>centre at model ${f3(toModel(s.centroid))}` +
-    (pf ? `<br>best plane: normal ${f3(unrot(pf.normal))}, rms ${(pf.rms * 1000).toFixed(1)} mm <span class="muted">(of all its points: not a fit)</span>` : "") +
-    `<div class="row"><button data-a="issue">New issue here</button><button data-a="label">Label</button><button data-a="delete">Delete</button><button data-a="clear">×</button></div>`;
-  for (const b of v.chip.querySelectorAll("button")) b.onclick = async () => {
-    const a = b.dataset.a;
-    if (a === "clear") showSelection(null);
-    else if (a === "issue") startDraft();
-    else if (a === "delete") { await service.call("selections", { action: "delete", id: s.id }); showSelection(null); }
-    else { const t = prompt("Label for this selection:", s.label); if (t != null) service.call("selections", { action: "label", id: s.id, label: t.trim() }); }
-  };
+// ----- what is pointed at: a point, the member there, a selection ------------------------
+// One flow for all three: point (click), member (the one at the point), region
+// (shift-drag a selection). The chip says what is pointed at; an issue can be
+// raised on any of them, from the chip, the right-click menu or the Issues tab.
+
+const shortPath = (p) => p.split("/").slice(-2).join("/");
+const theSelection = () => (sel.selection && st?.selections?.find((s) => s.id === sel.selection)) || null;
+const selName = (s) => `${s.id}${s.label ? " " + s.label : ""}`;
+
+/** Where a new issue can go, given what is pointed at: [{ key, label }], the likeliest first. */
+function whereOptions() {
+  const out = [], p = sel.pick, s = theSelection();
+  const onFace = p?.member && p.member.distance < 0.06;
+  if (p?.member && onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
+  if (p?.hit) out.push({ key: "point", label: `Point ${f3(p.model)}` });
+  if (p?.member && !onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
+  if (s) out.push({ key: "selection", label: `Selection ${selName(s)}` });
+  const pn = thePlane();
+  if (pn) out.push({ key: "plane", label: `Plane ${planeName(pn)}` });
+  out.push({ key: "none", label: "Not pinned" });
+  // A selection just made is what was meant, unless a point was picked after it.
+  if (s && !p) out.sort((a, b) => (b.key === "selection") - (a.key === "selection"));
+  return out;
+}
+
+// ----- planes: fitted to a selection or about a point, kept, named, referred to -----------
+const thePlane = () => (sel.plane && st?.surfaces?.find((s) => s.id === sel.plane)) || null;
+const planeName = (s) => `${s.id}${s.name ? " " + s.name : ""}`;
+const planeCorners = (s, grow = 0) => [[s.ext[0] - grow, s.ext[2] - grow], [s.ext[1] + grow, s.ext[2] - grow], [s.ext[1] + grow, s.ext[3] + grow], [s.ext[0] - grow, s.ext[3] + grow]].map(([a, b]) => toScan(vec.add(s.centre, vec.add(vec.scale(s.u, a), vec.scale(s.v, b)))));
+
+function showPlane(id) {
+  sel.plane = id;
+  renderChips(); renderLayers(); rebuildMarks();
+}
+
+/** Fits a plane (to a selection's points, or about a point) and keeps it. What the fit found is kept to read. */
+async function fitPlane(args) {
+  const r = await service.call("fit_surface", { ...args, keep: true });
+  if (r.error) return alert(r.error);
+  const id = r.text.match(/kept as plane (p\d+)/)?.[1];
+  if (!id) return;
+  (sel.fits ??= {})[id] = r.text;
+  sel.plane = id;
+  renderChips();
+}
+
+/** A section on a plane: the slab about it (a volume between two planes offset from it), seen square on. */
+function sectionOnPlane(s, thickness = 0.2) {
+  followLink({ pane: "section", section: { view: "custom", origin: s.centre, normal: s.normal, up: s.v, thickness, bounds: [s.ext[0] - 0.3, s.ext[1] + 0.3, s.ext[2] - 0.3, s.ext[3] + 0.3] } });
+}
+
+function gotoPlane(id) {
+  const s = st.surfaces?.find((x) => x.id === id);
+  if (!s) return;
+  pushHistory();
+  showPlane(id);
+  const c = planeCorners(s);
+  views[active].frame(c[0].map((x, k) => 0.5 * (x + c[2][k])), Math.max(0.8, 0.6 * Math.hypot(...vec.sub(c[2], c[0]))));
+}
+const deletePlane = async (id) => { await service.call("surfaces", { action: "delete", id }); if (sel.plane === id) showPlane(null); };
+
+const sectionAt = (a, q) => followLink({ pane: "section", section: a === "plan" ? { view: "plan", z: [q[2] - 0.05, q[2] + 0.05] } : a === "x" ? { view: "x", at: q[0], thickness: 0.2 } : { view: "y", at: q[1], thickness: 0.2 } });
+const deleteSelection = async (id) => { await service.call("selections", { action: "delete", id }); if (sel.selection === id) showSelection(null); };
+const nameSelection = (id, label) => service.call("selections", { action: "label", id, label: label.trim() });
+
+/** Goes to a selection: shows its points and frames the focused scan view on them (Back returns). */
+function gotoSelection(id) {
+  const s = st.selections?.find((x) => x.id === id);
+  if (!s) return;
+  pushHistory();
+  showSelection(id);
+  views[active].frame(s.min.map((x, k) => 0.5 * (x + s.max[k])), Math.max(0.8, 0.6 * Math.hypot(...vec.sub(s.max, s.min))));
 }
 
 function renderChips() {
-  const chosen = sel.selection && st?.selections?.find((s) => s.id === sel.selection);
+  const s = theSelection(), p = sel.pick, pn = thePlane();
   for (const v of Object.values(views)) {
-    const p = sel.pick;
-    v.chip.hidden = !p && !chosen;
-    if (chosen && !p) { selectionChip(v, chosen); continue; }
-    if (!p) continue;
-    const m = p.member;
-    const ev = m && members?.find((x) => x.path === m.path)?.evidence;
-    v.chip.innerHTML = `<b>model ${f3(p.model)}</b>` +
-      (m ? `<br>${esc(m.path.split("/").slice(-2).join("/"))} · ${(m.distance * 1000).toFixed(0)} mm from its face` + (ev ? `<br><span class="ev ${ev.state}">${ev.state}</span> ${ev.points} points, ${ev.rays_through} of ${ev.rays_through + ev.rays_ending} rays through` : "") : "<br>no member within 0.5 m") +
-      `<div class="row"><button data-a="issue">New issue here</button>${m ? `<button data-a="checks">Checks</button>` : ""}<button data-a="plan" title="A plan section at this height">Plan</button><button data-a="x" title="A section across the model's x at this point">X</button><button data-a="y" title="A section across the model's y at this point">Y</button><button data-a="clear">×</button></div>`;
+    v.chip.hidden = !p && !s && !pn;
+    if (v.chip.hidden) continue;
+    // Being named: leave it as it is.
+    if (v.chip.contains(document.activeElement) && document.activeElement.classList.contains("selname")) continue;
+    let html = "";
+    if (p) {
+      const m = p.member, ev = m && members?.find((x) => x.path === m.path)?.evidence;
+      html += `<div><b>Point</b> model ${f3(p.model)}</div>` +
+        (m ? `<div><b>Member</b> ${esc(shortPath(m.path))} · ${(m.distance * 1000).toFixed(0)} mm from its face` + (ev ? `<br><span class="ev ${ev.state}">${ev.state}</span> ${ev.points} points, ${ev.rays_through} of ${ev.rays_through + ev.rays_ending} rays through` : "") + `</div>` : `<div class="muted">no member within 0.5 m</div>`);
+    }
+    if (s) {
+      html += `<div><b>Selection</b> ${esc(s.id)} <span class="selname" contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(s.label)}</span> · ${s.count.toLocaleString()} points` +
+        (s.plane ? `<br><span class="muted">best plane of all its points: normal ${f3(unrot(s.plane.normal))}, rms ${(s.plane.rms * 1000).toFixed(1)} mm (not a fit)</span>` : "") + `</div>`;
+    }
+    if (pn) {
+      html += `<div><b>Plane</b> ${esc(pn.id)} <span class="selname" data-plane="1" contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(pn.name)}</span> · facing ${f3(pn.normal)}` +
+        `<br><span class="muted">${pn.count.toLocaleString()} points within the band, rms ${(pn.rms * 1000).toFixed(1)} mm; ${(pn.ext[1] - pn.ext[0]).toFixed(2)} × ${(pn.ext[3] - pn.ext[2]).toFixed(2)} m. What surface it is, is yours to say.</span>` +
+        (sel.fits?.[pn.id] ? `<details><summary>What the fit found</summary><pre>${esc(sel.fits[pn.id])}</pre></details>` : "") + `</div>`;
+    }
+    html += `<div class="row"><button data-a="issue">New issue…</button>${p?.member ? `<button data-a="checks">Checks</button>` : ""}` +
+      (p ? `<button data-a="plan" title="A plan section at this height">Plan</button><button data-a="x" title="A section across the model's x at this point">X</button><button data-a="y" title="A section across the model's y at this point">Y</button>` : "") +
+      (s ? `<button data-a="fit" title="Fit a plane to the selection's points and keep it">Fit plane</button><button data-a="delete" title="Delete the selection">Delete ${esc(s.id)}</button>` : "") +
+      (pn ? `<button data-a="secplane" title="A section on this plane: the slab about it, seen square on">Section on ${esc(pn.id)}</button><button data-a="delplane" title="Delete the plane">Delete ${esc(pn.id)}</button>` : "") +
+      `<button data-a="clear" title="Point at nothing">×</button></div>`;
+    v.chip.innerHTML = html;
+    for (const name of v.chip.querySelectorAll(".selname")) {
+      const plane = !!name.dataset.plane, was = plane ? pn.name : s.label;
+      name.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); name.blur(); } if (e.key === "Escape") { name.textContent = was; name.blur(); } };
+      name.onblur = () => { const t = name.textContent.trim(); if (t !== was) plane ? service.call("surfaces", { action: "label", id: pn.id, label: t }) : nameSelection(s.id, t); };
+    }
     for (const b of v.chip.querySelectorAll("button")) b.onclick = () => {
       const a = b.dataset.a;
-      if (a === "clear") { sel.pick = null; renderChips(); rebuildMarks(); }
+      if (a === "clear") { sel.pick = null; sel.plane = null; showSelection(null); rebuildMarks(); }
       else if (a === "issue") startDraft();
-      else if (a === "checks") app.inspect(m.path);
-      else {
-        const q = p.model;
-        const spec = a === "plan" ? { view: "plan", z: [q[2] - 0.05, q[2] + 0.05] } : a === "x" ? { view: "x", at: q[0], thickness: 0.2 } : { view: "y", at: q[1], thickness: 0.2 };
-        followLink({ pane: "section", section: spec });
-      }
+      else if (a === "checks") app.inspect(p.member.path);
+      else if (a === "delete") deleteSelection(s.id);
+      else if (a === "fit") fitPlane({ selection: s.id });
+      else if (a === "secplane") sectionOnPlane(pn);
+      else if (a === "delplane") deletePlane(pn.id);
+      else sectionAt(a, p.model);
     };
   }
+}
+
+/** The right-click menu of a scan view, for what was just picked there. */
+function contextMenu(v, x, y) {
+  closeMenu();
+  const p = sel.pick, s = theSelection(), items = [];
+  const add = (label, run, cls) => items.push({ label, run, cls });
+  for (const w of whereOptions()) if (w.key !== "none") add(`New issue: ${w.label.toLowerCase().startsWith("point") ? "at this point" : "on " + w.label[0].toLowerCase() + w.label.slice(1)}`, () => startDraft(w.key));
+  add("New issue, not pinned", () => startDraft("none"));
+  if (p) {
+    items.push(null);
+    add("Section here: plan", () => sectionAt("plan", p.model));
+    add("Section here: across x", () => sectionAt("x", p.model));
+    add("Section here: across y", () => sectionAt("y", p.model));
+    if (v.state.kind !== "section") add("Orbit about this point", () => v.set({ target: p.hit }));
+    if (p.member) add(`Checks for ${shortPath(p.member.path)}`, () => app.inspect(p.member.path));
+  }
+  if (s) {
+    items.push(null);
+    add(`Name selection ${s.id}…`, () => { const n = v.chip.querySelector(".selname"); if (n) { n.focus(); document.getSelection().selectAllChildren(n); } });
+    add(`Go to selection ${selName(s)}`, () => gotoSelection(s.id));
+    add(`Hide selection ${s.id}`, () => showSelection(null));
+    add(`Delete selection ${s.id}`, () => deleteSelection(s.id), "danger");
+  }
+  const others = (st.selections || []).filter((o) => o.id !== s?.id);
+  if (others.length) {
+    items.push(null);
+    for (const o of others.slice(-6)) add(`Show selection ${selName(o)}`, () => showSelection(o.id));
+  }
+  // Planes: fitted to the selection or about the point; kept, named and used like selections.
+  const pn = thePlane();
+  items.push(null);
+  if (s) add(`Fit a plane to selection ${s.id}`, () => fitPlane({ selection: s.id }));
+  if (p) add("Fit a plane here (points within 1 m)", () => fitPlane({ seed: p.hit, frame: "scan", radius: 1.0 }));
+  if (pn) {
+    add(`Section on plane ${planeName(pn)}`, () => sectionOnPlane(pn));
+    add(`Name plane ${pn.id}…`, () => { const n = v.chip.querySelector(".selname[data-plane]"); if (n) { n.focus(); document.getSelection().selectAllChildren(n); } });
+    add(`Go to plane ${pn.id}`, () => gotoPlane(pn.id));
+    add(`Delete plane ${pn.id}`, () => deletePlane(pn.id), "danger");
+  }
+  for (const o of (st.surfaces || []).filter((o) => o.id !== pn?.id).slice(-6)) add(`Show plane ${planeName(o)}`, () => showPlane(o.id));
+  if (items[items.length - 1] === null) items.pop();
+  const menu = el("div", { class: "ctxmenu", id: "ctxmenu" });
+  for (const it of items) {
+    if (!it) { menu.appendChild(el("hr")); continue; }
+    const b = el("button", { class: it.cls || "" });
+    b.textContent = it.label;
+    b.onclick = () => { closeMenu(); it.run(); };
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  // Inside the window.
+  menu.style.left = `${Math.min(x, window.innerWidth - menu.offsetWidth - 6)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - menu.offsetHeight - 6)}px`;
+}
+function closeMenu() {
+  $("ctxmenu")?.remove();
 }
 
 function renderDiffBars() {
@@ -491,6 +635,8 @@ function renderLayers() {
     <div class="row2"><button data-a="top" title="Straight down, the model's +y up the screen">Top-down</button><button data-a="fit">Fit model</button></div>`}
     <h4>Selections <span class="muted">shift-drag in a view</span></h4>
     <ul>${(st?.selections || []).map((x) => `<li data-sel="${esc(x.id)}" class="${x.id === sel.selection ? "on" : ""}">${esc(x.id)} ${esc(x.label)} <span class="muted">${x.count.toLocaleString()}</span></li>`).join("") || `<div class="muted">None yet.</div>`}</ul>
+    <h4>Planes <span class="muted">right-click: fit a plane</span></h4>
+    <ul>${(st?.surfaces || []).map((x) => `<li data-plane="${esc(x.id)}" class="${x.id === sel.plane ? "on" : ""}">${esc(planeName(x))} <span class="muted">${(x.rms * 1000).toFixed(0)} mm</span></li>`).join("") || `<div class="muted">None yet.</div>`}</ul>
     <h4>Scan</h4>
     <div class="muted">${st?.scan.loaded ? `${st.scan.points.toLocaleString()} points; ${(st.cloud ?? 0).toLocaleString()} drawn in 3D` : esc(st?.loading || "loading")}${st?.tally ? `<br>${st.tally.supported} members supported, ${st.tally.contradicted} contradicted, ${st.tally.unseen} unseen` : ""}</div>`;
   for (const i of box.querySelectorAll("[data-k]")) i.oninput = () => { v.set({ [i.dataset.k]: i.type === "checkbox" ? i.checked : i.type === "range" ? Number(i.value) : i.value }); };
@@ -509,6 +655,7 @@ function renderLayers() {
   };
   for (const b of box.querySelectorAll("button[data-a]")) b.onclick = () => { acts[b.dataset.a](); requestSlab(); rebuildMarks(); renderLayers(); };
   for (const li of box.querySelectorAll("li[data-sel]")) li.onclick = () => showSelection(li.dataset.sel === sel.selection ? null : li.dataset.sel);
+  for (const li of box.querySelectorAll("li[data-plane]")) li.onclick = () => showPlane(li.dataset.plane === sel.plane ? null : li.dataset.plane);
   const th = box.querySelector("input[data-a=thick]");
   if (th) th.onchange = () => { if (s.section && Number(th.value) > 0) { v.set({ section: { ...s.section, half: Number(th.value) / 2 } }); requestSlab(); } };
 }
@@ -562,24 +709,25 @@ async function openIssue(id) {
   if (s && s !== sel.selection) showSelection(s);
 }
 
-function startDraft() {
+/// Starts a new issue: its title is typed in place; `where` is what it is
+/// pinned to ("point", "member", "selection" or "none"; default the likeliest).
+function startDraft(where) {
   sel.issue = null;
   sel.drafting = true;
+  sel.where = where ?? whereOptions()[0].key;
   app.showTab("issues");
   renderIssues();
   $("issuePanel").querySelector("#draftTitle")?.focus();
 }
 
 async function createIssue(title, text) {
-  const args = { action: "create", title, category: sel.pick || sel.selection ? "scan" : "note" };
+  const where = whereOptions().some((w) => w.key === sel.where) ? sel.where : "none";
+  const args = { action: "create", title, category: where === "none" ? "note" : "scan" };
   if (text) args.text = text;
-  if (sel.selection && !sel.pick) args.selection = sel.selection;
-  else if (sel.pick?.hit) {
-    args.frame = "scan";
-    args.point = sel.pick.hit;
-    // On a member's face: pinned to the member.
-    if (sel.pick.member && sel.pick.member.distance < 0.06) { delete args.point; delete args.frame; args.member = sel.pick.member.path; }
-  }
+  if (where === "selection") args.selection = sel.selection;
+  else if (where === "plane") args.plane = sel.plane;
+  else if (where === "member") args.member = sel.pick.member.path;
+  else if (where === "point") { args.frame = "scan"; args.point = sel.pick.hit; }
   const r = await service.call("issues", args);
   if (r.error) return alert(r.error);
   sel.drafting = false;
@@ -604,18 +752,21 @@ function renderIssues() {
   const typing = box.querySelector("#draftTitle"), typed = typing?.value ?? "", typingNow = document.activeElement === typing;
   box.innerHTML = `
     <div class="ibar">
-      <button class="act primary" id="newIssue" title="${sel.pick ? "Pinned to the point you picked" : sel.selection ? "Pinned to your selection" : "Pick a point or shift-drag a selection in a scan view first to pin it there; otherwise a note"}">New issue${sel.pick || sel.selection ? " here" : ""}</button>
+      <button class="act primary" id="newIssue" title="Raise an issue: on the point, member or selection you are pointing at in a scan view, or not pinned">New issue…</button>
       <select id="issueFilter" title="Category">${["all", "scan", "note", "check"].map((k) => `<option ${k === sel.filter ? "selected" : ""}>${k}</option>`).join("")}</select>
       <label class="c"><input type="checkbox" id="issueDone" ${sel.done ? "checked" : ""}> done</label>
     </div>
-    ${sel.drafting ? `<div class="draft"><input type="text" id="draftTitle" placeholder="What is wrong, or what do you want to know?"><div class="muted">${sel.pick?.hit ? `At model ${f3(sel.pick.model)}${sel.pick.member && sel.pick.member.distance < 0.06 ? `, on ${esc(sel.pick.member.path.split("/").slice(-2).join("/"))}` : ""}.` : "Not pinned to a place (pick a point in a scan view to pin it)."} Enter to raise it, Esc to cancel.</div></div>` : ""}
+    ${sel.drafting ? `<div class="draft"><input type="text" id="draftTitle" placeholder="What is wrong, or what do you want to know?">
+      <div class="where"><span class="muted">Pinned to</span>${whereOptions().map((w) => `<button data-where="${w.key}" class="${w.key === sel.where ? "on" : ""}">${esc(w.label)}</button>`).join("")}</div>
+      <div class="muted">${whereOptions().length === 1 ? "Click a point, or shift-drag a region, in a scan view to pin it there. " : ""}Enter to raise it, Esc to cancel.</div></div>` : ""}
     <ul class="ilist">${all.map((i) => `
       <li data-id="${i.id}" class="${i.status}${onMe(i) ? " mine" : ""}">
         <span class="pri p${i.priority}" title="${PRIORITY[i.priority]} priority"></span>
         <span class="t">${i.ephemeral ? "" : `<b>#${i.id}</b> `}${esc(i.title)}</span>
         <span class="meta">${i.assignee ? badge(i.assignee, true) : ""}<span class="chip ${i.status}">${i.status === "waiting" ? `waiting on ${esc(waitingOn(i))}` : STATUS[i.status]}</span><span class="cat">${i.category}</span></span>
       </li>`).join("") || `<li class="none muted">Nothing here. Pick a point in a scan view and raise what you see.</li>`}</ul>`;
-  $("newIssue").onclick = startDraft;
+  $("newIssue").onclick = () => startDraft();
+  for (const b of box.querySelectorAll("button[data-where]")) b.onclick = () => { sel.where = b.dataset.where; renderIssues(); $("draftTitle")?.focus(); };
   $("issueFilter").onchange = (e) => { sel.filter = e.target.value; renderIssues(); renderBoard(); };
   $("issueDone").onchange = (e) => { sel.done = e.target.checked; renderIssues(); };
   const dt = $("draftTitle");
@@ -633,12 +784,22 @@ function renderIssues() {
   };
 }
 
+/// Text with what it refers to made live: a selection by its id (s3) shows that selection; an issue (#4) opens it.
+function refs(text) {
+  return esc(text).replace(/(^|[^\w#])(s\d+|p\d+|#\d+)\b/g, (all, pre, id) => {
+    if (id[0] === "p") { const pn = st.surfaces?.find((x) => x.id === id); return pn ? `${pre}<a href="#" class="ref sel" data-planeref="${id}" title="Show this plane">${esc(planeName(pn))}</a>` : all; }
+    if (id[0] === "#") return st.issues.some((i) => i.id === Number(id.slice(1))) ? `${pre}<a href="#" class="ref" data-issue="${id.slice(1)}">${id}</a>` : all;
+    const s = st.selections?.find((x) => x.id === id);
+    return s ? `${pre}<a href="#" class="ref sel" data-selref="${id}" title="Show this selection (${s.count.toLocaleString()} points)">${esc(selName(s))}</a>` : all;
+  });
+}
+
 function entryHtml(issue, e, k) {
   const who = `${badge(e.who, true)} <b>${esc(service.participant(e.who).name)}</b> <span class="muted">${when(e.time)}</span>`;
-  if (e.kind === "comment") return `<div class="entry comment">${who}<div class="text">${esc(e.text)}</div>${e.view ? `<button class="viewlink" data-view="${k}" title="Show this in a pane (Back returns to your view)">Show: ${esc(e.view_label || "view")}</button>` : ""}</div>`;
+  if (e.kind === "comment") return `<div class="entry comment">${who}<div class="text">${refs(e.text)}</div>${e.view ? `<button class="viewlink" data-view="${k}" title="Show this in a pane (Back returns to your view)">Show: ${esc(e.view_label || "view")}</button>` : ""}</div>`;
   if (e.kind === "tool") return `<div class="entry tool">${badge(e.who, true)} ran <code>${esc(e.name)}</code> <span class="muted">${esc(e.summary)}</span></div>`;
   if (e.kind === "change") return `<div class="entry tool">${badge(e.who, true)} <span class="muted">${esc(e.what)} · ${when(e.time)}</span></div>`;
-  if (e.kind === "evidence") return `<div class="entry card">${who}<div class="k">Evidence</div><b>${esc(e.title)}</b><div class="text">${esc(e.text)}</div></div>`;
+  if (e.kind === "evidence") return `<div class="entry card">${who}<div class="k">Evidence</div><b>${esc(e.title)}</b><div class="text">${refs(e.text)}</div></div>`;
   if (e.kind === "proposal") {
     const on = sel.proposal?.commit === e.commit;
     const d = (a, b) => (a === b ? `${a}` : `${a} → <b>${b}</b>`);
@@ -671,10 +832,10 @@ function renderThread(box, i) {
       <select id="iAssignee" title="Whose it is"><option value="">nobody's</option>${st.participants.map((p) => `<option value="${esc(p.id)}" ${p.id === i.assignee ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
     </div>
     <div class="ihead"><b>#${i.id}</b> <span id="iTitle" title="Click to rename">${esc(i.title)}</span>
-      <div class="muted">${i.category} · raised by ${esc(service.participant(i.by).name)} ${when(i.time)}${i.place ? ` · <a href="#" id="iGo">${i.place.member ? esc(i.place.member.split("/").slice(-2).join("/")) : "at model " + f3(toModel(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k]))))}</a>` : " · not pinned"}${i.status === "waiting" ? ` · <b>waiting on ${esc(waitingOn(i))}</b>` : ""}</div></div>
+      <div class="muted">${i.category} · raised by ${esc(service.participant(i.by).name)} ${when(i.time)}${i.place ? ` · <a href="#" id="iGo" title="Go there (Back returns)">${i.place.member ? "member " + esc(shortPath(i.place.member)) : i.place.selection ? "selection " + esc(selName(st.selections?.find((s) => s.id === i.place.selection) ?? { id: i.place.selection })) : i.place.plane ? "plane " + esc(planeName(st.surfaces?.find((s) => s.id === i.place.plane) ?? { id: i.place.plane })) : "at model " + f3(toModel(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k]))))}</a>` : " · not pinned"}${i.status === "waiting" ? ` · <b>waiting on ${esc(waitingOn(i))}</b>` : ""}</div></div>
     <div class="thread">${i.entries.map((e, k) => entryHtml(i, e, k)).join("") || `<div class="muted" style="padding:8px 2px">Nothing said yet.</div>`}</div>
     <div class="composer"><textarea id="reply" rows="2" placeholder="Reply in #${i.id}… (Enter sends; @name to call someone)"></textarea>
-      <div class="row"><label class="c" title="Attach the focused scan view (${esc(describeView())}) as a link others can follow"><input type="checkbox" id="attach" ${attach ? "checked" : ""}> attach my view</label><button class="act primary" id="send">Send</button></div></div>`;
+      <div class="row"><label class="c" title="Attach the focused scan view (${esc(describeView())}) as a link others can follow"><input type="checkbox" id="attach" ${attach ? "checked" : ""}> attach my view</label>${theSelection() ? `<button data-ref="${esc(sel.selection)}" title="Refer to the selection you have shown: its id is put in your reply, and becomes a link">+ ${esc(selName(theSelection()))}</button>` : ""}${thePlane() ? `<button data-ref="${esc(sel.plane)}" title="Refer to the plane you have shown">+ ${esc(planeName(thePlane()))}</button>` : ""}<button class="act primary" id="send">Send</button></div></div>`;
   const reply = $("reply");
   reply.value = draft;
   if (caret) { reply.focus(); reply.setSelectionRange(...caret); }
@@ -708,6 +869,10 @@ function renderThread(box, i) {
   const go = $("iGo");
   if (go) go.onclick = (e) => { e.preventDefault(); followLink({ pane: views[active].state.kind === "section" ? "section" : "3d", camera: { issue: i.id } }); };
   for (const b of box.querySelectorAll("button[data-view]")) b.onclick = () => followLink(i.entries[Number(b.dataset.view)].view);
+  for (const a of box.querySelectorAll("a[data-selref]")) a.onclick = (e) => { e.preventDefault(); gotoSelection(a.dataset.selref); };
+  for (const a of box.querySelectorAll("a[data-planeref]")) a.onclick = (e) => { e.preventDefault(); gotoPlane(a.dataset.planeref); };
+  for (const b of box.querySelectorAll("button[data-ref]")) b.onclick = () => { const at = reply.selectionStart ?? reply.value.length; reply.setRangeText(`${at && !/\s$/.test(reply.value.slice(0, at)) ? " " : ""}${b.dataset.ref} `, at, reply.selectionEnd ?? at, "end"); reply.focus(); };
+  for (const a of box.querySelectorAll("a[data-issue]")) a.onclick = (e) => { e.preventDefault(); openIssue(Number(a.dataset.issue)); };
   for (const b of box.querySelectorAll("button[data-p]")) b.onclick = async () => {
     const p = i.entries.find((e) => e.kind === "proposal" && e.n === Number(b.dataset.p)), a = b.dataset.a;
     if (a === "show") return selectProposal(sel.proposal?.commit === p.commit ? null : { issue: i.id, n: p.n, commit: p.commit, mode: "changed" });
@@ -789,7 +954,7 @@ function onState(s) {
   loadMembers();
   app.setStatus(s.loading ? `scan: ${s.loading}…` : !service.connected ? "the workspace service is not answering" : null);
   if (sel.issue != null && !s.issues.some((i) => i.id === sel.issue)) sel.issue = null;
-  renderPeople(); renderIssues(); renderBoard(); renderViews(); renderLayers(); rebuildMarks(); renderDiffBars(); renderHistory();
+  renderPeople(); renderIssues(); renderBoard(); renderViews(); renderLayers(); rebuildMarks(); renderDiffBars(); renderHistory(); renderChips();
 }
 
 export async function initScan(hooks) {
@@ -820,6 +985,9 @@ export async function initScan(hooks) {
   pane.appendChild(el("div", { id: "issuePanel" }));
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && sel.drafting) { sel.drafting = false; renderIssues(); } });
   window.addEventListener("topo-checks", () => renderIssues());
+  // The right-click menu closes on anything else.
+  document.addEventListener("pointerdown", (e) => { if (!e.target.closest?.("#ctxmenu")) closeMenu(); }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
   service.onState(onState);
   service.connect();
   // A first look: the scan beside what was open.

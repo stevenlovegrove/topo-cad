@@ -125,7 +125,8 @@ impl Workspace {
         let keep = move |p: V3| {
             z.is_none_or(|z| p[2] - pl.t[2] >= z[0] && p[2] - pl.t[2] <= z[1]) && slab.is_none_or(|(o, n, half)| crate::dot(n, crate::sub(p, o)).abs() <= half)
         };
-        let Some((i, t)) = scan.ray_hit(origin, dir, 0.015, 0.004, 1, &keep) else {
+        // A narrow ray first; where the points are sparse, a wider one.
+        let Some((i, t)) = scan.ray_hit(origin, dir, 0.015, 0.004, 1, &keep).or_else(|| scan.ray_hit(origin, dir, 0.04, 0.012, 1, &keep)) else {
             return Ok(json!({"hit": null}));
         };
         let p = scan.xyz[i as usize];

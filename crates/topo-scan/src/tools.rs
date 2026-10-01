@@ -698,19 +698,27 @@ impl Workspace {
         if rows.len() > 16 {
             s += "    …\n";
         }
-        if let Some(name) = args.get("name").and_then(|v| v.as_str()) {
+        // Kept (with `keep`, or by giving it a name) as a plane: p1, p2, …
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if !name.is_empty() || args.get("keep").and_then(|v| v.as_bool()).unwrap_or(false) {
             let describes = args.get("describes").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let mut support = args.clone();
             support.as_object_mut().map(|o| {
                 o.remove("name");
                 o.remove("describes");
+                o.remove("keep");
             });
-            self.items.surfaces.retain(|x| x.name != name);
-            self.items.surfaces.push(Surface { name: name.to_string(), describes: describes.clone(), by: who.to_string(), centre: f.centre, normal: n, u: f.u, v: f.v, ext: f.ext, rms: f.rms, count: f.count, support });
+            // Fitted again under the same name: the same plane, as it now is.
+            let old = (!name.is_empty()).then(|| self.items.surfaces.iter().position(|x| x.name == name)).flatten();
+            let id = match old {
+                Some(k) => self.items.surfaces.remove(k).id,
+                None => format!("p{}", self.items.surfaces.iter().filter_map(|x| x.id.strip_prefix('p')?.parse::<u32>().ok()).max().unwrap_or(0) + 1),
+            };
+            self.items.surfaces.push(Surface { id: id.clone(), name: name.to_string(), describes: describes.clone(), by: who.to_string(), centre: f.centre, normal: n, u: f.u, v: f.v, ext: f.ext, rms: f.rms, count: f.count, support });
             self.save_items(who)?;
-            s += &format!("  kept as surface {name:?}: {describes}\n");
+            s += &format!("  kept as plane {id} {name:?}: {describes}\n");
         } else {
-            s += "  (not kept: give `name` and `describes` to keep it)\n";
+            s += "  (not kept: give `keep`, or `name` and `describes`, to keep it)\n";
         }
         Ok(vec![json!({"type": "text", "text": s})])
     }

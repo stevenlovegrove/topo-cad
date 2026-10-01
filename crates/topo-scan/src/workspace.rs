@@ -100,6 +100,10 @@ pub struct Room {
 /// the model changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Surface {
+    /// What it is referred to by ("p3").
+    #[serde(default)]
+    pub id: String,
+    /// Its name, if it has been given one.
     pub name: String,
     /// What it is, in words ("sheathing seen between the studs").
     pub describes: String,
@@ -850,7 +854,21 @@ impl Workspace {
         let model = Self::frame_is_model(args)?;
         if let Some(id) = args.get("selection").and_then(|v| v.as_str()) {
             let s = self.items.selections.iter().find(|s| s.id == id).with_context(|| format!("no selection {id}"))?;
-            return Ok(Some(Place { min: s.min, max: s.max, member: None, selection: Some(id.to_string()) }));
+            return Ok(Some(Place { min: s.min, max: s.max, member: None, selection: Some(id.to_string()), plane: None }));
+        }
+        if let Some(id) = args.get("plane").and_then(|v| v.as_str()) {
+            // A plane's patch, as a box in the scan.
+            let pl = self.placement()?;
+            let s = self.items.surfaces.iter().find(|s| s.id == id || s.name == id).with_context(|| format!("no plane {id}"))?;
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for (a, b) in [(s.ext[0], s.ext[2]), (s.ext[1], s.ext[2]), (s.ext[1], s.ext[3]), (s.ext[0], s.ext[3])] {
+                let q = pl.apply(std::array::from_fn(|k| s.centre[k] + a * s.u[k] + b * s.v[k]));
+                for k in 0..3 {
+                    lo[k] = lo[k].min(q[k] - 0.02);
+                    hi[k] = hi[k].max(q[k] + 0.02);
+                }
+            }
+            return Ok(Some(Place { min: lo, max: hi, member: None, selection: None, plane: Some(s.id.clone()) }));
         }
         if let Some(f) = args.get("member").and_then(|v| v.as_str()) {
             let pl = self.placement()?;
@@ -867,12 +885,12 @@ impl Workspace {
                     hi[a] = hi[a].max(q[a]);
                 }
             }
-            return Ok(Some(Place { min: lo, max: hi, member: Some(if ks.len() == 1 { m.pred.members[ks[0]].path.clone() } else { f.to_string() }), selection: None }));
+            return Ok(Some(Place { min: lo, max: hi, member: Some(if ks.len() == 1 { m.pred.members[ks[0]].path.clone() } else { f.to_string() }), selection: None, plane: None }));
         }
         if let Some(b) = args.get("box") {
             let (a, c) = (arr3(&b["min"]).context("box: {min, max}")?, arr3(&b["max"]).context("box: {min, max}")?);
             let (a, c) = (self.to_scan(a, model)?, self.to_scan(c, model)?);
-            return Ok(Some(Place { min: std::array::from_fn(|k| a[k].min(c[k])), max: std::array::from_fn(|k| a[k].max(c[k])), member: None, selection: None }));
+            return Ok(Some(Place { min: std::array::from_fn(|k| a[k].min(c[k])), max: std::array::from_fn(|k| a[k].max(c[k])), member: None, selection: None, plane: None }));
         }
         if let Some(p) = args.get("point").and_then(arr3) {
             return Ok(Some(Place::about(self.to_scan(p, model)?, 0.1)));
@@ -955,19 +973,31 @@ impl Workspace {
     fn surfaces(&mut self, who: &str, args: &Value) -> Result<Vec<Value>> {
         match args.get("action").and_then(|v| v.as_str()).unwrap_or("list") {
             "list" => {
-                let mut s = format!("{} surfaces (model frame):\n", self.items.surfaces.len());
+                let mut s = format!("{} planes (fitted surfaces; model frame):\n", self.items.surfaces.len());
                 for x in &self.items.surfaces {
-                    s += &format!("  {:?}: {}\n    plane n·p = {:.4} with n = {}, through {}; rms {:.1} mm over {} points; by {}\n", x.name, x.describes, crate::dot(x.normal, x.centre), f3(x.normal), f3(x.centre), x.rms * 1e3, x.count, self.store.name_of(&x.by));
+                    s += &format!("  {} {:?}: {}\n    plane n·p = {:.4} with n = {}, through {}; rms {:.1} mm over {} points; by {}\n", x.id, x.name, x.describes, crate::dot(x.normal, x.centre), f3(x.normal), f3(x.centre), x.rms * 1e3, x.count, self.store.name_of(&x.by));
                 }
                 Ok(text(s))
             }
-            "delete" => {
-                let name = args.get("name").and_then(|v| v.as_str()).context("name")?;
-                self.items.surfaces.retain(|x| x.name != name);
+            // One is named by its id (p3) or its name.
+            action @ ("delete" | "label") => {
+                let key = args.get("id").or(args.get("name")).and_then(|v| v.as_str()).context("id")?.to_string();
+                let k = self.items.surfaces.iter().position(|x| x.id == key || x.name == key).with_context(|| format!("no plane {key:?}"))?;
+                let id = self.items.surfaces[k].id.clone();
+                if action == "delete" {
+                    self.items.surfaces.remove(k);
+                } else {
+                    if let Some(l) = args.get("label").and_then(|v| v.as_str()) {
+                        self.items.surfaces[k].name = l.to_string();
+                    }
+                    if let Some(d) = args.get("describes").and_then(|v| v.as_str()) {
+                        self.items.surfaces[k].describes = d.to_string();
+                    }
+                }
                 self.save_items(who)?;
-                Ok(text(format!("deleted surface {name:?}")))
+                Ok(text(format!("{} {id}", if action == "delete" { "deleted" } else { "named" })))
             }
-            a => bail!("action must be list or delete, not {a:?}"),
+            a => bail!("action must be list, label or delete, not {a:?}"),
         }
     }
 

@@ -220,6 +220,22 @@ Details that were decided in the building:
   surface seen at a grazing angle is taken thinly; in a section, all of
   the slab's points in the window. `measure`, `fit_surface` and an
   issue's place take a selection by its id.
+- **Pointing at things is one flow.** In a scan view a click picks a
+  point (and the member there), shift-drag selects a region, and a
+  right-click opens a menu for what is there. The chip says what is
+  pointed at: point, member, selection, plane. An issue is raised on any
+  of them the same way (from the chip, the menu or the Issues tab), and
+  its draft says what it is pinned to, to change before it is raised.
+- **Selections and planes are things with ids** (`s3`, `p2`): shown,
+  named in place, deleted, and referred to. An id written in a reply
+  becomes a link that shows the thing and goes to it; an issue's number
+  (`#4`) likewise.
+- **A plane** is a fit kept: to a selection's points, or about a picked
+  point ("Fit a plane" in the menu; `fit_surface` with `keep` for
+  agents). "Section on a plane" opens the slab about it, seen square on:
+  a volume between two planes offset from it, whose thickness and
+  position are set in Layers. A shift-drag in that section selects the
+  points of the volume.
 - **The model over the points** is coloured by evidence where the points
   are grey (intensity), and drawn in white outline where the points are
   coloured by hue (depth, normal, height).

@@ -228,6 +228,21 @@
   .board .card.on { outline: 2px solid var(--ink); } .board .card.mine { background: #fff4d6; } .board .card.drag { opacity: .4; }
   .board .meta { margin-top: 4px; }
   #scanStatus { color: var(--muted); font-size: 12px; }
+  .glchip > div { margin-bottom: 3px; }
+  .glchip details pre { max-height: 220px; overflow: auto; font: 10.5px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; margin: 4px 0 0; }
+  .glchip summary { cursor: pointer; color: var(--accent); }
+  .selname { display: inline-block; min-width: 54px; padding: 0 4px; border-bottom: 1px dashed #999; outline: none; cursor: text; font-weight: 600; }
+  .selname:empty::before { content: attr(data-ph); color: var(--muted); font-weight: 400; font-style: italic; }
+  .selname:focus { border-bottom: 1px solid var(--accent); background: #fffbe6; }
+  .ctxmenu { position: fixed; z-index: 100; min-width: 220px; max-width: 360px; background: #fff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 22px rgba(0,0,0,.25); padding: 4px; font-size: 12.5px; }
+  .ctxmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 4px 9px; border-radius: 4px; font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctxmenu button:hover { background: #eef3fd; } .ctxmenu button.danger { color: var(--bad); }
+  .ctxmenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  .draft .where { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin: 6px 0 3px; font-size: 12px; }
+  .draft .where button { border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  .draft .where button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  a.ref { color: var(--accent); text-decoration: none; background: #eef3fd; border-radius: 3px; padding: 0 3px; } a.ref.sel { background: #fff4c2; color: #6b4e00; }
+  .composer .row button[data-ref] { border: 1px solid var(--line); background: #fff4c2; border-radius: 10px; padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer; }
   .tk-k { color: #8a2be2; } .tk-s { color: #1e7b3a; } .tk-c { color: #8b8b84; font-style: italic; } .tk-n { color: #b35900; } .tk-f { color: #1f5fbf; }
 </style>
 </head>

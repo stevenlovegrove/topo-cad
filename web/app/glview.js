@@ -348,6 +348,8 @@ export class GLView {
       }
       if (d.moved) this.onChange?.();
       else if (e.button === 0) this.onPick?.(this.ray(e.clientX - r.left, e.clientY - r.top), e);
+      // A right-click (not a pan): the host's menu for what is under the cursor.
+      else if (e.button === 2) this.onContext?.(this.ray(e.clientX - r.left, e.clientY - r.top), e);
     });
     c.addEventListener("wheel", (e) => {
       e.preventDefault();
