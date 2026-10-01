@@ -887,7 +887,9 @@ impl Workspace {
     }
 
     fn news(&self, who: &str) -> Vec<(&Issue, Vec<&crate::issues::Entry>, bool)> {
-        let since = self.cursors.get(who).copied().unwrap_or(0.0);
+        // After a restart nothing is remembered of what they have had: they have at least seen everything up to the last thing they did.
+        let last_own = || self.store.issues.iter().flat_map(|i| &i.entries).filter(|e| e.who == who).map(|e| e.time).fold(0.0, f64::max);
+        let since = self.cursors.get(who).copied().unwrap_or_else(last_own);
         let me = self.store.name_of(who);
         self.store.issues.iter().filter_map(|i| {
             let new: Vec<&crate::issues::Entry> = i.entries.iter().filter(|e| e.who != who && e.time > since && !matches!(e.body, Body::Tool { .. })).filter(|e| self.concerns(i, who) || matches!(&e.body, Body::Comment { text, .. } if text.contains(&format!("@{me}")))).collect();
