@@ -15,6 +15,8 @@ use std::collections::HashMap;
 
 pub mod axes;
 pub mod fit;
+pub mod git;
+pub mod issues;
 pub mod ply;
 pub mod rays;
 pub mod render;
@@ -90,13 +92,15 @@ fn v(p: topo_core::math::Vec3) -> V3 {
 /// Evaluates (and solves) a topo-cad script; relative imports resolve from
 /// its directory on disk.
 pub fn predict(path: &str) -> Result<Prediction> {
-    predict_source(&std::fs::read_to_string(path)?, path)
+    predict_with(path, &mut |id| std::fs::read_to_string(id).ok())
 }
 
-/// Evaluates a script's source as though it were the file at `path` (to
-/// score an edit before it is written).
-pub fn predict_source(source: &str, path: &str) -> Result<Prediction> {
-    let (model, report) = topo_script::run_solved(source, path).map_err(|e| anyhow!("{e:?}"))?;
+/// Evaluates the model whose entry is `entry`, its files read with `read`
+/// (so a proposed version of a file can stand in for the one on disk).
+pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -> Result<Prediction> {
+    let files = topo_script::bundle::collect(entry, read).map_err(|e| anyhow!("{e}"))?;
+    let script = topo_script::Script::from_files(&files, entry).map_err(|e| anyhow!("{e}"))?;
+    let (model, report) = topo_script::solve::solve(&script).map_err(|e| anyhow!("{e}"))?;
     let geom = Geometry::build(&model, &Topology::build(&model));
     let members = model
         .members
