@@ -868,6 +868,7 @@ export class TrussRoof {
     readonly bears_on: readonly string[];
     readonly loads: readonly AreaLoad[];
     readonly overrides?: readonly { readonly trusses: readonly number[]; readonly shape: TrussShape }[];
+    readonly shifts?: readonly { readonly trusses: readonly number[]; readonly along: Length }[];
   }) {}
 
   /**
@@ -900,6 +901,15 @@ export class TrussRoof {
    */
   withShape(trusses: readonly number[], shape: TrussShape): TrussRoof {
     return new TrussRoof({ ...this.spec, overrides: [...(this.spec.overrides ?? []), { trusses, shape }] });
+  }
+  /**
+   * Trusses as built off the layout (1-based numbers, T1 at the origin):
+   * each stands `along` further along the ridge than its place at the
+   * spacing (negative: back toward the origin). As a surveyed wall takes its
+   * studs from readings, not from the layout rule.
+   */
+  shifted(trusses: readonly number[], along: Length): TrussRoof {
+    return new TrussRoof({ ...this.spec, shifts: [...(this.spec.shifts ?? []), { trusses, along }] });
   }
   /** Fink trusses (shorthand for `TrussRoof.of(TrussShape.fink(...), ...)`). */
   static fink(o: {

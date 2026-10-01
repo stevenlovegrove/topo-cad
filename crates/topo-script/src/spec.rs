@@ -333,6 +333,15 @@ pub struct TrussRoofSpec {
     /// Other shapes for particular trusses (1-based numbers).
     #[serde(default)]
     pub overrides: Vec<ShapeOverrideSpec>,
+    /// Trusses as built off the layout: further along the ridge by `along`.
+    #[serde(default)]
+    pub shifts: Vec<TrussShiftSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrussShiftSpec {
+    pub trusses: Vec<usize>,
+    pub along: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,6 +486,9 @@ impl Builder {
         for o in &r.overrides {
             o.shape.validate()?;
             roof.overrides.push((o.trusses.clone(), o.shape.clone()));
+        }
+        for s in &r.shifts {
+            roof.shifts.push((s.trusses.clone(), s.along));
         }
         r.shape.validate()?;
         let roof = roof
