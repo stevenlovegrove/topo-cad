@@ -130,7 +130,8 @@ export class GLView {
     /** The model's floor in the scan (model z = scan z − zOffset). */
     this.zOffset = 0;
     this.floorZ = 0;
-    this.clouds = { thin: null, slab: null, sel: null };
+    this.clouds = { thin: null, slab: null };
+    this.highlights = new Map();
     this.tris = null; this.lines = null; this.marks = null;
     this.labels = [];
     this.labelEls = new Map();
@@ -183,6 +184,12 @@ export class GLView {
     return { vao, count: c.count };
   }
   /** The thinned scan (`which` "thin") or a section's slab ("slab"; null drops it). */
+  /** A set of points to draw highlighted, by key (null drops it). */
+  setHighlight(key, cloud) {
+    if (cloud) this.highlights.set(key, this.cloudBuffers(cloud));
+    else this.highlights.delete(key);
+    this.redraw();
+  }
   setCloud(which, cloud) {
     this.clouds[which] = cloud ? this.cloudBuffers(cloud) : null;
     this.redraw();
@@ -401,13 +408,16 @@ export class GLView {
       gl.uniform1f(u.u_floor, this.floorZ);
       gl.bindVertexArray(cloud.vao);
       gl.drawArrays(gl.POINTS, 0, cloud.count);
-      // A selection's points, over the others.
-      if (this.clouds.sel && s.layers.marks) {
-        gl.uniform1i(u.u_mode, 4);
-        gl.uniform1f(u.u_size, (s.pointSize + 1) * dpr);
-        gl.bindVertexArray(this.clouds.sel.vao);
-        gl.drawArrays(gl.POINTS, 0, this.clouds.sel.count);
-      }
+    }
+    // Highlighted sets of points (selections), over the others; shown whether or not the scan is.
+    if (this.highlights.size) {
+      const u = this.points.u;
+      gl.useProgram(this.points.p);
+      cuts(u);
+      gl.uniform1f(u.u_persp, cam.ortho ? 0 : 1);
+      gl.uniform1i(u.u_mode, 4);
+      gl.uniform1f(u.u_size, (s.pointSize + 1) * dpr);
+      for (const h of this.highlights.values()) { gl.bindVertexArray(h.vao); gl.drawArrays(gl.POINTS, 0, h.count); }
     }
     gl.useProgram(this.flat.p);
     cuts(this.flat.u);
@@ -444,6 +454,8 @@ export class GLView {
       el.style.display = "";
       el.style.transform = `translate(${p[0].toFixed(1)}px, ${p[1].toFixed(1)}px)`;
     }
+    // What the host draws over the view to match it (a compass).
+    this.onDraw?.(cam);
   }
 
   /** The view as a PNG data URL (as drawn, without the labels). */

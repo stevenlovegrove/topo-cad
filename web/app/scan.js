@@ -246,7 +246,7 @@ async function loadDiff() {
 const CHANGE = { added: [60, 200, 90], removed: [235, 70, 60], moved: [60, 200, 90], from: [235, 70, 60] };
 /** The members to draw, each with its colour, for the proposal's mode (or as they are). */
 function drawList() {
-  const hl = (m) => (sel.highlight || []).some((h) => m.path.includes(h)) || (sel.issue != null && st.issues.find((i) => i.id === sel.issue)?.place?.member === m.path);
+  const hl = (m) => m.path === sel.member || (sel.highlight || []).some((h) => m.path.includes(h)) || (sel.issue != null && st.issues.find((i) => i.id === sel.issue)?.place?.member === m.path);
   const plain = (m) => ({ m, rgb: hl(m) ? [255, 60, 220] : m.colour.map((c) => Math.round(c * 255)), fill: hl(m) ? 90 : 34, line: 235, change: hl(m) });
   if (!diff || !sel.proposal) return (members || []).map(plain);
   const mode = sel.proposal.mode, ch = diff.changes;
@@ -272,7 +272,7 @@ function drawList() {
 const neutralModel = (v) => v.state.colour === "depth" || v.state.colour === "normal" || v.state.colour === "height";
 
 function rebuildModel() {
-  const list = drawList();
+  const list = drawList().filter(({ m }) => memberVisible(m.path));
   let nt = 0, nl = 0;
   for (const { m } of list) for (const f of m.faces) { nt += (f.length - 2) * 3; nl += f.length * 2; }
   const build = (neutral) => {
@@ -317,8 +317,8 @@ function rebuildMarks() {
     for (const a of [[r, 0, 0], [0, r, 0], [0, 0, r]]) segs.push([vec.sub(p, a), vec.add(p, a), [255, 220, 40]]);
   }
   // Rooms (model frame boxes) and fitted surfaces (patches).
-  for (const r of st.rooms || []) boxLines(aabb(r.min, r.max).map(toScan), [120, 170, 255], segs);
-  for (const s of st.surfaces || []) {
+  if (vis("rooms")) for (const r of st.rooms || []) boxLines(aabb(r.min, r.max).map(toScan), [120, 170, 255], segs);
+  for (const s of (st.surfaces || []).filter((s) => vis("planes", `plane:${s.id}`) || s.id === sel.plane)) {
     const at = (a, b) => toScan(vec.add(s.centre, vec.add(vec.scale(s.u, a), vec.scale(s.v, b))));
     const q = [at(s.ext[0], s.ext[2]), at(s.ext[1], s.ext[2]), at(s.ext[1], s.ext[3]), at(s.ext[0], s.ext[3])];
     for (let i = 0; i < 4; i++) segs.push([q[i], q[(i + 1) % 4], s.id === sel.plane ? [200, 255, 250] : [40, 210, 200]]);
@@ -342,7 +342,7 @@ function rebuildMarks() {
   views.section.setMarks(...build([]));
   // Issues as pins.
   const PRI = { 1: "#d62828", 2: "#1f5fbf", 3: "#6b6b66" };
-  const pins = st.issues.filter((i) => i.place && (i.status !== "done" || i.id === sel.issue)).map((i) => ({
+  const pins = st.issues.filter((i) => i.place && vis("issues", `issue:${i.id}`) && (i.status !== "done" || i.id === sel.issue)).map((i) => ({
     id: i.id, pos: i.place.min.map((x, k) => 0.5 * (x + i.place.max[k])), text: `#${i.id} ${i.title.length > 26 ? i.title.slice(0, 25) + "…" : i.title}`,
     title: `${i.title} — ${STATUS[i.status]}`, colour: PRI[i.priority], on: i.id === sel.issue, dim: i.status === "done",
   }));
@@ -361,10 +361,27 @@ function makeGlPane(kind, glKind) {
   const host = el("div", { class: "glhost" });
   const chip = el("div", { class: "glchip", hidden: "" });
   const bar = el("div", { class: "diffbar", hidden: "" });
-  pane.append(host, chip, bar);
+  // The view's own controls, and (in 3D) a compass to turn it by.
+  const tools = el("div", { class: "gltools" });
+  const compass = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  compass.setAttribute("viewBox", "-40 -40 80 80");
+  compass.setAttribute("class", "glcompass");
+  pane.append(host, chip, bar, tools);
+  if (glKind === "3d") pane.append(compass);
   $("parked").appendChild(pane);
   const v = (views[kind] = new GLView(host, glKind));
-  v.chip = chip; v.diffbar = bar; v.name = kind;
+  v.chip = chip; v.diffbar = bar; v.name = kind; v.tools = tools; v.compass = compass;
+  if (glKind === "3d") {
+    v.onDraw = (cam) => drawCompass(v, cam);
+    compass.addEventListener("click", (e) => {
+      const d = e.target.closest("[data-dir]")?.dataset.dir;
+      if (!d) return;
+      if (d === "top") return v.set({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true });
+      // From that side of the model: the viewer stands there, looking back.
+      const w = rot({ N: [0, 1, 0], E: [1, 0, 0], S: [0, -1, 0], W: [-1, 0, 0] }[d]);
+      v.set({ az: (Math.atan2(w[0], w[1]) * 180) / Math.PI, el: 12 });
+    });
+  }
   host.addEventListener("pointerdown", () => { if (active !== kind) { active = kind; renderLayers(); } }, true);
   v.onChange = () => {
     if (kind === "section") { requestSlab(); rebuildMarks(); }
@@ -383,7 +400,10 @@ function makeGlPane(kind, glKind) {
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
     sel.pick = r.hit ? r : null;
-    renderChips(); rebuildMarks();
+    sel.member = null;
+    renderChips(); rebuildMarks(); rebuildModel(); renderTree();
+    // The member there fills the Member tab (without leaving the tab you are on).
+    if (r.member) showMember(r.member.path);
   };
   v.onPick = pickAt;
   // Right-click: pick what is there, then offer what can be done with it.
@@ -407,10 +427,10 @@ function makeGlPane(kind, glKind) {
 /// Shows a selection's points in the scan views (null: none).
 async function showSelection(id) {
   sel.selection = id;
-  const c = id ? await service.selectionCloud(id) : null;
-  if (sel.selection !== id) return;
-  for (const v of Object.values(views)) v.setCloud("sel", c);
+  // Asked to be shown: its eye is on (and its group's).
+  if (id) { hidden.delete(`sel:${id}`); hidden.delete("selections"); keep(); }
   renderChips(); renderLayers();
+  await syncHighlights();
 }
 
 // ----- what is pointed at: a point, the member there, a selection ------------------------
@@ -426,6 +446,8 @@ const selName = (s) => `${s.id}${s.label ? " " + s.label : ""}`;
 function whereOptions() {
   const out = [], p = sel.pick, s = theSelection();
   const onFace = p?.member && p.member.distance < 0.06;
+  // A member chosen in the tree (no point picked).
+  if (!p && sel.member) out.push({ key: "member", label: `Member ${shortPath(sel.member)}` });
   if (p?.member && onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
   if (p?.hit) out.push({ key: "point", label: `Point ${f3(p.model)}` });
   if (p?.member && !onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
@@ -490,7 +512,8 @@ function gotoSelection(id) {
 function renderChips() {
   const s = theSelection(), p = sel.pick, pn = thePlane();
   for (const v of Object.values(views)) {
-    v.chip.hidden = !p && !s && !pn;
+    const mem = !p && sel.member && members?.find((x) => x.path === sel.member);
+    v.chip.hidden = !p && !s && !pn && !mem;
     if (v.chip.hidden) continue;
     // Being named: leave it as it is.
     if (v.chip.contains(document.activeElement) && document.activeElement.classList.contains("selname")) continue;
@@ -499,6 +522,9 @@ function renderChips() {
       const m = p.member, ev = m && members?.find((x) => x.path === m.path)?.evidence;
       html += `<div><b>Point</b> model ${f3(p.model)}</div>` +
         (m ? `<div><b>Member</b> ${esc(shortPath(m.path))} · ${(m.distance * 1000).toFixed(0)} mm from its face` + (ev ? `<br><span class="ev ${ev.state}">${ev.state}</span> ${ev.points} points, ${ev.rays_through} of ${ev.rays_through + ev.rays_ending} rays through` : "") + `</div>` : `<div class="muted">no member within 0.5 m</div>`);
+    } else if (mem) {
+      const ev = mem.evidence;
+      html += `<div><b>Member</b> ${esc(shortPath(mem.path))}<br><span class="ev ${ev.state}">${ev.state}</span> ${ev.points} points, ${ev.rays_through} of ${ev.rays_through + ev.rays_ending} rays through</div>`;
     }
     if (s) {
       html += `<div><b>Selection</b> ${esc(s.id)} <span class="selname" contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(s.label)}</span> · ${s.count.toLocaleString()} points` +
@@ -509,7 +535,7 @@ function renderChips() {
         `<br><span class="muted">${pn.count.toLocaleString()} points within the band, rms ${(pn.rms * 1000).toFixed(1)} mm; ${(pn.ext[1] - pn.ext[0]).toFixed(2)} × ${(pn.ext[3] - pn.ext[2]).toFixed(2)} m. What surface it is, is yours to say.</span>` +
         (sel.fits?.[pn.id] ? `<details><summary>What the fit found</summary><pre>${esc(sel.fits[pn.id])}</pre></details>` : "") + `</div>`;
     }
-    html += `<div class="row"><button data-a="issue">New issue…</button>${p?.member ? `<button data-a="checks">Checks</button>` : ""}` +
+    html += `<div class="row"><button data-a="issue">New issue…</button>${p?.member || mem ? `<button data-a="checks">Checks</button>` : ""}` +
       (p ? `<button data-a="plan" title="A plan section at this height">Plan</button><button data-a="x" title="A section across the model's x at this point">X</button><button data-a="y" title="A section across the model's y at this point">Y</button>` : "") +
       (s ? `<button data-a="fit" title="Fit a plane to the selection's points and keep it">Fit plane</button><button data-a="delete" title="Delete the selection">Delete ${esc(s.id)}</button>` : "") +
       (pn ? `<button data-a="secplane" title="A section on this plane: the slab about it, seen square on">Section on ${esc(pn.id)}</button><button data-a="delplane" title="Delete the plane">Delete ${esc(pn.id)}</button>` : "") +
@@ -522,9 +548,9 @@ function renderChips() {
     }
     for (const b of v.chip.querySelectorAll("button")) b.onclick = () => {
       const a = b.dataset.a;
-      if (a === "clear") { sel.pick = null; sel.plane = null; showSelection(null); rebuildMarks(); }
+      if (a === "clear") { sel.pick = null; sel.plane = null; sel.member = null; sel.selection = null; renderChips(); rebuildMarks(); rebuildModel(); renderTree(); }
       else if (a === "issue") startDraft();
-      else if (a === "checks") app.inspect(p.member.path);
+      else if (a === "checks") { showMember(p?.member?.path ?? sel.member); app.showTab("member"); }
       else if (a === "delete") deleteSelection(s.id);
       else if (a === "fit") fitPlane({ selection: s.id });
       else if (a === "secplane") sectionOnPlane(pn);
@@ -547,13 +573,13 @@ function contextMenu(v, x, y) {
     add("Section here: across x", () => sectionAt("x", p.model));
     add("Section here: across y", () => sectionAt("y", p.model));
     if (v.state.kind !== "section") add("Orbit about this point", () => v.set({ target: p.hit }));
-    if (p.member) add(`Checks for ${shortPath(p.member.path)}`, () => app.inspect(p.member.path));
+    if (p.member) add(`Checks for ${shortPath(p.member.path)}`, () => { showMember(p.member.path); app.showTab("member"); });
   }
   if (s) {
     items.push(null);
     add(`Name selection ${s.id}…`, () => { const n = v.chip.querySelector(".selname"); if (n) { n.focus(); document.getSelection().selectAllChildren(n); } });
     add(`Go to selection ${selName(s)}`, () => gotoSelection(s.id));
-    add(`Hide selection ${s.id}`, () => showSelection(null));
+    add(`Hide selection ${s.id}`, () => toggleVis(`sel:${s.id}`));
     add(`Delete selection ${s.id}`, () => deleteSelection(s.id), "danger");
   }
   const others = (st.selections || []).filter((o) => o.id !== s?.id);
@@ -574,6 +600,12 @@ function contextMenu(v, x, y) {
   }
   for (const o of (st.surfaces || []).filter((o) => o.id !== pn?.id).slice(-6)) add(`Show plane ${planeName(o)}`, () => showPlane(o.id));
   if (items[items.length - 1] === null) items.pop();
+  openMenu(items, x, y);
+}
+
+/** A menu at the cursor: [{ label, run, cls }], null for a divider. */
+function openMenu(items, x, y) {
+  closeMenu();
   const menu = el("div", { class: "ctxmenu", id: "ctxmenu" });
   for (const it of items) {
     if (!it) { menu.appendChild(el("hr")); continue; }
@@ -584,8 +616,8 @@ function contextMenu(v, x, y) {
   }
   document.body.appendChild(menu);
   // Inside the window.
-  menu.style.left = `${Math.min(x, window.innerWidth - menu.offsetWidth - 6)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - menu.offsetHeight - 6)}px`;
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - menu.offsetWidth - 6))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - menu.offsetHeight - 6))}px`;
 }
 function closeMenu() {
   $("ctxmenu")?.remove();
@@ -613,51 +645,270 @@ async function selectProposal(p, quiet) {
 
 // ----- the browser: layers and views -------------------------------------------------
 
-function renderLayers() {
-  const v = views[active], s = v.state, box = $("layersPane");
-  if (!box) return;
-  const num = (x) => (x == null ? "" : x);
-  box.innerHTML = `
-    <h4>${s.kind === "section" ? "Section" : "3D with scan"}</h4>
-    <label class="f">Colour points by <select data-k="colour">${COLOURS.map((c) => `<option ${c === s.colour ? "selected" : ""}>${c}</option>`).join("")}</select></label>
-    <label class="f">Point size <input type="range" min="1" max="6" step="0.5" value="${s.pointSize}" data-k="pointSize"></label>
-    ${["scan", "model", "marks", "issues"].map((k) => `<label class="c"><input type="checkbox" data-l="${k}" ${s.layers[k] ? "checked" : ""}> ${{ scan: "Scan points", model: "Model members", marks: "Marks, rooms, surfaces", issues: "Issue pins" }[k]}</label>`).join("")}
-    <h4>Height cut <span class="muted">model z, m</span></h4>
-    <div class="row2"><input type="number" step="0.1" placeholder="from" value="${num(s.zMin)}" data-z="zMin"><input type="number" step="0.1" placeholder="to" value="${num(s.zMax)}" data-z="zMax"></div>
-    <div class="row2"><button data-a="noroof" title="Hide what is above 2.3 m: look in from above">No roof</button><button data-a="nofloor" title="Hide what is below 0.1 m">No floor</button><button data-a="nocut">All</button></div>
-    ${s.kind === "section" ? `
-    <h4>Slab</h4>
-    <label class="f">Thickness, m <input type="number" step="0.05" min="0.01" value="${s.section ? (2 * s.section.half).toFixed(2) : ""}" data-a="thick"></label>
-    <div class="row2"><button data-a="back" title="Move the slab back by half its thickness">◀ slab</button><button data-a="fwd" title="Move the slab forward by half its thickness">slab ▶</button></div>
-    <div class="row2"><button data-a="plan">Plan</button><button data-a="secx">X</button><button data-a="secy">Y</button></div>` : `
-    <h4>Camera</h4>
-    <label class="c"><input type="checkbox" data-k="ortho" ${s.ortho ? "checked" : ""}> Orthographic</label>
-    <div class="row2"><button data-a="top" title="Straight down, the model's +y up the screen">Top-down</button><button data-a="fit">Fit model</button></div>`}
-    <h4>Selections <span class="muted">shift-drag in a view</span></h4>
-    <ul>${(st?.selections || []).map((x) => `<li data-sel="${esc(x.id)}" class="${x.id === sel.selection ? "on" : ""}">${esc(x.id)} ${esc(x.label)} <span class="muted">${x.count.toLocaleString()}</span></li>`).join("") || `<div class="muted">None yet.</div>`}</ul>
-    <h4>Planes <span class="muted">right-click: fit a plane</span></h4>
-    <ul>${(st?.surfaces || []).map((x) => `<li data-plane="${esc(x.id)}" class="${x.id === sel.plane ? "on" : ""}">${esc(planeName(x))} <span class="muted">${(x.rms * 1000).toFixed(0)} mm</span></li>`).join("") || `<div class="muted">None yet.</div>`}</ul>
-    <h4>Scan</h4>
-    <div class="muted">${st?.scan.loaded ? `${st.scan.points.toLocaleString()} points; ${(st.cloud ?? 0).toLocaleString()} drawn in 3D` : esc(st?.loading || "loading")}${st?.tally ? `<br>${st.tally.supported} members supported, ${st.tally.contradicted} contradicted, ${st.tally.unseen} unseen` : ""}</div>`;
-  for (const i of box.querySelectorAll("[data-k]")) i.oninput = () => { v.set({ [i.dataset.k]: i.type === "checkbox" ? i.checked : i.type === "range" ? Number(i.value) : i.value }); };
-  for (const i of box.querySelectorAll("[data-l]")) i.onchange = () => v.set({ layers: { [i.dataset.l]: i.checked } });
-  for (const i of box.querySelectorAll("[data-z]")) i.onchange = () => v.set({ [i.dataset.z]: i.value === "" ? null : Number(i.value) });
+// ----- what is shown: visibility, apart from what is selected ---------------------------
+// Every object and every group of the tree has an eye: whether it is drawn.
+// That is separate from selecting it (clicking it), which says what the chip,
+// the Member tab and a new issue refer to. Hidden keys are remembered.
+
+const stored = (k, d) => { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch (_) { return d; } };
+const hidden = new Set(stored("topo.scan.hidden", []));
+const open = new Set(stored("topo.scan.open", ["scan", "model", "issues", "selections", "planes"]));
+const keep = () => { try { localStorage.setItem("topo.scan.hidden", JSON.stringify([...hidden])); localStorage.setItem("topo.scan.open", JSON.stringify([...open])); } catch (_) {} };
+const vis = (...keys) => keys.every((k) => !hidden.has(k));
+
+/** A member's place in the tree: its groups (below the building) and its own name. */
+function memberParts(path) {
+  const parts = path.split("/");
+  return { groups: parts.slice(1, -1), name: parts[parts.length - 1] };
+}
+/** Whether a member is drawn: the model, its groups and itself are all shown. */
+function memberVisible(path) {
+  if (hidden.has("model") || hidden.has(`m:${path}`)) return false;
+  const g = memberParts(path).groups;
+  for (let k = 1; k <= g.length; k++) if (hidden.has(`g:${g.slice(0, k).join("/")}`)) return false;
+  return true;
+}
+
+function applyVisibility() {
+  keep();
+  for (const v of Object.values(views)) v.set({ layers: { scan: vis("scan"), model: true, marks: true, issues: true } }, true);
+  rebuildModel(); rebuildMarks(); syncHighlights(); renderTree();
+}
+function toggleVis(key) {
+  hidden.has(key) ? hidden.delete(key) : hidden.add(key);
+  applyVisibility();
+}
+
+// Selections shown (their eye is on) are drawn as highlighted points; loaded once each.
+const selClouds = new Map();
+async function syncHighlights() {
+  const want = (st?.selections || []).filter((s) => vis("selections", `sel:${s.id}`)).map((s) => s.id);
+  for (const v of Object.values(views)) for (const key of [...v.highlights.keys()]) if (!want.includes(key)) v.setHighlight(key, null);
+  for (const id of want) {
+    if (!selClouds.has(id)) selClouds.set(id, await service.selectionCloud(id));
+    const c = selClouds.get(id);
+    if (c) for (const v of Object.values(views)) if (!v.highlights.has(id)) v.setHighlight(id, c);
+  }
+}
+
+// ----- the tree of objects --------------------------------------------------------------
+
+const EYE = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>`;
+const EYE_OFF = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".45"/><path d="M3 13L13 3" stroke="currentColor" stroke-width="1.3"/></svg>`;
+
+function selectMember(path) {
+  sel.pick = null;
+  sel.member = path;
+  renderChips(); rebuildModel(); rebuildMarks(); renderTree();
+  showMember(path);
+}
+
+/** Fills the Member tab: what the scan shows of the member, then its structural checks. */
+async function showMember(path) {
+  await app.inspect(path, true);
+  const m = members?.find((x) => x.path === path), box = $("inspector");
+  if (!m || !box) return;
+  const e = m.evidence, rays = e.rays_through + e.rays_ending;
+  box.insertAdjacentHTML("afterbegin", `<div class="head evidence"><b>In the scan</b> <span class="ev ${e.state}">${e.state}</span>
+    <table><tr><td>Scan points on its faces</td><td class="num">${e.points.toLocaleString()} <span class="muted">(${e.density.toLocaleString()} per m²)</span></td></tr>
+    <tr><td>Their offset from the faces</td><td class="num">${e.offset_mm.toFixed(1)} mm mean, ${e.rms_mm.toFixed(1)} mm rms</td></tr>
+    <tr><td>Sensor rays reaching it</td><td class="num">${rays.toLocaleString()}: ${e.rays_through.toLocaleString()} pass through (${rays ? Math.round((100 * e.rays_through) / rays) : 0}%)</td></tr></table>
+    <div class="muted">${e.state === "contradicted" ? "Rays passing through a member say it is not there, or not exactly there." : e.state === "unseen" ? "Too few points and rays to say." : "Points on its faces, and few rays through it."} Evidence, not a verdict.</div></div>`);
+}
+
+function gotoMembers(filter) {
+  const b = modelBounds(filter);
+  if (!b) return;
+  pushHistory();
+  views[active].frame(toScan(b.centre), Math.max(b.radius, 0.6));
+}
+function gotoIssue(id) {
+  const i = st.issues.find((x) => x.id === id);
+  if (!i?.place) return;
+  pushHistory();
+  views[active].frame(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k])), Math.max(1.2, 0.8 * Math.hypot(...vec.sub(i.place.max, i.place.min))));
+}
+
+function renderTree() {
+  const box = $("layersPane");
+  if (!box || !st) return;
+  const row = (depth, kind, key, name, opts = {}) => {
+    const tw = opts.group ? `<span class="tw" data-tw>${open.has(key) ? "▾" : "▸"}</span>` : `<span class="tw"></span>`;
+    return `<div class="trow${opts.on ? " on" : ""}${vis(key) ? "" : " off"}" data-kind="${kind}" data-key="${esc(key)}" ${opts.id != null ? `data-id="${esc(opts.id)}"` : ""} style="padding-left:${4 + depth * 12}px" title="${esc(opts.title || name)}">${tw}<span class="eye" data-eye title="Show or hide">${vis(key) ? EYE : EYE_OFF}</span>${opts.dot ? `<i class="dot ${opts.dot}"></i>` : ""}<span class="tn">${esc(name)}</span>${opts.note != null ? `<span class="muted">${esc(opts.note)}</span>` : ""}</div>`;
+  };
+  const mil = (n) => `${(n / 1e6).toFixed(1)}M`;
+  let html = row(0, "top", "scan", "Scan", { note: st.scan.loaded ? `${mil(st.cloud ?? 0)} of ${mil(st.scan.points)} points` : st.loading || "loading", title: "The scan's points (thinned for the 3D view; a section draws every point of its slab)" });
+  // The model: its groups, then its members, with their evidence as a dot.
+  const list = members || [];
+  html += row(0, "top", "model", "Model", { group: true, note: st.tally ? `${list.length} · ${st.tally.contradicted} contradicted` : list.length, title: st.tally ? `${st.tally.supported} members supported by the scan, ${st.tally.contradicted} contradicted, ${st.tally.unseen} unseen` : "Model" });
+  if (open.has("model")) {
+    const node = { groups: new Map(), members: [] };
+    for (const m of list) {
+      let n = node;
+      for (const g of memberParts(m.path).groups) { if (!n.groups.has(g)) n.groups.set(g, { groups: new Map(), members: [] }); n = n.groups.get(g); }
+      n.members.push(m);
+    }
+    const count = (n) => n.members.length + [...n.groups.values()].reduce((a, g) => a + count(g), 0);
+    const bad = (n) => n.members.filter((m) => m.evidence.state === "contradicted").length + [...n.groups.values()].reduce((a, g) => a + bad(g), 0);
+    const walk = (n, depth, prefix) => {
+      for (const [name, g] of n.groups) {
+        const path = prefix ? `${prefix}/${name}` : name, key = `g:${path}`, b = bad(g);
+        html += row(depth, "group", key, name, { group: true, id: path, note: count(g), dot: b ? "contradicted" : "", title: `${path}: ${count(g)} members${b ? `, ${b} contradicted by the scan` : ""}` });
+        if (open.has(key)) walk(g, depth + 1, path);
+      }
+      for (const m of n.members) html += row(depth, "member", `m:${m.path}`, memberParts(m.path).name, { id: m.path, dot: m.evidence.state, on: m.path === (sel.pick?.member?.path ?? sel.member), title: `${m.path} — ${m.evidence.state}` });
+    };
+    walk(node, 1, "");
+  }
+  html += row(0, "top", "issues", "Issues", { group: true, note: st.issues.filter((i) => i.status !== "done").length });
+  if (open.has("issues")) for (const i of ordered()) html += row(1, "issue", `issue:${i.id}`, `#${i.id} ${i.title}`, { id: i.id, on: i.id === sel.issue, note: i.place ? "" : "not pinned", dot: i.status === "done" ? "unseen" : i.status === "waiting" ? "contradicted" : "" });
+  html += row(0, "top", "selections", "Selections", { group: true, note: (st.selections || []).length || "shift-drag" });
+  if (open.has("selections")) for (const s of st.selections || []) html += row(1, "sel", `sel:${s.id}`, selName(s), { id: s.id, on: s.id === sel.selection, note: s.count.toLocaleString() });
+  html += row(0, "top", "planes", "Planes", { group: true, note: (st.surfaces || []).length || "right-click: fit" });
+  if (open.has("planes")) for (const s of st.surfaces || []) html += row(1, "plane", `plane:${s.id}`, planeName(s), { id: s.id, on: s.id === sel.plane, note: `${(s.rms * 1000).toFixed(0)} mm` });
+  if ((st.rooms || []).length) html += row(0, "top", "rooms", "Rooms", { note: st.rooms.length });
+  const top = box.scrollTop;
+  box.innerHTML = `<div class="tree">${html}</div>`;
+  box.scrollTop = top;
+}
+
+/** What a row of the tree is: { kind, key, id }. */
+const rowOf = (e) => { const r = e.target.closest(".trow"); return r && { el: r, kind: r.dataset.kind, key: r.dataset.key, id: r.dataset.id }; };
+
+function bindTree() {
+  const box = $("layersPane");
+  box.addEventListener("click", (e) => {
+    const r = rowOf(e);
+    if (!r) return;
+    if (e.target.closest("[data-eye]")) return toggleVis(r.key);
+    if (r.kind === "top" || r.kind === "group") {
+      if (r.el.querySelector("[data-tw]")) { open.has(r.key) ? open.delete(r.key) : open.add(r.key); keep(); renderTree(); }
+      return;
+    }
+    if (r.kind === "member") selectMember(r.id);
+    else if (r.kind === "issue") openIssue(Number(r.id));
+    else if (r.kind === "sel") { sel.selection = r.id; renderChips(); renderTree(); }
+    else if (r.kind === "plane") showPlane(r.id);
+  });
+  box.addEventListener("dblclick", (e) => {
+    const r = rowOf(e);
+    if (!r || e.target.closest("[data-eye]")) return;
+    if (r.kind === "member") gotoMembers(r.id);
+    else if (r.kind === "group") gotoMembers(`/${r.id}/`);
+    else if (r.kind === "issue") gotoIssue(Number(r.id));
+    else if (r.kind === "sel") gotoSelection(r.id);
+    else if (r.kind === "plane") gotoPlane(r.id);
+  });
+  box.addEventListener("contextmenu", (e) => {
+    const r = rowOf(e);
+    if (!r) return;
+    e.preventDefault();
+    const items = [], add = (label, run, cls) => items.push({ label, run, cls });
+    const showHide = () => add(vis(r.key) ? "Hide" : "Show", () => toggleVis(r.key));
+    const nameIn = (isPlane) => () => { const n = views[active].chip.querySelector(isPlane ? ".selname[data-plane]" : ".selname:not([data-plane])"); if (n) { n.focus(); document.getSelection().selectAllChildren(n); } };
+    if (r.kind === "member") {
+      add("New issue on this member", () => { selectMember(r.id); startDraft("member"); });
+      add("Go to it", () => gotoMembers(r.id));
+      add("Its checks", () => { selectMember(r.id); app.showTab("member"); });
+      showHide();
+    } else if (r.kind === "group" || r.kind === "top") {
+      showHide();
+      if (r.kind === "group") add("Go to it", () => gotoMembers(`/${r.id}/`));
+      if (r.key === "model") add("Show every member", () => { for (const k of [...hidden]) if (k.startsWith("g:") || k.startsWith("m:")) hidden.delete(k); hidden.delete("model"); applyVisibility(); });
+    } else if (r.kind === "issue") {
+      const i = st.issues.find((x) => x.id === Number(r.id));
+      add("Open it", () => openIssue(i.id));
+      if (i.place) add("Go to it", () => gotoIssue(i.id));
+      add(i.status === "done" ? "Reopen it" : "Mark it done", () => service.call("issues", { action: "update", id: i.id, status: i.status === "done" ? "open" : "done" }));
+      showHide();
+      items.push(null);
+      add("Delete it", () => { if (confirm(`Delete issue #${i.id} and its thread?\n\n${i.title}`)) service.call("issues", { action: "delete", id: i.id }); }, "danger");
+    } else if (r.kind === "sel") {
+      add("New issue on this selection", () => { sel.selection = r.id; sel.pick = null; startDraft("selection"); });
+      add("Name it…", () => { sel.selection = r.id; renderChips(); nameIn(false)(); });
+      add("Go to it", () => gotoSelection(r.id));
+      add("Fit a plane to it", () => fitPlane({ selection: r.id }));
+      showHide();
+      items.push(null);
+      add("Delete it", () => deleteSelection(r.id), "danger");
+    } else if (r.kind === "plane") {
+      const s = st.surfaces.find((x) => x.id === r.id);
+      add("New issue on this plane", () => { sel.plane = r.id; sel.pick = null; startDraft("plane"); });
+      add("Name it…", () => { showPlane(r.id); nameIn(true)(); });
+      add("Go to it", () => gotoPlane(r.id));
+      add("Section on it", () => sectionOnPlane(s));
+      showHide();
+      items.push(null);
+      add("Delete it", () => deletePlane(r.id), "danger");
+    }
+    openMenu(items, e.clientX, e.clientY);
+  });
+}
+
+// ----- a view's own controls: in the view, not in the browser ----------------------------
+
+const svg = (d, extra = "") => `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round">${extra}<path d="${d}"/></svg>`;
+const ICON = {
+  ortho: svg("M3 5l5-2.5L13 5v6l-5 2.5L3 11z M3 5l5 2.5L13 5 M8 7.5v6"),
+  top: svg("M3 9.5h10v4H3z M8 2v5.5 M5.8 5.3L8 7.5l2.2-2.2"),
+  fit: svg("M2.5 6V2.5H6 M10 2.5h3.5V6 M13.5 10v3.5H10 M6 13.5H2.5V10"),
+  noroof: svg("M3.5 8v5.5h9V8", `<path d="M2 8l6-5 6 5" stroke-dasharray="1.6 1.8"/>`),
+  nofloor: svg("M2 8l6-5 6 5 M3.5 8v5.5 M12.5 8v5.5", `<path d="M3.5 13.5h9" stroke-dasharray="1.6 1.8"/>`),
+  back: svg("M10 3L5 8l5 5"),
+  fwd: svg("M6 3l5 5-5 5"),
+};
+
+function renderTools(v) {
+  const s = v.state, sec = s.kind === "section";
+  // Not while one of its fields is being typed in.
+  if (v.tools.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
+  const btn = (a, icon, title, on) => `<button data-a="${a}" class="${on ? "on" : ""}" title="${title}">${icon}</button>`;
+  v.tools.innerHTML =
+    `<select data-k="colour" title="Colour the points by">${COLOURS.map((c) => `<option ${c === s.colour ? "selected" : ""}>${c}</option>`).join("")}</select>` +
+    (sec
+      ? `<span class="grp">${btn("plan", "Plan", "A plan section (walls: 0.1 to 2.4 m)")}${btn("secx", "X", "A section across the model's x, at the 3D view's target")}${btn("secy", "Y", "A section across the model's y, at the 3D view's target")}</span>` +
+        `<span class="grp" title="The slab: its thickness (m), and stepping it back and forward by half of that">${btn("back", ICON.back, "Slab back")}<input type="number" step="0.05" min="0.01" value="${s.section ? (2 * s.section.half).toFixed(2) : ""}" data-a="thick">${btn("fwd", ICON.fwd, "Slab forward")}</span>`
+      : `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}</span>`) +
+    `<span class="grp">${btn("noroof", ICON.noroof, "Cut away what is above 2.3 m (the roof)", s.zMax != null)}${btn("nofloor", ICON.nofloor, "Cut away what is below 0.1 m (the floor)", s.zMin != null)}</span>` +
+    `<span class="grp" title="Point size">${btn("smaller", "−", "Smaller points")}${btn("bigger", "+", "Larger points")}</span>` +
+    `<details class="more"><summary title="Height cut, exactly">⋯</summary><div>Show model z from <input type="number" step="0.1" placeholder="any" value="${s.zMin ?? ""}" data-z="zMin"> to <input type="number" step="0.1" placeholder="any" value="${s.zMax ?? ""}" data-z="zMax"> m</div></details>`;
   const target = () => toModel(views.scan3d.state.target);
   const acts = {
-    noroof: () => v.set({ zMax: 2.3 }), nofloor: () => v.set({ zMin: 0.1 }), nocut: () => v.set({ zMin: null, zMax: null }),
+    ortho: () => v.set({ ortho: !s.ortho }),
     top: () => v.set({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true }),
     fit: () => { const b = modelBounds(); if (b) v.frame(toScan(b.centre), b.radius); },
+    noroof: () => v.set({ zMax: s.zMax != null ? null : 2.3 }), nofloor: () => v.set({ zMin: s.zMin != null ? null : 0.1 }),
+    smaller: () => v.set({ pointSize: Math.max(1, s.pointSize - 0.5) }), bigger: () => v.set({ pointSize: Math.min(6, s.pointSize + 0.5) }),
     back: () => { const c = s.section; v.set({ section: { ...c, origin: vec.add(c.origin, vec.scale(c.n, -c.half)) } }); },
     fwd: () => { const c = s.section; v.set({ section: { ...c, origin: vec.add(c.origin, vec.scale(c.n, c.half)) } }); },
     plan: () => setSection(sectionFrom({ view: "plan" })),
     secx: () => setSection(sectionFrom({ view: "x", at: target()[0] })),
     secy: () => setSection(sectionFrom({ view: "y", at: target()[1] })),
   };
-  for (const b of box.querySelectorAll("button[data-a]")) b.onclick = () => { acts[b.dataset.a](); requestSlab(); rebuildMarks(); renderLayers(); };
-  for (const li of box.querySelectorAll("li[data-sel]")) li.onclick = () => showSelection(li.dataset.sel === sel.selection ? null : li.dataset.sel);
-  for (const li of box.querySelectorAll("li[data-plane]")) li.onclick = () => showPlane(li.dataset.plane === sel.plane ? null : li.dataset.plane);
-  const th = box.querySelector("input[data-a=thick]");
+  for (const b of v.tools.querySelectorAll("button[data-a]")) b.onclick = () => { acts[b.dataset.a](); requestSlab(); rebuildMarks(); };
+  v.tools.querySelector("select").onchange = (e) => v.set({ colour: e.target.value });
+  for (const i of v.tools.querySelectorAll("[data-z]")) i.onchange = () => v.set({ [i.dataset.z]: i.value === "" ? null : Number(i.value) });
+  const th = v.tools.querySelector("input[data-a=thick]");
   if (th) th.onchange = () => { if (s.section && Number(th.value) > 0) { v.set({ section: { ...s.section, half: Number(th.value) / 2 } }); requestSlab(); } };
+}
+
+/** The 3D view's compass: the model's north, east, south and west as the view has them. Click one to look from that side; the middle, straight down. */
+function drawCompass(v, cam) {
+  const R = 26, dirs = [["N", [0, 1, 0]], ["E", [1, 0, 0]], ["S", [0, -1, 0]], ["W", [-1, 0, 0]]];
+  let out = `<circle r="${R + 9}" fill="rgba(22,23,27,.72)" stroke="rgba(255,255,255,.35)"/>`;
+  for (const [name, d] of dirs) {
+    const w = rot(d), x = vec.dot(w, cam.right) * R, y = -vec.dot(w, cam.up) * R, toward = vec.dot(w, cam.forward) < -0.3;
+    out += `<line x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${name === "N" ? "#ff6b5e" : "rgba(255,255,255,.55)"}" stroke-width="${name === "N" ? 2 : 1}" ${toward ? 'stroke-dasharray="2 2"' : ""}/>` +
+      `<g class="hot" data-dir="${name}"><title>Look from the ${{ N: "north", E: "east", S: "south", W: "west" }[name]}</title><circle cx="${(x * 1.18).toFixed(1)}" cy="${(y * 1.18).toFixed(1)}" r="7.5" fill="rgba(22,23,27,.85)"/><text x="${(x * 1.18).toFixed(1)}" y="${(y * 1.18 + 3.6).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="700" fill="${name === "N" ? "#ff6b5e" : "#fff"}">${name}</text></g>`;
+  }
+  const up = [vec.dot([0, 0, 1], cam.right) * R * 0.6, -vec.dot([0, 0, 1], cam.up) * R * 0.6];
+  out += `<line x2="${up[0].toFixed(1)}" y2="${up[1].toFixed(1)}" stroke="#6ea8ff" stroke-width="1.5"/><g class="hot" data-dir="top"><title>Look straight down</title><circle r="5" fill="#16171b" stroke="#6ea8ff"/></g>`;
+  if (v.compassHtml !== out) { v.compassHtml = out; v.compass.innerHTML = out; }
+}
+
+function renderLayers() {
+  renderTree();
+  for (const v of Object.values(views)) renderTools(v);
 }
 
 function renderViews() {
@@ -726,7 +977,7 @@ async function createIssue(title, text) {
   if (text) args.text = text;
   if (where === "selection") args.selection = sel.selection;
   else if (where === "plane") args.plane = sel.plane;
-  else if (where === "member") args.member = sel.pick.member.path;
+  else if (where === "member") args.member = sel.pick?.member?.path ?? sel.member;
   else if (where === "point") { args.frame = "scan"; args.point = sel.pick.hit; }
   const r = await service.call("issues", args);
   if (r.error) return alert(r.error);
@@ -954,7 +1205,7 @@ function onState(s) {
   loadMembers();
   app.setStatus(s.loading ? `scan: ${s.loading}…` : !service.connected ? "the workspace service is not answering" : null);
   if (sel.issue != null && !s.issues.some((i) => i.id === sel.issue)) sel.issue = null;
-  renderPeople(); renderIssues(); renderBoard(); renderViews(); renderLayers(); rebuildMarks(); renderDiffBars(); renderHistory(); renderChips();
+  renderPeople(); renderIssues(); renderBoard(); renderViews(); renderLayers(); rebuildMarks(); renderDiffBars(); renderHistory(); renderChips(); syncHighlights();
 }
 
 export async function initScan(hooks) {
@@ -967,7 +1218,7 @@ export async function initScan(hooks) {
   app.registerPane("section", { label: "Section", el: "sectionPane", shown: () => { active = "section"; renderLayers(); requestSlab(); rebuildMarks(); app.showBrowser("layers"); } });
   app.registerPane("board", { label: "Issue board", el: "boardPane", shown: () => renderBoard() });
   // The browser: layers and views.
-  for (const [k, label] of [["layers", "Layers"], ["views", "Views"]]) {
+  for (const [k, label] of [["layers", "Objects"], ["views", "Views"]]) {
     const b = el("button", { "data-b": k }, label);
     b.onclick = () => app.showBrowser(k);
     $("browserTabs").appendChild(b);
@@ -977,6 +1228,7 @@ export async function initScan(hooks) {
   const nav = el("span", { id: "histNav" }, `<button id="histBack" disabled>◀</button><button id="histFwd" disabled title="Forward">▶</button>`);
   const people = el("span", { id: "people" });
   document.querySelector("header").append(nav, people);
+  bindTree();
   $("histBack").onclick = () => { if (history.length) { future.push(snapshot()); restore(history.pop()); renderHistory(); } };
   $("histFwd").onclick = () => { if (future.length) { history.push(snapshot()); restore(future.pop()); renderHistory(); } };
   // The issues take over the panel's Issues tab (the model's checks are a category of them).

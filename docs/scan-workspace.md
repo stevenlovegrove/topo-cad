@@ -226,6 +226,20 @@ Details that were decided in the building:
   pointed at: point, member, selection, plane. An issue is raised on any
   of them the same way (from the chip, the menu or the Issues tab), and
   its draft says what it is pinned to, to change before it is raised.
+- **The objects are one tree** (the browser's Objects tab): the scan, the
+  model's groups and members (each with its evidence as a dot), issues,
+  selections, planes, rooms. Groups fold. Each row has an eye, whether it
+  is drawn, which is apart from clicking the row, which selects it (the
+  chip, the Member tab and a new issue then refer to it). Hiding a group
+  hides what is in it. Double-click goes to it; right-click offers what
+  can be done with it (an issue on it, name, delete, hide, fit, section).
+- **A scan view's own controls are in the view**: how the points are
+  coloured, orthographic, top-down, fit, cutting away the roof or the
+  floor, point size; in a section, its kind and its slab. The 3D view
+  has a compass: click a letter to look from that side of the model, the
+  middle to look straight down.
+- **Selecting a member** (in a view or the tree) fills the Member tab:
+  what the scan shows of it, then its structural checks.
 - **Selections and planes are things with ids** (`s3`, `p2`): shown,
   named in place, deleted, and referred to. An id written in a reply
   becomes a link that shows the thing and goes to it; an issue's number
@@ -264,8 +278,8 @@ Not built yet:
   they fail, and one can be kept as an issue to discuss; a kept one does
   not yet close itself when the check passes.
 - **The board as a strip** under the panes: it is a pane kind.
-- **Evidence in the Member tab** and as a "Colour by" on the drawings:
-  it is in the scan views and their pick chip.
+- **Evidence as a "Colour by" on the drawings**: it is in the scan views,
+  the tree and the Member tab.
 - **A proposal's diff in the script pane**: it is in the thread.
 - **Placement by hand** in the app: agents have the placement tools.
 - **Drawings grouped** (plans, elevations, schedules) in the browser:
