@@ -371,6 +371,13 @@ function makeGlPane(kind, glKind) {
     renderLayers();
   };
   v.onLabel = (id) => openIssue(id);
+  // Double-click a pin: this view goes to its place (Back returns).
+  v.onLabelZoom = (id) => {
+    const i = st.issues.find((x) => x.id === id);
+    if (!i?.place) return;
+    pushHistory();
+    v.frame(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k])), Math.max(1.2, 0.8 * Math.hypot(...vec.sub(i.place.max, i.place.min))));
+  };
   v.onPick = async (ray) => {
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);

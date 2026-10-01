@@ -51,7 +51,7 @@ void main() {
   float off = dot(u_plane.xyz, a_pos) - u_plane.w;
   if (a_pos.z < u_z.x || a_pos.z > u_z.y || (u_half > 0. && abs(off) > u_half)) { gl_Position = vec4(2., 2., 2., 1.); gl_PointSize = 0.; return; }
   gl_Position = u_vp * vec4(a_pos, 1.);
-  gl_PointSize = u_persp > 0. ? clamp(u_size * 6. / max(gl_Position.w, .5), 1., u_size * 4.) : u_size;
+  gl_PointSize = u_persp > 0. ? clamp(u_size * 6. / max(gl_Position.w, .5), 1., u_size * 2.) : u_size;
   bool surf = dot(a_nrm, a_nrm) > .2;
   // Lit a little by how squarely the surface faces the viewer.
   float lit = surf ? .55 + .45 * abs(dot(normalize(a_nrm), u_toEye)) : .8;
@@ -223,13 +223,16 @@ export class GLView {
       let el = this.labelEls.get(l.id);
       if (!el) {
         el = document.createElement("div");
+        // A dot at the place, and the label set off from it on a leader, so it does not cover what it points at.
         el.className = "pin";
-        el.onclick = (e) => { e.stopPropagation(); this.onLabel?.(l.id); };
-        el.onmousedown = (e) => e.stopPropagation();
+        el.innerHTML = `<i class="dot"></i><i class="lead"></i><span class="tag"></span>`;
+        el.querySelector(".tag").ondblclick = (e) => { e.stopPropagation(); this.onLabelZoom?.(l.id); };
+        el.querySelector(".tag").onclick = (e) => { e.stopPropagation(); this.onLabel?.(l.id); };
+        el.querySelector(".tag").onpointerdown = (e) => e.stopPropagation();
         this.overlay.appendChild(el);
         this.labelEls.set(l.id, el);
       }
-      el.textContent = l.text;
+      el.querySelector(".tag").textContent = l.text;
       el.title = l.title || "";
       el.style.setProperty("--pin", l.colour || "#1f5fbf");
       el.classList.toggle("on", !!l.on);
@@ -437,7 +440,7 @@ export class GLView {
       const cut = sec && Math.abs(dot(sec.n, sub(l.pos, sec.origin))) > Math.max(sec.half, 0.3);
       if (!p || cut || p[0] < -40 || p[1] < -20 || p[0] > cam.w + 40 || p[1] > cam.h + 20) { el.style.display = "none"; continue; }
       el.style.display = "";
-      el.style.transform = `translate(${p[0].toFixed(1)}px, ${p[1].toFixed(1)}px) translate(-50%, -130%)`;
+      el.style.transform = `translate(${p[0].toFixed(1)}px, ${p[1].toFixed(1)}px)`;
     }
   }
 
