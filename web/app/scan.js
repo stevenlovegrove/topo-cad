@@ -411,7 +411,7 @@ function rebuildMarks() {
   const segs = [];
   // The selected issue's place.
   const issue = sel.issue != null && st.issues.find((i) => i.id === sel.issue);
-  if (issue?.place) boxLines(aabb(issue.place.min, issue.place.max), [255, 255, 255], segs);
+  if (issue?.place && vis("issues", `issue:${issue.id}`)) boxLines(aabb(issue.place.min, issue.place.max), [255, 255, 255], segs);
   // The pick: a small cross.
   if (sel.pick?.hit) {
     const p = sel.pick.hit, r = 0.08;
@@ -419,28 +419,40 @@ function rebuildMarks() {
   }
   // Rooms (model frame boxes) and fitted surfaces (patches).
   if (vis("rooms")) for (const r of st.rooms || []) boxLines(aabb(r.min, r.max).map(toScan), [120, 170, 255], segs);
-  for (const s of (st.surfaces || []).filter((s) => vis("planes", `plane:${s.id}`) || s.id === sel.plane)) {
+  for (const s of (st.surfaces || []).filter((s) => vis("planes", `plane:${s.id}`))) {
     const at = (a, b) => toScan(vec.add(s.centre, vec.add(vec.scale(s.u, a), vec.scale(s.v, b))));
     const q = [at(s.ext[0], s.ext[2]), at(s.ext[1], s.ext[2]), at(s.ext[1], s.ext[3]), at(s.ext[0], s.ext[3])];
     for (let i = 0; i < 4; i++) segs.push([q[i], q[(i + 1) % 4], s.id === sel.plane ? [200, 255, 250] : [40, 210, 200]]);
     if (s.id === sel.plane) { segs.push([q[0], q[2], [200, 255, 250]]); segs.push([q[1], q[3], [200, 255, 250]]); }
   }
-  // Slabs: their boxes (the one selected, and any a view shown is clipped to, whatever their eyes say).
-  const viewed = new Set(KINDS.filter((k) => app.shown(k)).map((k) => views[k].slab));
+  // Slabs: their boxes. The one selected has faint faces too, so it is seen where it
+  // meets the points (stronger while it is dragged); not in a view clipped to it, which is inside it.
+  const fills = [];
+  const quad = (q, rgba, skip) => fills.push([q[0], q[1], q[2], rgba, skip], [q[0], q[2], q[3], rgba, skip]);
   for (const s of slabs()) {
-    const on = s.id === sel.slab;
-    if (on || viewed.has(s.id) || vis("slabs", `slab:${s.id}`)) boxLines(slabCorners(s), on ? [255, 205, 120] : [205, 120, 30], segs);
+    if (!vis("slabs", `slab:${s.id}`)) continue;
+    const on = s.id === sel.slab, c = slabCorners(s);
+    boxLines(c, on ? [255, 205, 120] : [205, 120, 30], segs);
+    if (on) for (const f of [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]]) quad(f.map((k) => c[k]), [255, 160, 50, grab?.s ? 54 : 26], s.id);
   }
+  const pn = thePlane();
+  if (pn && vis("planes", `plane:${pn.id}`)) quad(planeCorners(pn), [60, 230, 215, 56]);
   // Polylines, and the one being drawn.
   const run = (pts, closed, rgb) => { for (let k = 0; k + 1 < pts.length || (closed && k < pts.length && pts.length > 2); k++) segs.push([toScan(pts[k]), toScan(pts[(k + 1) % pts.length]), rgb]); };
-  for (const l of lines()) if (l.id === sel.polyline || vis("polylines", `line:${l.id}`)) run(l.points, l.closed, l.id === sel.polyline ? [240, 255, 170] : [180, 235, 60]);
+  for (const l of lines()) if (vis("polylines", `line:${l.id}`)) run(l.points, l.closed, l.id === sel.polyline ? [240, 255, 170] : [180, 235, 60]);
   if (drawing) {
     run(drawing.points, false, [240, 255, 170]);
     for (const p of drawing.points) { const q = toScan(p), r = 0.03; for (const a of [[r, 0, 0], [0, r, 0], [0, 0, r]]) segs.push([vec.sub(q, a), vec.add(q, a), [240, 255, 170]]); }
   }
   const pos = new Float32Array(segs.length * 6), col = new Uint8Array(segs.length * 8);
   segs.forEach(([a, b, rgb], i) => { pos.set(a, i * 6); pos.set(b, i * 6 + 3); col.set([...rgb, 255, ...rgb, 255], i * 8); });
-  for (const v of Object.values(views)) v.setMarks(pos, col);
+  for (const v of Object.values(views)) {
+    v.setMarks(pos, col);
+    const t = fills.filter((f) => f[4] == null || f[4] !== v.slab);
+    const fp = new Float32Array(t.length * 9), fc = new Uint8Array(t.length * 12);
+    t.forEach(([a, b, c, rgba], i) => { fp.set(a, i * 9); fp.set(b, i * 9 + 3); fp.set(c, i * 9 + 6); fc.set([...rgba, ...rgba, ...rgba], i * 12); });
+    v.setFills(fp, fc);
+  }
   rebuildHandles();
   // Issues as pins.
   const PRI = { 1: "#d62828", 2: "#1f5fbf", 3: "#6b6b66" };
@@ -451,10 +463,33 @@ function rebuildMarks() {
   for (const v of Object.values(views)) v.setLabels(pins);
 }
 
+/** The slab, plane or polyline whose lines (as drawn: the shown ones) a click in a view is on, within a few pixels; the nearest. */
+function objectAt(v, e) {
+  const r = v.canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, cam = v.camera();
+  let best = null;
+  const near = (kind, id, a, b) => {
+    const p = v.project(cam, a), q = v.project(cam, b);
+    if (!p || !q) return;
+    const dx = q[0] - p[0], dy = q[1] - p[1], t = Math.max(0, Math.min(1, ((x - p[0]) * dx + (y - p[1]) * dy) / (dx * dx + dy * dy || 1)));
+    const d = Math.hypot(x - p[0] - t * dx, y - p[1] - t * dy);
+    if (d < 7 && (!best || d < best.d)) best = { kind, id, d };
+  };
+  const loop = (kind, id, pts, closed) => { for (let k = 0; k + 1 < pts.length || (closed && k < pts.length && pts.length > 2); k++) near(kind, id, pts[k], pts[(k + 1) % pts.length]); };
+  for (const s of slabs()) {
+    if (!vis("slabs", `slab:${s.id}`)) continue;
+    const c = slabCorners(s);
+    for (const [a, b] of [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]) near("slab", s.id, c[a], c[b]);
+  }
+  for (const s of st?.surfaces || []) if (vis("planes", `plane:${s.id}`)) loop("plane", s.id, planeCorners(s), true);
+  for (const l of lines()) if (vis("polylines", `line:${l.id}`)) loop("polyline", l.id, l.points.map(toScan), l.closed);
+  return best;
+}
+
 // ----- handles: the selected slab's faces, the selected polyline's points --------------
 
 function rebuildHandles() {
-  const list = [], s = slabOf(sel.slab), l = lineOf(sel.polyline);
+  // (What is hidden has no handles either.)
+  const list = [], s = vis("slabs", `slab:${sel.slab}`) && slabOf(sel.slab), l = vis("polylines", `line:${sel.polyline}`) && lineOf(sel.polyline);
   if (s) {
     const c = toScan(s.centre), ax = s.axes.map(rot), names = ["width", "height", "thickness"];
     for (let a = 0; a < 3; a++) for (const g of [-1, 1]) list.push({ id: `f:${a}:${g}`, pos: vec.add(c, vec.scale(ax[a], g * s.half[a])), along: ax[a], cls: a === 2 ? "face thin" : "face", title: `Drag this face in or out (the slab's ${names[a]})` });
@@ -694,6 +729,9 @@ function makeGlPane(kind) {
   };
   const pickAt = async (ray, e) => {
     if (drawing) return drawPoint(v, ray, e);
+    // On the lines of a slab, a plane or a polyline: that is what is meant.
+    const o = objectAt(v, e);
+    if (o) return choose(o.kind, o.id);
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
     choose(r.hit ? "point" : null, r.hit ? r : null);
@@ -707,6 +745,8 @@ function makeGlPane(kind) {
   // Right-click: pick what is there, then offer what can be done with it.
   v.onContext = async (ray, e) => {
     // (Looking at what is there does not change what is selected.)
+    const o = objectAt(v, e);
+    if (o) return openMenu(objectMenu(o.kind, o.id), e.clientX, e.clientY);
     const cuts = v.cuts();
     const p = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
     contextMenu(v, p, e.clientX, e.clientY);
@@ -1240,7 +1280,7 @@ function bindTree() {
     else if (kind === "selection") choose("selection", r.id);
     else if (kind === "plane") choose("plane", r.id);
     else if (kind === "slab") choose("slab", r.id);
-    else if (kind === "polyline") { hidden.delete(r.key); keep(); choose("polyline", r.id); }
+    else if (kind === "polyline") choose("polyline", r.id);
   });
   box.addEventListener("contextmenu", (e) => {
     const r = rowOf(e);

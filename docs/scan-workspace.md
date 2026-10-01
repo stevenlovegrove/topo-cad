@@ -293,6 +293,14 @@ Details that were decided in the building:
   vertical in 5° steps (alt: freely); its sizes can be typed in the
   card. A view clipped to it follows as it is dragged. A handle that
   would move toward or away from the viewer is not shown.
+- **Slabs, planes and polylines are picked by their lines**: a click
+  within a few pixels of one's outline in a view selects it (a
+  right-click opens its menu); anywhere else picks the scan point. What
+  is hidden (its eye, or its group's) is not drawn, has no handles and
+  cannot be picked, selected or not. The selected slab's faces and the
+  selected plane's patch are drawn faintly (a slab's more strongly while
+  it is dragged): points in front hide them and points behind are
+  tinted, which shows where they meet the scan.
 - **A section in a link** (`section`, as `render_section` takes it) opens
   as a slab that is not kept, until someone keeps it; a link can name a
   kept slab instead (`slab`). A person's attached view carries both.

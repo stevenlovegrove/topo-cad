@@ -231,6 +231,11 @@ export class GLView {
     this.marks = pos.length ? this.flatBuffers(pos, col) : null;
     this.redraw();
   }
+  /** Faint surfaces (a selected slab's faces, a plane's patch): triangles, each vertex with an RGBA colour. Points in front of one hide it; those behind are tinted. */
+  setFills(pos, col) {
+    this.fills = pos.length ? this.flatBuffers(pos, col) : null;
+    this.redraw();
+  }
   /** Labels at places: [{ id, pos, text, colour, title, on }]. */
   setLabels(labels) {
     this.labels = labels;
@@ -530,6 +535,15 @@ export class GLView {
     if (s.layers.model && this.lines) {
       gl.bindVertexArray(this.lines.vao);
       gl.drawArrays(gl.LINES, 0, this.lines.count);
+    }
+    if (s.layers.marks && this.fills) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.uniform1f(this.flat.u.u_box, 0);
+      gl.uniform2f(this.flat.u.u_z, -1e9, 1e9);
+      gl.bindVertexArray(this.fills.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, this.fills.count);
+      gl.depthMask(true);
     }
     if (s.layers.marks && this.marks) {
       gl.disable(gl.DEPTH_TEST);
