@@ -32,7 +32,7 @@ impl Cloud {
     pub fn is_empty(&self) -> bool {
         self.xyz.is_empty()
     }
-    fn push(&mut self, p: V3, intensity: u8, normal: [i8; 3]) {
+    pub(crate) fn push(&mut self, p: V3, intensity: u8, normal: [i8; 3]) {
         self.xyz.push(p);
         self.intensity.push(intensity);
         self.normal.push(normal);

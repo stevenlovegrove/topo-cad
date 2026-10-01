@@ -378,13 +378,48 @@ function makeGlPane(kind, glKind) {
     renderChips(); rebuildMarks();
   };
   host.addEventListener("dblclick", () => { if (sel.pick?.hit && glKind === "3d") v.set({ target: sel.pick.hit }); });
+  // A window dragged with shift: the points in it become a selection. In 3D only the
+  // surface nearest the viewer is taken; in a section, all of the slab's points.
+  v.onSelect = async (w) => {
+    const cuts = v.cuts();
+    const r = await service.call("selections", { action: "window", ...w, z: cuts.z, slab: cuts.slab, front_only: glKind === "3d" });
+    if (r.error) return setInfo(kind, r.error);
+    const id = r.text.match(/selected (s\d+)/)?.[1];
+    if (id) { sel.pick = null; showSelection(id); }
+  };
   return pane;
 }
 
+/// Shows a selection's points in the scan views (null: none).
+async function showSelection(id) {
+  sel.selection = id;
+  const c = id ? await service.selectionCloud(id) : null;
+  if (sel.selection !== id) return;
+  for (const v of Object.values(views)) v.setCloud("sel", c);
+  renderChips(); renderLayers();
+}
+
+function selectionChip(v, s) {
+  const pf = s.plane;
+  v.chip.innerHTML = `<b>${esc(s.id)}${s.label ? " " + esc(s.label) : ""}</b> · ${s.count.toLocaleString()} points` +
+    `<br>centre at model ${f3(toModel(s.centroid))}` +
+    (pf ? `<br>best plane: normal ${f3(unrot(pf.normal))}, rms ${(pf.rms * 1000).toFixed(1)} mm <span class="muted">(of all its points: not a fit)</span>` : "") +
+    `<div class="row"><button data-a="issue">New issue here</button><button data-a="label">Label</button><button data-a="delete">Delete</button><button data-a="clear">×</button></div>`;
+  for (const b of v.chip.querySelectorAll("button")) b.onclick = async () => {
+    const a = b.dataset.a;
+    if (a === "clear") showSelection(null);
+    else if (a === "issue") startDraft();
+    else if (a === "delete") { await service.call("selections", { action: "delete", id: s.id }); showSelection(null); }
+    else { const t = prompt("Label for this selection:", s.label); if (t != null) service.call("selections", { action: "label", id: s.id, label: t.trim() }); }
+  };
+}
+
 function renderChips() {
+  const chosen = sel.selection && st?.selections?.find((s) => s.id === sel.selection);
   for (const v of Object.values(views)) {
     const p = sel.pick;
-    v.chip.hidden = !p;
+    v.chip.hidden = !p && !chosen;
+    if (chosen && !p) { selectionChip(v, chosen); continue; }
     if (!p) continue;
     const m = p.member;
     const ev = m && members?.find((x) => x.path === m.path)?.evidence;
@@ -447,6 +482,8 @@ function renderLayers() {
     <h4>Camera</h4>
     <label class="c"><input type="checkbox" data-k="ortho" ${s.ortho ? "checked" : ""}> Orthographic</label>
     <div class="row2"><button data-a="top" title="Straight down, the model's +y up the screen">Top-down</button><button data-a="fit">Fit model</button></div>`}
+    <h4>Selections <span class="muted">shift-drag in a view</span></h4>
+    <ul>${(st?.selections || []).map((x) => `<li data-sel="${esc(x.id)}" class="${x.id === sel.selection ? "on" : ""}">${esc(x.id)} ${esc(x.label)} <span class="muted">${x.count.toLocaleString()}</span></li>`).join("") || `<div class="muted">None yet.</div>`}</ul>
     <h4>Scan</h4>
     <div class="muted">${st?.scan.loaded ? `${st.scan.points.toLocaleString()} points; ${(st.cloud ?? 0).toLocaleString()} drawn in 3D` : esc(st?.loading || "loading")}${st?.tally ? `<br>${st.tally.supported} members supported, ${st.tally.contradicted} contradicted, ${st.tally.unseen} unseen` : ""}</div>`;
   for (const i of box.querySelectorAll("[data-k]")) i.oninput = () => { v.set({ [i.dataset.k]: i.type === "checkbox" ? i.checked : i.type === "range" ? Number(i.value) : i.value }); };
@@ -464,6 +501,7 @@ function renderLayers() {
     secy: () => setSection(sectionFrom({ view: "y", at: target()[1] })),
   };
   for (const b of box.querySelectorAll("button[data-a]")) b.onclick = () => { acts[b.dataset.a](); requestSlab(); rebuildMarks(); renderLayers(); };
+  for (const li of box.querySelectorAll("li[data-sel]")) li.onclick = () => showSelection(li.dataset.sel === sel.selection ? null : li.dataset.sel);
   const th = box.querySelector("input[data-a=thick]");
   if (th) th.onchange = () => { if (s.section && Number(th.value) > 0) { v.set({ section: { ...s.section, half: Number(th.value) / 2 } }); requestSlab(); } };
 }
@@ -512,6 +550,9 @@ async function openIssue(id) {
   sel.drafting = false;
   app.showTab("issues");
   renderIssues(); rebuildMarks(); rebuildModel(); renderBoard();
+  // An issue pinned to a selection shows its points.
+  const s = st.issues.find((i) => i.id === id)?.place?.selection;
+  if (s && s !== sel.selection) showSelection(s);
 }
 
 function startDraft() {
@@ -523,9 +564,10 @@ function startDraft() {
 }
 
 async function createIssue(title, text) {
-  const args = { action: "create", title, category: sel.pick ? "scan" : "note" };
+  const args = { action: "create", title, category: sel.pick || sel.selection ? "scan" : "note" };
   if (text) args.text = text;
-  if (sel.pick?.hit) {
+  if (sel.selection && !sel.pick) args.selection = sel.selection;
+  else if (sel.pick?.hit) {
     args.frame = "scan";
     args.point = sel.pick.hit;
     // On a member's face: pinned to the member.
@@ -555,7 +597,7 @@ function renderIssues() {
   const typing = box.querySelector("#draftTitle"), typed = typing?.value ?? "", typingNow = document.activeElement === typing;
   box.innerHTML = `
     <div class="ibar">
-      <button class="act primary" id="newIssue" title="${sel.pick ? "Pinned to the point you picked" : "Pick a point in a scan view first to pin it there; otherwise a note"}">New issue${sel.pick ? " here" : ""}</button>
+      <button class="act primary" id="newIssue" title="${sel.pick ? "Pinned to the point you picked" : sel.selection ? "Pinned to your selection" : "Pick a point or shift-drag a selection in a scan view first to pin it there; otherwise a note"}">New issue${sel.pick || sel.selection ? " here" : ""}</button>
       <select id="issueFilter" title="Category">${["all", "scan", "note", "check"].map((k) => `<option ${k === sel.filter ? "selected" : ""}>${k}</option>`).join("")}</select>
       <label class="c"><input type="checkbox" id="issueDone" ${sel.done ? "checked" : ""}> done</label>
     </div>

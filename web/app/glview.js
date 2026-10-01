@@ -58,6 +58,7 @@ void main() {
   if (u_mode == 1) v_col = hue(.66 - .66 * clamp((a_pos.z - u_floor) / 3.6, 0., 1.)) * (.35 + .65 * lit);
   else if (u_mode == 2) v_col = surf ? .2 + .8 * abs(normalize(a_nrm)) : vec3(.42);
   else if (u_mode == 3) { float t = u_half > 0. ? clamp(off / u_half, -1., 1.) : 0.; v_col = hue(.33 - .33 * t) * (.55 + .45 * lit); }
+  else if (u_mode == 4) v_col = vec3(1., .82, .1);
   else v_col = vec3(.12 + .88 * pow(a_int, .55)) * vec3(1., .98, .94) * lit;
 }`;
 const POINT_FS = `#version 300 es
@@ -129,11 +130,14 @@ export class GLView {
     /** The model's floor in the scan (model z = scan z − zOffset). */
     this.zOffset = 0;
     this.floorZ = 0;
-    this.clouds = { thin: null, slab: null };
+    this.clouds = { thin: null, slab: null, sel: null };
     this.tris = null; this.lines = null; this.marks = null;
     this.labels = [];
     this.labelEls = new Map();
-    this.onPick = null; this.onChange = null; this.onLabel = null;
+    this.onPick = null; this.onChange = null; this.onLabel = null; this.onSelect = null;
+    this.band = document.createElement("div");
+    this.band.style.cssText = "position:absolute;border:1px dashed #ffd21a;background:rgba(255,210,26,.12);display:none";
+    this.overlay.appendChild(this.band);
     this.dirty = false;
     this.bind();
     new ResizeObserver(() => this.redraw()).observe(host);
@@ -301,14 +305,20 @@ export class GLView {
     let drag = null;
     c.addEventListener("contextmenu", (e) => e.preventDefault());
     c.addEventListener("pointerdown", (e) => {
-      c.setPointerCapture(e.pointerId);
-      drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 || this.state.kind === "section", moved: false, s: this.get() };
+      try { c.setPointerCapture(e.pointerId); } catch (_) {}
+      // Shift-drag marks a window of points; right- or alt-drag pans (a section pans with any drag).
+      drag = { x: e.clientX, y: e.clientY, select: e.shiftKey && e.button === 0, pan: e.button === 2 || e.altKey || this.state.kind === "section", moved: false, s: this.get() };
     });
     c.addEventListener("pointermove", (e) => {
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
       if (!drag.moved) return;
+      if (drag.select) {
+        const r = c.getBoundingClientRect();
+        Object.assign(this.band.style, { display: "block", left: `${Math.min(drag.x, e.clientX) - r.left}px`, top: `${Math.min(drag.y, e.clientY) - r.top}px`, width: `${Math.abs(dx)}px`, height: `${Math.abs(dy)}px` });
+        return;
+      }
       const s0 = drag.s, cam = this.camera();
       if (s0.kind === "section" && s0.section) {
         const k = (2 * s0.zoom) / cam.h;
@@ -325,6 +335,14 @@ export class GLView {
       drag = null;
       if (!d) return;
       const r = c.getBoundingClientRect();
+      if (d.select) {
+        this.band.style.display = "none";
+        if (!d.moved) return;
+        // The window, as the view projects it: what the service needs to find the points in it.
+        const cam = this.camera(), nx = (x) => (2 * (x - r.left)) / cam.w - 1, ny = (y) => 1 - (2 * (y - r.top)) / cam.h;
+        this.onSelect?.({ vp: Array.from(cam.vp), rect: [nx(d.x), ny(d.y), nx(e.clientX), ny(e.clientY)], eye: cam.eye, forward: cam.forward });
+        return;
+      }
       if (d.moved) this.onChange?.();
       else if (e.button === 0) this.onPick?.(this.ray(e.clientX - r.left, e.clientY - r.top), e);
     });
@@ -378,6 +396,13 @@ export class GLView {
       gl.uniform1f(u.u_floor, this.floorZ);
       gl.bindVertexArray(cloud.vao);
       gl.drawArrays(gl.POINTS, 0, cloud.count);
+      // A selection's points, over the others.
+      if (this.clouds.sel && s.layers.marks) {
+        gl.uniform1i(u.u_mode, 4);
+        gl.uniform1f(u.u_size, (s.pointSize + 1) * dpr);
+        gl.bindVertexArray(this.clouds.sel.vao);
+        gl.drawArrays(gl.POINTS, 0, this.clouds.sel.count);
+      }
     }
     gl.useProgram(this.flat.p);
     cuts(this.flat.u);

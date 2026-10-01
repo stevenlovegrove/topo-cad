@@ -27,9 +27,11 @@ pub mod render;
 #[cfg(feature = "pango")]
 pub mod render3d;
 pub mod scan;
+pub mod selection;
 pub mod stats;
 pub mod tools;
 pub mod tools3d;
+pub mod tools_sel;
 pub mod trajectory;
 pub mod view;
 pub mod workspace;

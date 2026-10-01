@@ -147,6 +147,13 @@ impl Work {
                 Some(ix) => respond_bytes(req, ix.thin.bytes()),
                 None => respond_json(req, 503, &json!({"error": "the scan is still loading"})),
             },
+            (Method::Get, "/api/selection") => {
+                let r = self.ws.lock().unwrap().selection_cloud(q.get("id").map_or("", String::as_str), 400_000);
+                match r {
+                    Ok(c) => respond_bytes(req, c.bytes()),
+                    Err(e) => respond_json(req, 404, &json!({"error": format!("{e:#}")})),
+                }
+            }
             (Method::Get, "/api/slab") => {
                 let (ix, scan) = (self.index.lock().unwrap().clone(), self.ws.lock().unwrap().scan.clone());
                 let (Some(ix), Some(scan)) = (ix, scan) else { return respond_json(req, 503, &json!({"error": "the scan is still loading"})) };

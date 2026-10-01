@@ -216,7 +216,10 @@ impl Workspace {
     }
     pub(crate) fn measure(&mut self, args: &Value) -> Result<Vec<Value>> {
         let model = Self::frame_is_model(args)?;
-        let idx = self.in_box(args.get("box").context("box: {min, max}")?, model)?;
+        let idx = match args.get("selection").and_then(|v| v.as_str()) {
+            Some(id) => self.selection_indices(id)?.to_vec(),
+            None => self.in_box(args.get("box").context("give a box {min, max} or a selection's id")?, model)?,
+        };
         let pl = self.placement()?;
         let scan = self.scan()?;
         let pts: Vec<V3> = idx.iter().filter(|&&i| (i as usize) < scan.xyz.len()).map(|&i| {
@@ -581,7 +584,14 @@ impl Workspace {
         let model = Self::frame_is_model(args)?;
         let pl = self.placement()?;
         let to_model = |p: V3| if model { p } else { pl.inverse(p) };
-        let seed = to_model(args.get("seed").and_then(arr3).context("seed: [x, y, z]")?);
+        // The seed: a point, or the middle of a selection (whose points are then the support).
+        let sel = args.get("selection").and_then(|v| v.as_str());
+        let sel_idx = sel.map(|id| self.selection_indices(id)).transpose()?;
+        let seed = match (args.get("seed").and_then(arr3), sel) {
+            (Some(p), _) => to_model(p),
+            (None, Some(id)) => pl.inverse(self.items.selections.iter().find(|s| s.id == id).context("selection")?.centroid),
+            (None, None) => bail!("give a seed [x, y, z] or a selection"),
+        };
         let radius = args.get("radius").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
         let (lo, hi) = match args.get("box") {
             Some(b) => (to_model(arr3(&b["min"]).context("box.min")?), to_model(arr3(&b["max"]).context("box.max")?)),
@@ -595,14 +605,18 @@ impl Workspace {
             thickness: args.get("thickness").and_then(|v| v.as_f64()).unwrap_or(0.03) as f32,
             cell_normals: args.get("cell_normals").and_then(|v| v.as_bool()).unwrap_or(false),
         };
-        // The candidates: the used points in the box (model frame).
+        // The candidates: the selection's points, or the used points in the box (model frame).
         self.scan()?;
         let scan = self.scan.as_ref().unwrap().clone();
         use rayon::prelude::*;
-            let cand: Vec<(u32, V3)> = scan.used.par_iter().filter_map(|&i| {
+        let from_selection = sel_idx.is_some() && args.get("box").is_none();
+        let cand: Vec<(u32, V3)> = match &sel_idx {
+            Some(idx) if from_selection => idx.iter().map(|&i| (i, pl.inverse(scan.xyz[i as usize]))).collect(),
+            _ => scan.used.par_iter().filter_map(|&i| {
                 let p = pl.inverse(scan.xyz[i as usize]);
                 (0..3).all(|a| p[a] >= lo[a] && p[a] <= hi[a]).then_some((i, p))
-            }).collect();
+            }).collect(),
+        };
         let pts: Vec<V3> = cand.iter().map(|c| c.1).collect();
         let mut f = fit_plane(&pts, &spec).with_context(|| format!("too few points near the seed {} to fit ({} candidates in the support)", f3(seed), pts.len()))?;
         // The normal toward where the surface was seen from.
@@ -634,7 +648,7 @@ impl Workspace {
             None => "  no sensor rays: the normal's sign is arbitrary\n".to_string(),
         };
         s += &format!("  support: {} candidate points ({}); {} inliers within ±{:.0} mm of the plane{}{}\n", f.candidates,
-            format!("box {} – {}", f3(lo), f3(hi)),
+            if from_selection { format!("selection {}", sel.unwrap()) } else { format!("box {} – {}", f3(lo), f3(hi)) },
             f.count, spec.thickness * 1e3, if spec.cell_normals { ", only where the points' own 5 cm neighbourhood faces the same way" } else { "" },
             if f.held { "; THE NORMAL WAS HELD at the one given (the points wanted to turn it further than the tolerance: check the support)" } else { "" });
         s += &format!("  spread: rms {:.1} mm; the offset's standard error from scatter alone is {:.2} mm (range bias, registration and what the surface really is are not in that)\n", f.rms * 1e3, f.rms * 1e3 / (f.count as f32).sqrt());

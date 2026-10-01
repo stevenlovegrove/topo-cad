@@ -80,7 +80,9 @@ calls carry one.
 
 An issue is a question or a fault pinned to a place, with a thread.
 
-- **Where:** a point, a selection of points, a box, or a member.
+- **Where:** a point, a selection of points, a box, or a member. (In a
+  scan view: click picks a point; shift-drag selects; drag orbits, and
+  right- or alt-drag pans.)
 - **State:** status (open, in hand, waiting on someone, done), priority,
   assignee, category.
 - **Thread:** comments by participants. Tool calls show as collapsed
@@ -210,6 +212,14 @@ Details that were decided in the building:
 - **The browser draws** a cloud thinned to one point per 2.5 cm cube (with
   intensity and a surface normal per point), and asks for every point of
   a section's slab when the section changes.
+- **A selection** is kept as how it was made (the window and the view it
+  was dragged in, or a box), not as a list of points: it is small, lives
+  in the repository, and gives the same points again from the same scan.
+  Shift-drag in a scan view makes one. In 3D only the surface nearest the
+  viewer is taken (within 8 cm of the nearest point around it), so a
+  surface seen at a grazing angle is taken thinly; in a section, all of
+  the slab's points in the window. `measure`, `fit_surface` and an
+  issue's place take a selection by its id.
 - **The model over the points** is coloured by evidence where the points
   are grey (intensity), and drawn in white outline where the points are
   coloured by hue (depth, normal, height).
@@ -224,6 +234,7 @@ Details that were decided in the building:
 | The service in `topo serve` | built, run on a real scan |
 | The app's shell: browser, split panes, inspector | built |
 | 3D with scan, sections, layers, picks | built |
+| Selections (a window in a view, or a box) | built, tested (the window by scripted events) |
 | Issues: list, threads, typing in place, pins, board with drag | built |
 | View links, Back and Forward, saved views | built |
 | Proposals: text diff, before / after / changed / both, apply, reject, revert | built |
@@ -232,8 +243,7 @@ Details that were decided in the building:
 
 Not built yet:
 
-- **Selections of points** (window and paint). Issues pin to a point, a
-  box or a member.
+- **Painted selections.** Selections are made by a window (or a box).
 - **Checks as issues.** The model's checks are listed as a category while
   they fail, and one can be kept as an issue to discuss; a kept one does
   not yet close itself when the check passes.

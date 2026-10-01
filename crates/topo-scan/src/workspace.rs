@@ -130,6 +130,8 @@ pub struct Items {
     pub rooms: Vec<Room>,
     #[serde(default)]
     pub surfaces: Vec<Surface>,
+    #[serde(default)]
+    pub selections: Vec<crate::selection::Selection>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -162,6 +164,7 @@ pub struct Workspace {
     /// Bumped whenever the model is re-evaluated.
     pub model_rev: u64,
     ev: Option<((u64, [u32; 4]), Vec<Evidence>)>,
+    pub(crate) sel_cache: HashMap<String, Arc<Vec<u32>>>,
     proposals: HashMap<String, Arc<Evaluated>>,
     pub store: Store,
     pub items: Items,
@@ -231,7 +234,7 @@ impl Workspace {
             items.placement = None;
         }
         let placement = items.placement.map(Into::into);
-        let mut w = Workspace { repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, model_rev: 0, ev: None, proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
+        let mut w = Workspace { repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
         if changed {
             w.save_items("topo-cad")?;
         }
@@ -428,6 +431,7 @@ impl Workspace {
             "studs" => self.studs(args),
             "fit_surface" => self.fit_surface(who, args),
             "surfaces" => self.surfaces(who, args),
+            "selections" => self.selections(who, args),
             "rooms" => self.rooms(who, args),
             "views" => self.views(who, args),
             "sections" => self.sections(who, args),
@@ -759,6 +763,9 @@ impl Workspace {
                     if let Some(m) = &p.member {
                         s += &format!("pinned to the member {m}\n");
                     }
+                    if let Some(id) = &p.selection {
+                        s += &format!("pinned to the selection {id} (use it in measure and fit_surface)\n");
+                    }
                     if let Some((k, d, _)) = self.nearest_member(pl.inverse(p.centre()), 0.5) {
                         s += &format!("nearest member: {} ({:.0} mm from its face)\n", self.model()?.pred.members[k].path, 1000.0 * d);
                     }
@@ -841,6 +848,10 @@ impl Workspace {
     /// Where an issue goes, from `point`, `box`, or `member` (in `frame`).
     fn place_from(&mut self, args: &Value) -> Result<Option<Place>> {
         let model = Self::frame_is_model(args)?;
+        if let Some(id) = args.get("selection").and_then(|v| v.as_str()) {
+            let s = self.items.selections.iter().find(|s| s.id == id).with_context(|| format!("no selection {id}"))?;
+            return Ok(Some(Place { min: s.min, max: s.max, member: None, selection: Some(id.to_string()) }));
+        }
         if let Some(f) = args.get("member").and_then(|v| v.as_str()) {
             let pl = self.placement()?;
             let ks = self.members_matching(Some(f))?;

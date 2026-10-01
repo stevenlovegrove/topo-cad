@@ -75,6 +75,7 @@ impl Workspace {
             "sections": self.items.sections,
             "rooms": self.items.rooms,
             "surfaces": self.items.surfaces,
+            "selections": self.items.selections,
         })
     }
 
