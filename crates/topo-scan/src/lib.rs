@@ -22,7 +22,10 @@ pub mod rays;
 pub mod render;
 pub mod scan;
 pub mod stats;
+pub mod tools;
 pub mod trajectory;
+pub mod view;
+pub mod workspace;
 
 use anyhow::{anyhow, Result};
 use rayon::prelude::*;
