@@ -1,7 +1,9 @@
 // The scan workspace in the app (only when the site has the service: see
 // service.js). It adds:
-//   - panes: "3D with scan", "Section" (both glview.js) and "Board";
-//   - in the browser: layers (how the focused view shows the scan) and views;
+//   - panes: "3D with scan", two more 3D views (all glview.js) and "Board";
+//     any of the 3D views can be clipped to a slab, which is what a section is;
+//   - in the browser: the objects (model, issues, selections, planes, slabs,
+//     polylines) and views;
 //   - on the right: the issues and their threads, with proposals;
 //   - in the header: who is here, and Back / Forward through views followed.
 //
@@ -17,11 +19,16 @@ let st = null;                 // the workspace's state
 let pl = { yaw: 0, t: [0, 0, 0] };
 let members = null, membersKey = "";
 let diff = null;               // a selected proposal's before / after / changes
-const views = {};              // scan3d, section: GLView
-let active = "scan3d";         // the scan view last used (what Layers controls)
+const views = {};              // scan3d, view2, view3: GLView (each with `slab`: the id of the slab it is clipped to)
+const KINDS = ["scan3d", "view2", "view3"], SECOND = ["view2", "view3"];
+let active = "scan3d";         // the scan view last used
 const sel = { issue: null, proposal: null, pick: null, filter: "all", done: false, drafting: false };
 const history = [], future = [];
-let cloudLoaded = false, slabKey = "", slabTimer = null;
+let cloudLoaded = false;
+const temps = [];              // slabs not kept: made by following a section link
+let tempN = 0;
+let live = null;               // a slab or polyline as it is dragged: { kind, id, value, done }
+let drawing = null;            // a polyline being drawn: { view, points (model frame) }
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -59,20 +66,128 @@ function renderPeople() {
 
 // ----- view state, links and history -----------------------------------------------
 
-/** A section in the scan's frame from a link's (as `render_section` takes it, model frame). */
-function sectionFrom(spec) {
-  const thick = spec.thickness;
+// ----- slabs and polylines ----------------------------------------------------------
+// A slab is an oriented box in the model's frame ({ centre, axes: [right, up,
+// toward the viewer], half }); a view clipped to one is a section. A polyline
+// is a run of points. Both are kept by the service; the ones here that are
+// not (`temp`) come from section links and can be kept.
+
+const slabs = () => [...(st?.slabs || []), ...temps].map((s) => (live?.kind === "slab" && live.id === s.id ? live.value : s));
+const slabOf = (id) => (id && slabs().find((s) => s.id === id)) || null;
+const lines = () => (st?.polylines || []).map((l) => (live?.kind === "polyline" && live.id === l.id ? live.value : l));
+const lineOf = (id) => (id && lines().find((l) => l.id === id)) || null;
+const slabName = (s) => (s.temp ? `${s.id} (not kept)` : `${s.id}${s.name ? " " + s.name : ""}`);
+const lineName = (l) => `${l.id}${l.name ? " " + l.name : ""}`;
+const lineLength = (l) => l.points.reduce((a, p, k) => (k + 1 < l.points.length || l.closed ? a + Math.hypot(...vec.sub(l.points[(k + 1) % l.points.length], p)) : a), 0);
+/** A slab as a view clips to it: scan frame. */
+const boxOf = (s) => ({ c: toScan(s.centre), u: rot(s.axes[0]), v: rot(s.axes[1]), n: rot(s.axes[2]), h: s.half });
+const slabCorners = (s) => [0, 1, 2, 3, 4, 5, 6, 7].map((k) => toScan([0, 1, 2].reduce((p, a) => vec.add(p, vec.scale(s.axes[a], (k >> a) & 1 ? s.half[a] : -s.half[a])), s.centre)));
+const until = async (f, ms = 2500) => { for (const t0 = performance.now(); performance.now() - t0 < ms; ) { const x = f(); if (x) return x; await new Promise((r) => setTimeout(r, 50)); } return f(); };
+
+/** A slab's axes from the direction it is seen along (toward the viewer), as the service makes them: upright, and square to the model when within 5° of it. */
+function axesFromNormal(n, up) {
+  n = vec.unit(n);
+  const k = [0, 1, 2].find((a) => Math.abs(n[a]) > 0.9962);
+  if (k != null) n = [0, 1, 2].map((a) => (a === k ? Math.sign(n[k]) : 0));
+  up ??= Math.abs(n[2]) > 0.9 ? [0, 1, 0] : [0, 0, 1];
+  const v = vec.unit(vec.sub(up, vec.scale(n, vec.dot(up, n))));
+  return [vec.cross(v, n), v, n];
+}
+
+/** A slab through `origin` with these axes, reaching over the model (and a little more) across and up. */
+function slabOver(origin, axes, thickness) {
+  const b = modelBounds() ?? { lo: vec.sub(origin, [4, 4, 1.5]), hi: vec.add(origin, [4, 4, 1.5]) };
+  let [u0, u1, v0, v1] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const x of [b.lo[0], b.hi[0]]) for (const y of [b.lo[1], b.hi[1]]) for (const z of [b.lo[2], b.hi[2]]) {
+    const q = vec.sub([x, y, z], origin);
+    u0 = Math.min(u0, vec.dot(q, axes[0])); u1 = Math.max(u1, vec.dot(q, axes[0])); v0 = Math.min(v0, vec.dot(q, axes[1])); v1 = Math.max(v1, vec.dot(q, axes[1]));
+  }
+  return { centre: vec.add(origin, vec.add(vec.scale(axes[0], 0.5 * (u0 + u1)), vec.scale(axes[1], 0.5 * (v0 + v1)))), axes, half: [0.5 * (u1 - u0) + 0.4, 0.5 * (v1 - v0) + 0.4, 0.5 * thickness] };
+}
+
+/** A slab from a link's section (as `render_section` takes it, model frame). */
+function slabFromSpec(spec) {
+  const thick = spec.thickness, c = modelBounds()?.centre ?? [0, 0, 1.2];
   let origin, n, up, t;
-  if (spec.view === "x") [origin, n, up, t] = [[spec.at ?? 0, 0, 0], [1, 0, 0], [0, 0, 1], thick ?? 0.3];
-  else if (spec.view === "y") [origin, n, up, t] = [[0, spec.at ?? 0, 0], [0, -1, 0], [0, 0, 1], thick ?? 0.3];
+  if (spec.view === "x") [origin, n, up, t] = [[spec.at ?? 0, c[1], c[2]], [1, 0, 0], [0, 0, 1], thick ?? 0.3];
+  else if (spec.view === "y") [origin, n, up, t] = [[c[0], spec.at ?? 0, c[2]], [0, -1, 0], [0, 0, 1], thick ?? 0.3];
   else if (spec.view === "custom") [origin, n, up, t] = [spec.origin, spec.normal, spec.up ?? [0, 0, 1], thick ?? 0.3];
-  else { const z = spec.z ?? [0.1, 2.4]; [origin, n, up, t] = [[0, 0, 0.5 * (z[0] + z[1])], [0, 0, 1], [0, 1, 0], Math.abs(z[1] - z[0])]; }
+  else { const z = spec.z ?? [0.1, 2.4]; [origin, n, up, t] = [[c[0], c[1], 0.5 * (z[0] + z[1])], [0, 0, 1], [0, 1, 0], Math.abs(z[1] - z[0])]; }
   n = vec.unit(n);
   let v = vec.sub(up, vec.scale(n, vec.dot(up, n)));
   if (Math.hypot(...v) < 1e-6) v = Math.abs(n[0]) < 0.9 ? vec.cross(n, [1, 0, 0]) : vec.cross(n, [0, 1, 0]);
   v = vec.unit(v);
-  const u = vec.cross(v, n);
-  return { origin: toScan(origin), n: rot(n), u: rot(u), v: rot(v), half: 0.5 * t };
+  const axes = [vec.cross(v, n), v, n], b = spec.bounds;
+  if (!b) return slabOver(origin, axes, t);
+  return { centre: vec.add(origin, vec.add(vec.scale(axes[0], 0.5 * (b[0] + b[1])), vec.scale(v, 0.5 * (b[2] + b[3])))), axes, half: [0.5 * (b[1] - b[0]), 0.5 * (b[3] - b[2]), 0.5 * t] };
+}
+
+/** A slab that is not kept (until asked): the same one again for the same place. */
+function tempSlab(geom) {
+  const same = temps.find((t) => JSON.stringify([t.centre, t.axes, t.half]) === JSON.stringify([geom.centre, geom.axes, geom.half]));
+  if (same) return same;
+  const s = { id: `t${++tempN}`, name: "", temp: true, by: service.id, ...geom };
+  temps.push(s);
+  // A few are enough: the oldest that no view is clipped to goes.
+  while (temps.length > 4) { const k = temps.findIndex((t) => !Object.values(views).some((v) => v.slab === t.id)); if (k < 0) break; temps.splice(k, 1); }
+  return s;
+}
+
+/** Keeps a slab with the project; its id. */
+async function createSlab(args) {
+  const r = await service.call("slabs", { action: "create", frame: "model", ...args });
+  if (r.error) { alert(r.error); return null; }
+  const id = r.text.match(/made slab (b\d+)/)?.[1];
+  if (!id) return null;
+  hidden.delete(`slab:${id}`); hidden.delete("slabs"); keep();
+  await until(() => st?.slabs?.some((s) => s.id === id));
+  return id;
+}
+
+/** Changes a slab (its centre, half sizes, axes or name): at once here, then with the service. */
+async function updateSlab(id, patch) {
+  const s = slabOf(id);
+  if (!s) return;
+  if (s.temp) Object.assign(temps.find((t) => t.id === id), patch);
+  else live = { kind: "slab", id, value: { ...s, ...patch } };
+  syncSlabs(); rebuildMarks(); renderChips(); renderLayers();
+  if (s.temp) return;
+  const mine = live, r = await service.call("slabs", { action: "update", id, ...patch });
+  if (r.error) alert(r.error);
+  // (Let go of once the service's state says the same.)
+  if (live === mine) live.done = true;
+}
+
+/** Makes every view's clipping box what its slab is now, and asks for the points in it. */
+function syncSlabs() {
+  for (const v of Object.values(views)) {
+    const s = slabOf(v.slab);
+    if (v.slab && !s) v.slab = null;
+    const box = s ? boxOf(s) : null;
+    // (Without a slab there is no depth in it to colour by.)
+    if (JSON.stringify(box) !== JSON.stringify(v.state.box)) v.set(box ? { box } : { box: null, flat: false, colour: v.state.colour === "depth" ? "intensity" : v.state.colour }, true);
+    requestSlab(v);
+  }
+}
+
+/**
+ * Shows a slab: a 3D view clipped to it, seen square on. The view already on
+ * it, else a second view not in use, else the second view that is open.
+ */
+function viewSlab(id, kind) {
+  const s = slabOf(id);
+  if (!s) return null;
+  kind ??= KINDS.find((k) => views[k].slab === id && app.shown(k)) ?? (app.slots().length < 3 ? SECOND.find((k) => !app.shown(k)) : null) ?? SECOND.find((k) => app.shown(k)) ?? "view2";
+  if (!app.shown(kind)) app.slots().length < 3 ? app.openBeside(kind) : app.showView(kind);
+  const v = views[kind], fresh = !v.state.box;
+  active = kind;
+  v.slab = id;
+  syncSlabs();
+  // What stands in front of what is the first thing to see in one.
+  if (fresh && v.state.colour === "intensity") v.set({ colour: "depth" }, true);
+  v.squareOn(boxOf(s));
+  renderLayers(); rebuildMarks();
+  return v;
 }
 
 /** The model's extent (model frame), from its members. */
@@ -85,36 +200,14 @@ function modelBounds(filter) {
   return lo[0] === Infinity ? null : { lo, hi, centre: lo.map((x, k) => 0.5 * (x + hi[k])), radius: 0.5 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) };
 }
 
-/** Puts a section in the section view, framed on the model (or on `bounds` [u0, u1, v0, v1]). */
-function setSection(sec, bounds) {
-  const v = views.section;
-  let centre = [0, 0], zoom = 4;
-  if (bounds) { centre = [0.5 * (bounds[0] + bounds[1]), 0.5 * (bounds[2] + bounds[3])]; zoom = 0.52 * Math.max(bounds[3] - bounds[2], (bounds[1] - bounds[0]) / ((v.canvas.clientWidth || 4) / (v.canvas.clientHeight || 3))); }
-  else {
-    const b = modelBounds();
-    if (b) {
-      let [u0, u1, v0, v1] = [Infinity, -Infinity, Infinity, -Infinity];
-      for (const x of [b.lo[0], b.hi[0]]) for (const y of [b.lo[1], b.hi[1]]) for (const z of [b.lo[2], b.hi[2]]) {
-        const q = vec.sub(toScan([x, y, z]), sec.origin);
-        u0 = Math.min(u0, vec.dot(q, sec.u)); u1 = Math.max(u1, vec.dot(q, sec.u)); v0 = Math.min(v0, vec.dot(q, sec.v)); v1 = Math.max(v1, vec.dot(q, sec.v));
-      }
-      centre = [0.5 * (u0 + u1), 0.5 * (v0 + v1)];
-      const aspect = (v.canvas.clientWidth || 4) / (v.canvas.clientHeight || 3);
-      zoom = 0.55 * Math.max(v1 - v0, (u1 - u0) / aspect);
-    }
-  }
-  v.set({ section: sec, centre, zoom });
-}
-
 function snapshot() {
-  return { slots: app.slots(), scan3d: views.scan3d.get(), section: views.section.get(), proposal: sel.proposal && { ...sel.proposal } };
+  return { slots: app.slots(), views: Object.fromEntries(KINDS.map((k) => [k, { state: views[k].get(), slab: views[k].slab }])), proposal: sel.proposal && { ...sel.proposal } };
 }
 function restore(s) {
-  views.scan3d.animate(s.scan3d);
-  views.section.animate(s.section);
+  for (const k of KINDS) { views[k].slab = s.views[k].slab; views[k].animate(s.views[k].state); }
   app.setSlots(s.slots);
   selectProposal(s.proposal, true);
-  renderLayers(); requestSlab(); rebuildMarks();
+  syncSlabs(); renderLayers(); rebuildMarks();
 }
 function renderHistory() {
   $("histBack").disabled = !history.length;
@@ -131,15 +224,23 @@ function pushHistory() {
 /** Follows a view link: sets what it names, leaves the rest; Back undoes it. */
 function followLink(link) {
   pushHistory();
-  const kind = link.pane === "section" || (link.section && link.pane !== "3d") ? "section" : "scan3d";
-  const v = views[kind];
-  // Beside what is open, if there is one pane; else where it is, or in the focused pane.
-  if (!app.shown(kind) && app.slots().length < 2) app.openBeside(kind);
-  else app.showView(kind);
-  active = kind;
+  // A section is a view clipped to a slab: the one named, or one made (not kept) from what the link gives.
+  const slab = slabOf(link.slab) ?? (link.section ? tempSlab(slabFromSpec(link.section)) : null);
+  let v;
+  if (slab) v = viewSlab(slab.id);
+  else {
+    v = views.scan3d;
+    // Beside what is open, if there is one pane; else where it is, or in the focused pane.
+    if (!app.shown("scan3d") && app.slots().length < 2) app.openBeside("scan3d");
+    else app.showView("scan3d");
+    active = "scan3d";
+    if (link.slab === null) { v.slab = null; syncSlabs(); }
+  }
   const patch = {};
-  if (link.section) setSection(sectionFrom(link.section), link.section.bounds);
+  if (link.flat != null) patch.flat = !!link.flat;
   if (link.camera) {
+    // (A camera of its own: no longer held square on, unless the link says so.)
+    if (slab && link.flat == null && (link.camera.eye || link.camera.top_down)) patch.flat = false;
     const c = link.camera;
     if (c.eye && c.target) {
       const [e, t] = [toScan(c.eye), toScan(c.target)], d = vec.sub(e, t), dist = Math.hypot(...d) || 1;
@@ -166,28 +267,28 @@ function followLink(link) {
     const p = i?.entries.find((e) => e.kind === "proposal" && e.n === link.proposal.n);
     if (p) selectProposal({ issue: i.id, n: p.n, commit: p.commit, mode: link.proposal.mode || "changed" }, true);
   }
-  renderLayers(); requestSlab(); rebuildMarks();
+  renderLayers(); rebuildMarks();
 }
 
 /** The focused scan view as a link: what someone else needs to see the same. */
 function linkOfView() {
-  const v = views[active], s = v.state;
-  const link = { pane: s.kind === "section" ? "section" : "3d", colour: s.colour, clip: { z_min: s.zMin, z_max: s.zMax } };
-  if (s.kind === "section" && s.section) {
-    const sec = s.section, hw = s.zoom * ((v.canvas.clientWidth || 4) / (v.canvas.clientHeight || 3));
-    link.section = { view: "custom", origin: round(toModel(sec.origin)), normal: round(unrot(sec.n)), up: round(unrot(sec.v)), thickness: Math.round(2000 * sec.half) / 1000, bounds: round([s.centre[0] - hw, s.centre[0] + hw, s.centre[1] - s.zoom, s.centre[1] + s.zoom], 100) };
-  } else {
-    const cam = v.camera();
-    link.camera = { eye: round(toModel(s.ortho ? vec.add(s.target, vec.scale(cam.forward, -s.dist)) : cam.eye), 100), target: round(toModel(s.target), 100) };
-    link.projection = s.ortho ? "ortho" : "perspective";
-    if (s.ortho) link.camera.half = Math.round(s.half * 100) / 100;
+  const v = views[active], s = v.state, slab = slabOf(v.slab), cam = v.camera();
+  const link = { pane: slab ? "section" : "3d", colour: s.colour, clip: { z_min: s.zMin, z_max: s.zMax }, slab: slab && !slab.temp ? slab.id : null };
+  if (slab) {
+    // The slab as a section too, for whoever does not have it (an agent's `render_section` takes the same).
+    link.section = { view: "custom", origin: round(slab.centre), normal: round(slab.axes[2]), up: round(slab.axes[1]), thickness: Math.round(2000 * slab.half[2]) / 1000, bounds: round([-slab.half[0], slab.half[0], -slab.half[1], slab.half[1]], 100) };
+    if (slab.temp) delete link.slab;
+    link.flat = s.flat;
   }
+  link.camera = { eye: round(toModel(s.ortho ? vec.add(s.target, vec.scale(cam.forward, -s.dist)) : cam.eye), 100), target: round(toModel(s.target), 100) };
+  link.projection = s.ortho ? "ortho" : "perspective";
+  if (s.ortho) link.camera.half = Math.round(s.half * 100) / 100;
   if (sel.proposal) link.proposal = { issue: sel.proposal.issue, n: sel.proposal.n, mode: sel.proposal.mode };
   return link;
 }
 function describeView() {
-  const s = views[active].state;
-  return `${s.kind === "section" ? "section" : s.ortho ? "3D ortho" : "3D"}, ${s.colour}`;
+  const v = views[active], s = v.state, slab = slabOf(v.slab);
+  return `${slab ? `slab ${slabName(slab)}` : s.ortho ? "3D ortho" : "3D"}, ${s.colour}`;
 }
 
 // ----- data: the cloud, the members, a section's slab --------------------------------
@@ -199,17 +300,19 @@ async function loadCloud() {
   for (const v of Object.values(views)) v.setCloud("thin", c);
 }
 
-function requestSlab() {
-  const s = views.section.state.section;
-  const key = s ? JSON.stringify([s.origin, s.n, s.half]) : "";
-  if (key === slabKey || !st?.scan.loaded) return;
-  clearTimeout(slabTimer);
-  slabTimer = setTimeout(async () => {
-    slabKey = key;
-    if (!s) return views.section.setCloud("slab", null);
-    const c = await service.slab(s.origin, s.n, s.half);
-    if (slabKey === key) views.section.setCloud("slab", c);
-    setInfo("section", c ? `${c.count.toLocaleString()} points in the slab` : "");
+/** Every scan point in the box a view is clipped to (a moment after it stops changing). */
+function requestSlab(v) {
+  const box = v.state.box, key = box ? JSON.stringify(box) : "";
+  if (key === (v.slabWant ?? "") || !st?.scan.loaded) return;
+  v.slabWant = key;
+  clearTimeout(v.slabTimer);
+  v.slabTimer = setTimeout(async () => {
+    if (!box) { v.setCloud("slab", null); return setInfo(v.name, ""); }
+    const c = await service.slab(box);
+    if (v.slabWant !== key) return;
+    v.setCloud("slab", c);
+    const s = slabOf(v.slab);
+    setInfo(v.name, c ? `${s ? `slab ${slabName(s)} · ` : ""}${c.count.toLocaleString()} points` : "");
   }, 200);
 }
 
@@ -226,9 +329,7 @@ async function loadMembers() {
     const b = modelBounds();
     if (b) {
       views.scan3d.framed = true;
-      views.scan3d.set({ target: toScan(b.centre), dist: b.radius * 2.6, half: b.radius * 1.1 }, true);
-      setSection(sectionFrom({ view: "plan" }));
-      requestSlab();
+      for (const v of Object.values(views)) if (!v.slab) v.set({ target: toScan(b.centre), dist: b.radius * 2.6, half: b.radius * 1.1 }, true);
     }
   }
   if (sel.proposal) await loadDiff();
@@ -324,22 +425,23 @@ function rebuildMarks() {
     for (let i = 0; i < 4; i++) segs.push([q[i], q[(i + 1) % 4], s.id === sel.plane ? [200, 255, 250] : [40, 210, 200]]);
     if (s.id === sel.plane) { segs.push([q[0], q[2], [200, 255, 250]]); segs.push([q[1], q[3], [200, 255, 250]]); }
   }
-  const build = (extra) => {
-    const all = segs.concat(extra);
-    const pos = new Float32Array(all.length * 6), col = new Uint8Array(all.length * 8);
-    all.forEach(([a, b, rgb], i) => { pos.set(a, i * 6); pos.set(b, i * 6 + 3); col.set([...rgb, 255, ...rgb, 255], i * 8); });
-    return [pos, col];
-  };
-  // In 3D, the section's plane (where the Section pane is looking).
-  const sec = views.section.state.section, extra = [];
-  if (sec && app.shown("section")) {
-    const s = views.section.state, hw = s.zoom * ((views.section.canvas.clientWidth || 4) / (views.section.canvas.clientHeight || 3));
-    const at = (a, b) => vec.add(sec.origin, vec.add(vec.scale(sec.u, s.centre[0] + a), vec.scale(sec.v, s.centre[1] + b)));
-    const q = [at(-hw, -s.zoom), at(hw, -s.zoom), at(hw, s.zoom), at(-hw, s.zoom)];
-    for (let i = 0; i < 4; i++) extra.push([q[i], q[(i + 1) % 4], [255, 150, 40]]);
+  // Slabs: their boxes (the one selected, and any a view shown is clipped to, whatever their eyes say).
+  const viewed = new Set(KINDS.filter((k) => app.shown(k)).map((k) => views[k].slab));
+  for (const s of slabs()) {
+    const on = s.id === sel.slab;
+    if (on || viewed.has(s.id) || vis("slabs", `slab:${s.id}`)) boxLines(slabCorners(s), on ? [255, 205, 120] : [205, 120, 30], segs);
   }
-  views.scan3d.setMarks(...build(extra));
-  views.section.setMarks(...build([]));
+  // Polylines, and the one being drawn.
+  const run = (pts, closed, rgb) => { for (let k = 0; k + 1 < pts.length || (closed && k < pts.length && pts.length > 2); k++) segs.push([toScan(pts[k]), toScan(pts[(k + 1) % pts.length]), rgb]); };
+  for (const l of lines()) if (l.id === sel.polyline || vis("polylines", `line:${l.id}`)) run(l.points, l.closed, l.id === sel.polyline ? [240, 255, 170] : [180, 235, 60]);
+  if (drawing) {
+    run(drawing.points, false, [240, 255, 170]);
+    for (const p of drawing.points) { const q = toScan(p), r = 0.03; for (const a of [[r, 0, 0], [0, r, 0], [0, 0, r]]) segs.push([vec.sub(q, a), vec.add(q, a), [240, 255, 170]]); }
+  }
+  const pos = new Float32Array(segs.length * 6), col = new Uint8Array(segs.length * 8);
+  segs.forEach(([a, b, rgb], i) => { pos.set(a, i * 6); pos.set(b, i * 6 + 3); col.set([...rgb, 255, ...rgb, 255], i * 8); });
+  for (const v of Object.values(views)) v.setMarks(pos, col);
+  rebuildHandles();
   // Issues as pins.
   const PRI = { 1: "#d62828", 2: "#1f5fbf", 3: "#6b6b66" };
   const pins = st.issues.filter((i) => i.place && vis("issues", `issue:${i.id}`) && (i.status !== "done" || i.id === sel.issue)).map((i) => ({
@@ -349,6 +451,201 @@ function rebuildMarks() {
   for (const v of Object.values(views)) v.setLabels(pins);
 }
 
+// ----- handles: the selected slab's faces, the selected polyline's points --------------
+
+function rebuildHandles() {
+  const list = [], s = slabOf(sel.slab), l = lineOf(sel.polyline);
+  if (s) {
+    const c = toScan(s.centre), ax = s.axes.map(rot), names = ["width", "height", "thickness"];
+    for (let a = 0; a < 3; a++) for (const g of [-1, 1]) list.push({ id: `f:${a}:${g}`, pos: vec.add(c, vec.scale(ax[a], g * s.half[a])), along: ax[a], cls: a === 2 ? "face thin" : "face", title: `Drag this face in or out (the slab's ${names[a]})` });
+    list.push({ id: "mid", pos: c, along: ax[2], cls: "mid", title: "Drag to slide the slab through the building, along its thin direction" });
+    list.push({ id: "yaw", pos: vec.add(c, vec.scale(ax[0], s.half[0] + 0.45)), cls: "yaw", text: "⟳", title: "Drag to turn the slab about the vertical (in steps of 5° of the model; alt: freely)" });
+  }
+  if (l && !drawing) {
+    const n = l.points.length;
+    l.points.forEach((p, k) => list.push({ id: `n:${k}`, pos: toScan(p), cls: "node", title: "Drag to move this point (it lands on the scan under the cursor; alt: where you let go). Right-click: remove it" }));
+    for (let k = 0; k + 1 < n || (l.closed && k < n && n > 2); k++) {
+      const a = l.points[k], b = l.points[(k + 1) % n];
+      list.push({ id: `m:${k}`, pos: toScan(a.map((x, i) => 0.5 * (x + b[i]))), cls: "seg", text: `${Math.hypot(...vec.sub(b, a)).toFixed(3)} m`, title: "This stretch's length. Drag to add a point here" });
+    }
+  }
+  for (const v of Object.values(views)) v.setHandles(list);
+}
+
+/** How far along a line (through `p`, along `d`) the point nearest a ray is; null if they run together. */
+function alongLine(p, d, ray) {
+  const w = vec.sub(p, ray.origin), a = vec.dot(d, d), b = vec.dot(d, ray.dir), c = vec.dot(ray.dir, ray.dir), den = a * c - b * b;
+  return Math.abs(den) < 1e-6 ? null : (b * vec.dot(ray.dir, w) - c * vec.dot(d, w)) / den;
+}
+/** Where a ray meets a plane (through `p`, normal `n`); null if it runs along it. */
+function onPlane(p, n, ray) {
+  const k = vec.dot(n, ray.dir);
+  return Math.abs(k) < 0.02 ? null : vec.add(ray.origin, vec.scale(ray.dir, vec.dot(n, vec.sub(p, ray.origin)) / k));
+}
+
+let grab = null;  // what a handle's drag started from
+function handleDrag(v, id, phase, ray, e) {
+  const refresh = () => { syncSlabs(); rebuildMarks(); renderChips(); };
+  if (sel.slab && !id.startsWith("n:") && !id.startsWith("m:")) {
+    if (phase === "start") { grab = { s: structuredClone(slabOf(sel.slab)) }; return; }
+    if (!grab?.s) return;
+    const s0 = grab.s, c0 = toScan(s0.centre);
+    let value = null;
+    if (id.startsWith("f:")) {
+      // A face moves along its normal; the one across from it stays where it is.
+      const [, a, g] = id.split(":").map(Number), ax = rot(s0.axes[a]);
+      const t = alongLine(vec.add(c0, vec.scale(ax, g * s0.half[a])), vec.scale(ax, g), ray);
+      if (t != null) {
+        const h = Math.max(0.01, s0.half[a] + 0.5 * t), half = s0.half.slice();
+        half[a] = Math.round(h * 1000) / 1000;
+        value = { ...s0, half, centre: vec.add(s0.centre, vec.scale(s0.axes[a], g * (half[a] - s0.half[a]))) };
+      }
+    } else if (id === "mid") {
+      const t = alongLine(c0, rot(s0.axes[2]), ray);
+      if (t != null) value = { ...s0, centre: vec.add(s0.centre, vec.scale(s0.axes[2], t)) };
+    } else if (id === "yaw") {
+      const p = onPlane(c0, [0, 0, 1], ray);
+      if (p) {
+        const q = toModel(p), u = s0.axes[0];
+        let to = Math.atan2(q[1] - s0.centre[1], q[0] - s0.centre[0]);
+        if (!e.altKey) to = Math.round(to / (Math.PI / 36)) * (Math.PI / 36);
+        const d = to - Math.atan2(u[1], u[0]), cs = Math.cos(d), sn = Math.sin(d);
+        value = { ...s0, axes: s0.axes.map((x) => [cs * x[0] - sn * x[1], sn * x[0] + cs * x[1], x[2]]) };
+      }
+    }
+    if (value) { live = { kind: "slab", id: s0.id, value }; grab.moved = true; refresh(); }
+    if (phase === "end") {
+      const now = live?.id === s0.id ? live.value : null, moved = grab.moved;
+      grab = null;
+      if (moved && now) updateSlab(s0.id, { centre: now.centre, half: now.half, axes: now.axes });
+    }
+    return;
+  }
+  const l0 = phase === "start" ? lineOf(sel.polyline) : grab?.l;
+  if (!l0) return;
+  if (phase === "start") {
+    const pts = l0.points.map((p) => p.slice());
+    let k = Number(id.slice(2));
+    // A stretch's middle: a new point there, which is then what is dragged.
+    if (id.startsWith("m:")) { const a = pts[k], b = pts[(k + 1) % pts.length]; pts.splice(++k, 0, a.map((x, i) => 0.5 * (x + b[i]))); }
+    grab = { l: { ...l0, points: pts }, k, at: toScan(pts[k]), added: id.startsWith("m:"), x: e.clientX, y: e.clientY };
+    return;
+  }
+  // The point moves in the plane facing the viewer through where it was.
+  const moved = grab.moved || Math.hypot(e.clientX - grab.x, e.clientY - grab.y) > 3;
+  const p = moved && onPlane(grab.at, v.camera().forward, ray);
+  if (p) {
+    grab.moved = true;
+    const pts = grab.l.points.map((x) => x.slice());
+    pts[grab.k] = toModel(p);
+    live = { kind: "polyline", id: grab.l.id, value: { ...grab.l, points: pts } };
+    rebuildMarks(); renderChips();
+  }
+  if (phase === "end") {
+    const g = grab;
+    grab = null;
+    if (!g.moved) { live = null; return rebuildMarks(); }
+    (async () => {
+      const pts = live.value.points.map((x) => x.slice());
+      // Looking at the scan in the round, it lands on the surface under the cursor; square on to a slab, it stays in its plane.
+      if (!v.state.flat && !e.altKey) {
+        const cuts = v.cuts(), hit = (await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab)).hit;
+        if (hit) pts[g.k] = toModel(hit);
+      }
+      updateLine(g.l.id, { points: pts.map((x) => round(x)) });
+    })();
+  }
+}
+
+/** Changes a polyline (its points, whether it is closed, its name): at once here, then with the service. */
+async function updateLine(id, patch) {
+  const l = lineOf(id);
+  if (!l) return;
+  const mine = (live = { kind: "polyline", id, value: { ...l, ...patch } });
+  rebuildMarks(); renderChips(); renderTree();
+  const r = await service.call("polylines", { action: "update", id, frame: "model", ...patch });
+  if (r.error) alert(r.error);
+  if (live === mine) live.done = true;
+}
+
+function handleMenu(v, id, e) {
+  const l = lineOf(sel.polyline);
+  if (!l || !id.startsWith("n:")) return;
+  const k = Number(id.slice(2)), items = [];
+  if (l.points.length > 2) items.push({ label: "Remove this point", run: () => updateLine(l.id, { points: l.points.filter((_, i) => i !== k) }) });
+  if (l.points.length > 2) items.push({ label: l.closed ? "Open the polyline" : "Close the polyline", run: () => updateLine(l.id, { closed: !l.closed }) });
+  items.push({ label: "Orbit about this point", run: () => v.animate({ target: toScan(l.points[k]) }) });
+  openMenu(items, e.clientX, e.clientY);
+}
+
+// ----- drawing: a polyline, point by point; a cut line for a slab ------------------------
+
+function startDrawing(v) {
+  choose(null);
+  drawing = { view: v.name, points: [] };
+  renderChips(); renderLayers(); rebuildMarks();
+}
+async function endDrawing(keepIt) {
+  const d = drawing;
+  drawing = null;
+  if (!d) return;
+  // (A double click ends it: its second click is the same point again.)
+  const pts = d.points.filter((p, k) => k === 0 || Math.hypot(...vec.sub(p, d.points[k - 1])) > 0.01);
+  renderChips(); renderLayers(); rebuildMarks();
+  if (!keepIt || pts.length < 2) return;
+  const r = await service.call("polylines", { action: "create", frame: "model", points: pts.map((p) => round(p)), closed: !!d.closed });
+  if (r.error) return alert(r.error);
+  const id = r.text.match(/made polyline (l\d+)/)?.[1];
+  if (!id) return;
+  hidden.delete(`line:${id}`); hidden.delete("polylines"); keep();
+  await until(() => st?.polylines?.some((l) => l.id === id));
+  choose("polyline", id);
+}
+/** A click while drawing: a point on the scan there, or (square on to a slab) in the slab's middle plane. */
+async function drawPoint(v, ray, e) {
+  let p = null;
+  const box = v.state.box;
+  if (v.state.flat && box) p = onPlane(box.c, box.n, ray);
+  else { const cuts = v.cuts(); p = (await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab)).hit ?? null; }
+  if (!p || !drawing) return;
+  // On the first point again: closed, and done.
+  const first = drawing.points[0] && v.project(v.camera(), toScan(drawing.points[0])), r = v.canvas.getBoundingClientRect();
+  if (drawing.points.length > 2 && first && Math.hypot(first[0] - (e.clientX - r.left), first[1] - (e.clientY - r.top)) < 10) { drawing.closed = true; return endDrawing(true); }
+  drawing.points.push(toModel(p));
+  renderChips(); rebuildMarks();
+}
+
+/** A line drawn across a view (looking down on it): an upright slab along it, to see what it cuts through. */
+async function cutAlong(v, ra, rb) {
+  v.tool = null;
+  renderTools(v);
+  const z = v.state.target[2], a = onPlane([0, 0, z], [0, 0, 1], ra), b = onPlane([0, 0, z], [0, 0, 1], rb);
+  if (!a || !b) return setInfo(v.name, "Draw a cut line looking down on the building.");
+  const [p, q] = [toModel(a), toModel(b)], d = [q[0] - p[0], q[1] - p[1]], len = Math.hypot(...d);
+  if (len < 0.05) return;
+  const axes = axesFromNormal([d[1] / len, -d[0] / len, 0]), mb = modelBounds(), zs = mb ? [mb.lo[2] - 0.3, mb.hi[2] + 0.3] : [toModel(a)[2] - 1.5, toModel(a)[2] + 1.5];
+  const id = await createSlab({ centre: round([0.5 * (p[0] + q[0]), 0.5 * (p[1] + q[1]), 0.5 * (zs[0] + zs[1])]), axes, half: round([0.5 * len, 0.5 * (zs[1] - zs[0]), 0.1]) });
+  if (id) { pushHistory(); choose("slab", id); viewSlab(id); }
+}
+
+/** A slab through a picked point `p`: a plan at its height, a cut across the model's x or y, along the surface there, or through it. */
+/** The surface at a picked point: as the scan has it there, else the face of the member it lies on. */
+const surfaceAt = (p) => p.normal ?? (p.member && p.member.distance < 0.06 ? p.member.normal : null);
+async function slabAt(how, p, v) {
+  const nrm = surfaceAt(p);
+  let n = how === "plan" ? [0, 0, 1] : how === "x" ? [1, 0, 0] : how === "y" ? [0, -1, 0] : nrm;
+  if (how === "along" && v) {
+    // Seen from the side the viewer is on.
+    if (vec.dot(n, unrot(v.camera().forward)) > 0) n = vec.scale(n, -1);
+  } else if (how === "through") {
+    const h = Math.hypot(nrm[0], nrm[1]);
+    n = h < 0.3 ? [1, 0, 0] : vec.cross([0, 0, 1], [nrm[0] / h, nrm[1] / h, 0]);
+  }
+  const g = slabOver(p.model, axesFromNormal(n), how === "plan" ? 0.1 : 0.2);
+  const id = await createSlab({ centre: round(g.centre), axes: g.axes, half: round(g.half) });
+  if (id) { pushHistory(); choose("slab", id); viewSlab(id); }
+}
+
 // ----- panes: the views' chrome ------------------------------------------------------
 
 function setInfo(kind, text) {
@@ -356,7 +653,7 @@ function setInfo(kind, text) {
   if (e) e.textContent = text;
 }
 
-function makeGlPane(kind, glKind) {
+function makeGlPane(kind) {
   const pane = el("div", { id: `${kind}Pane`, class: "glpane" });
   const host = el("div", { class: "glhost" });
   const chip = el("div", { class: "glchip", hidden: "" });
@@ -366,25 +663,24 @@ function makeGlPane(kind, glKind) {
   const compass = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   compass.setAttribute("viewBox", "-40 -40 80 80");
   compass.setAttribute("class", "glcompass");
-  pane.append(host, chip, bar, tools);
-  if (glKind === "3d") pane.append(compass);
+  pane.append(host, chip, bar, tools, compass);
   $("parked").appendChild(pane);
-  const v = (views[kind] = new GLView(host, glKind));
-  v.chip = chip; v.diffbar = bar; v.name = kind; v.tools = tools; v.compass = compass;
-  if (glKind === "3d") {
-    v.onDraw = (cam) => drawCompass(v, cam);
-    compass.addEventListener("click", (e) => {
-      const d = e.target.closest("[data-dir]")?.dataset.dir;
-      if (!d) return;
-      if (d === "top") return v.animate({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true });
-      // From that side of the model: the viewer stands there, looking back.
-      const w = rot({ N: [0, 1, 0], E: [1, 0, 0], S: [0, -1, 0], W: [-1, 0, 0] }[d]);
-      v.animate({ az: (Math.atan2(w[0], w[1]) * 180) / Math.PI, el: 12 });
-    });
-  }
+  const v = (views[kind] = new GLView(host));
+  v.chip = chip; v.diffbar = bar; v.name = kind; v.tools = tools; v.compass = compass; v.slab = null;
+  v.onDraw = (cam) => drawCompass(v, cam);
+  compass.addEventListener("click", (e) => {
+    const d = e.target.closest("[data-dir]")?.dataset.dir;
+    if (!d) return;
+    if (d === "top") return v.animate({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true });
+    // From that side of the model: the viewer stands there, looking back.
+    const w = rot({ N: [0, 1, 0], E: [1, 0, 0], S: [0, -1, 0], W: [-1, 0, 0] }[d]);
+    v.animate({ az: (Math.atan2(w[0], w[1]) * 180) / Math.PI, el: 12, flat: false });
+  });
   host.addEventListener("pointerdown", () => { if (active !== kind) { active = kind; renderLayers(); } }, true);
+  v.onHandle = (id, phase, ray, e) => handleDrag(v, id, phase, ray, e);
+  v.onHandleMenu = (id, e) => handleMenu(v, id, e);
+  v.onLine = (a, b) => cutAlong(v, a, b);
   v.onChange = () => {
-    if (kind === "section") { requestSlab(); rebuildMarks(); }
     if (v.modelNeutral !== neutralModel(v)) rebuildModel();
     renderLayers();
   };
@@ -396,7 +692,8 @@ function makeGlPane(kind, glKind) {
     pushHistory();
     v.frame(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k])), Math.max(1.2, 0.8 * Math.hypot(...vec.sub(i.place.max, i.place.min))));
   };
-  const pickAt = async (ray) => {
+  const pickAt = async (ray, e) => {
+    if (drawing) return drawPoint(v, ray, e);
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
     choose(r.hit ? "point" : null, r.hit ? r : null);
@@ -414,12 +711,16 @@ function makeGlPane(kind, glKind) {
     const p = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
     contextMenu(v, p, e.clientX, e.clientY);
   };
-  host.addEventListener("dblclick", () => { if (sel.pick?.hit && glKind === "3d") v.animate({ target: sel.pick.hit }); });
-  // A window dragged with shift: the points in it become a selection. In 3D only the
-  // surface nearest the viewer is taken; in a section, all of the slab's points.
+  host.addEventListener("dblclick", (e) => {
+    if (e.target !== v.canvas) return;
+    if (drawing) return endDrawing(true);
+    if (sel.pick?.hit) v.animate({ target: sel.pick.hit });
+  });
+  // A window dragged with shift: the points in it become a selection. Of the whole scan only the
+  // surface nearest the viewer is taken; in a view clipped to a slab, all of the slab's points.
   v.onSelect = async (w) => {
     const cuts = v.cuts();
-    const r = await service.call("selections", { action: "window", ...w, z: cuts.z, slab: cuts.slab, front_only: glKind === "3d" });
+    const r = await service.call("selections", { action: "window", ...w, z: cuts.z, slab: cuts.slab, front_only: !cuts.slab });
     if (r.error) return setInfo(kind, r.error);
     const id = r.text.match(/selected (s\d+)/)?.[1];
     if (id) showSelection(id);
@@ -447,6 +748,8 @@ function choose(kind, value) {
   sel.member = kind === "member" ? value : null;
   sel.selection = kind === "selection" ? value : null;
   sel.plane = kind === "plane" ? value : null;
+  sel.slab = kind === "slab" ? value : null;
+  sel.polyline = kind === "polyline" ? value : null;
   renderChips(); rebuildMarks(); rebuildModel(); renderTree();
 }
 /** What is selected: { kind, id } or null. */
@@ -455,6 +758,8 @@ function chosen() {
   if (sel.member) return { kind: "member", id: sel.member };
   if (theSelection()) return { kind: "selection", id: sel.selection };
   if (thePlane()) return { kind: "plane", id: sel.plane };
+  if (slabOf(sel.slab)) return { kind: "slab", id: sel.slab };
+  if (lineOf(sel.polyline)) return { kind: "polyline", id: sel.polyline };
   return null;
 }
 
@@ -483,6 +788,9 @@ function whereOptions() {
   if (p?.member && !onFace) out.push({ key: "member", label: `Member ${shortPath(p.member.path)}` });
   if (s) out.push({ key: "selection", label: `Selection ${selName(s)}` });
   if (pn) out.push({ key: "plane", label: `Plane ${planeName(pn)}` });
+  const sb = slabOf(sel.slab), ln = lineOf(sel.polyline);
+  if (sb && !sb.temp) out.push({ key: "slab", label: `Slab ${slabName(sb)}` });
+  if (ln) out.push({ key: "polyline", label: `Polyline ${lineName(ln)}` });
   out.push({ key: "none", label: "Not pinned" });
   return out;
 }
@@ -500,10 +808,34 @@ async function fitPlane(args) {
   choose("plane", id);
 }
 
-/** A section on a plane: the slab about it (a volume between two planes offset from it), seen square on. */
-function sectionOnPlane(s, thickness = 0.2) {
-  followLink({ pane: "section", section: { view: "custom", origin: s.centre, normal: s.normal, up: s.v, thickness, bounds: [s.ext[0] - 0.3, s.ext[1] + 0.3, s.ext[2] - 0.3, s.ext[3] + 0.3] } });
+/** A slab made by the service (on a plane, around a selection), selected and shown. */
+async function slabFrom(args) {
+  const id = await createSlab(args);
+  if (id) { pushHistory(); choose("slab", id); viewSlab(id); }
 }
+/** Frames the focused view on a slab or a polyline, without clipping to it (Back returns). */
+function gotoBox(pts) {
+  const lo = [0, 1, 2].map((k) => Math.min(...pts.map((p) => p[k]))), hi = [0, 1, 2].map((k) => Math.max(...pts.map((p) => p[k])));
+  pushHistory();
+  views[active].frame(lo.map((x, k) => 0.5 * (x + hi[k])), Math.max(0.6, 0.6 * Math.hypot(...vec.sub(hi, lo))));
+}
+const deleteSlab = async (id) => {
+  const k = temps.findIndex((t) => t.id === id);
+  if (k >= 0) temps.splice(k, 1); else await service.call("slabs", { action: "delete", id });
+  if (sel.slab === id) choose(null);
+  syncSlabs(); renderLayers(); rebuildMarks();
+};
+/** Keeps a slab that came from a link, where the views on it stay. */
+async function keepSlab(id) {
+  const t = slabOf(id);
+  const kept = t && (await createSlab({ centre: t.centre, axes: t.axes, half: t.half }));
+  if (!kept) return;
+  for (const v of Object.values(views)) if (v.slab === id) v.slab = kept;
+  temps.splice(temps.findIndex((x) => x.id === id), 1);
+  choose("slab", kept);
+  syncSlabs(); renderLayers();
+}
+const deleteLine = async (id) => { await service.call("polylines", { action: "delete", id }); if (sel.polyline === id) choose(null); };
 
 function gotoPlane(id) {
   const s = st.surfaces?.find((x) => x.id === id);
@@ -514,7 +846,6 @@ function gotoPlane(id) {
 }
 const deletePlane = async (id) => { await service.call("surfaces", { action: "delete", id }); if (sel.plane === id) choose(null); };
 
-const sectionAt = (a, q) => followLink({ pane: "section", section: a === "plan" ? { view: "plan", z: [q[2] - 0.05, q[2] + 0.05] } : a === "x" ? { view: "x", at: q[0], thickness: 0.2 } : { view: "y", at: q[1], thickness: 0.2 } });
 const deleteSelection = async (id) => { await service.call("selections", { action: "delete", id }); if (sel.selection === id) choose(null); };
 const nameSelection = (id, label) => service.call("selections", { action: "label", id, label: label.trim() });
 
@@ -534,6 +865,9 @@ function gotoObject(kind, id) {
   else if (kind === "issue") gotoIssue(Number(id));
   else if (kind === "selection") gotoSelection(id);
   else if (kind === "plane") gotoPlane(id);
+  // A slab is gone to by looking through it.
+  else if (kind === "slab") { if (slabOf(id)) { pushHistory(); choose("slab", id); viewSlab(id); } }
+  else if (kind === "polyline") { const l = lineOf(id); if (l) { hidden.delete(`line:${id}`); hidden.delete("polylines"); keep(); choose("polyline", id); gotoBox(l.points.map(toScan)); } }
   else if (kind === "point" && sel.pick?.hit) { pushHistory(); views[active].frame(sel.pick.hit, 1.5); }
 }
 
@@ -550,11 +884,16 @@ function pointMenu(p, v) {
   const items = [], add = (label, run, cls) => items.push({ label, run, cls });
   add("New issue at this point", () => { choose("point", p); startDraft("point"); });
   if (p.member) add(`New issue on ${shortPath(p.member.path)}`, () => { choose("point", p); startDraft("member"); });
+  items.push(null, { label: "Slab through here", run: () => {}, cls: "head" });
+  if (surfaceAt(p)) {
+    add("Along this surface", () => slabAt("along", p, v));
+    add("Cut through this surface", () => slabAt("through", p, v));
+  }
+  add("Plan at this height", () => slabAt("plan", p, v));
+  add("Cut across x", () => slabAt("x", p, v));
+  add("Cut across y", () => slabAt("y", p, v));
   items.push(null);
-  add("Section here: plan", () => sectionAt("plan", p.model));
-  add("Section here: across x", () => sectionAt("x", p.model));
-  add("Section here: across y", () => sectionAt("y", p.model));
-  if (v && v.state.kind !== "section") add("Orbit about this point", () => v.animate({ target: p.hit }));
+  if (v) add("Orbit about this point", () => v.animate({ target: p.hit }));
   add("Fit a plane here (points within 1 m)", () => fitPlane({ seed: p.hit, frame: "scan", radius: 1.0 }));
   if (p.member) add(`Checks for ${shortPath(p.member.path)}`, () => { showMember(p.member.path); app.showTab("member"); });
   return items;
@@ -563,7 +902,7 @@ function pointMenu(p, v) {
 /** The menu of an object: the same in the tree, on the card and in the views. `key`: its row in the tree, for hiding. */
 function objectMenu(kind, id) {
   const items = [], add = (label, run, cls) => items.push({ label, run, cls });
-  const key = { member: `m:${id}`, group: `g:${id}`, issue: `issue:${id}`, selection: `sel:${id}`, plane: `plane:${id}`, top: id }[kind];
+  const key = { member: `m:${id}`, group: `g:${id}`, issue: `issue:${id}`, selection: `sel:${id}`, plane: `plane:${id}`, slab: `slab:${id}`, polyline: `line:${id}`, top: id }[kind];
   const showHide = () => add(vis(key) ? "Hide" : "Show", () => toggleVis(key));
   if (kind === "member") {
     add("New issue on this member", () => { selectMember(id); startDraft("member"); });
@@ -587,6 +926,7 @@ function objectMenu(kind, id) {
     add("Name it…", () => { choose("selection", id); focusName(); });
     add("Go to it", () => gotoSelection(id));
     add("Fit a plane to it", () => fitPlane({ selection: id }));
+    add("Slab around it", () => slabFrom({ selection: id }));
     showHide();
     items.push(null);
     add("Delete it", () => deleteSelection(id), "danger");
@@ -595,10 +935,31 @@ function objectMenu(kind, id) {
     add("New issue on this plane", () => { choose("plane", id); startDraft("plane"); });
     add("Name it…", () => { choose("plane", id); focusName(); });
     add("Go to it", () => gotoPlane(id));
-    add("Section on it", () => sectionOnPlane(s));
+    add("Slab on it", () => slabFrom({ plane: s.id }));
     showHide();
     items.push(null);
     add("Delete it", () => deletePlane(id), "danger");
+  } else if (kind === "slab") {
+    const s = slabOf(id);
+    add("View it (a 3D view clipped to it)", () => { pushHistory(); choose("slab", id); viewSlab(id); });
+    if (s.temp) add("Keep it", () => keepSlab(id));
+    else {
+      add("New issue on this slab", () => { choose("slab", id); startDraft("slab"); });
+      add("Name it…", () => { choose("slab", id); focusName(); });
+    }
+    add("Go to it in this view", () => { choose("slab", id); gotoBox(slabCorners(s)); });
+    if (!s.temp) showHide();
+    items.push(null);
+    add("Delete it", () => deleteSlab(id), "danger");
+  } else if (kind === "polyline") {
+    const l = lineOf(id);
+    add("New issue on this polyline", () => { choose("polyline", id); startDraft("polyline"); });
+    add("Name it…", () => { choose("polyline", id); focusName(); });
+    add("Go to it", () => gotoObject("polyline", id));
+    if (l.points.length > 2) add(l.closed ? "Open it" : "Close it", () => updateLine(id, { closed: !l.closed }));
+    showHide();
+    items.push(null);
+    add("Delete it", () => deleteLine(id), "danger");
   }
   return items;
 }
@@ -608,7 +969,7 @@ function contextMenu(v, p, x, y) {
   const items = p?.hit ? pointMenu(p, v) : [{ label: "New issue, not pinned", run: () => startDraft("none") }];
   const c = chosen();
   if (c && c.kind !== "point") {
-    const name = c.kind === "member" ? shortPath(c.id) : c.kind === "selection" ? `selection ${selName(theSelection())}` : `plane ${planeName(thePlane())}`;
+    const name = c.kind === "member" ? shortPath(c.id) : c.kind === "selection" ? `selection ${selName(theSelection())}` : c.kind === "plane" ? `plane ${planeName(thePlane())}` : c.kind === "slab" ? `slab ${slabName(slabOf(c.id))}` : `polyline ${lineName(lineOf(c.id))}`;
     items.push(null, { label: `Selected: ${name}`, run: () => {}, cls: "head" }, ...objectMenu(c.kind, c.id));
   }
   openMenu(items, x, y);
@@ -639,14 +1000,23 @@ function closeMenu() {
 // its menu, and letting go of it.
 
 function renderChips() {
-  const c = chosen(), p = sel.pick, s = theSelection(), pn = thePlane();
+  const c = chosen(), p = sel.pick, s = theSelection(), pn = thePlane(), sb = slabOf(sel.slab), ln = lineOf(sel.polyline);
   for (const v of Object.values(views)) {
+    // A polyline being drawn: what to do, and how to end.
+    if (drawing) {
+      v.chip.hidden = drawing.view !== v.name;
+      const n = drawing.points.length;
+      v.chip.innerHTML = `<div class="cardhead"><span><b>Polyline</b> ${n} point${n === 1 ? "" : "s"}${n > 1 ? `, ${lineLength(drawing).toFixed(3)} m` : ""}</span><span class="cardbtns"><button data-a="done" title="Keep it (Enter, or a double click)">✓</button><button data-a="cancel" title="Drop it (Esc)">×</button></span></div><div class="muted">Click points ${v.state.flat && v.state.box ? "in the slab" : "on the scan"}; click the first again to close it.</div>`;
+      for (const b of v.chip.querySelectorAll("button")) b.onclick = () => endDrawing(b.dataset.a === "done");
+      v.chip.oncontextmenu = null;
+      continue;
+    }
     v.chip.hidden = !c;
     if (!c) continue;
-    // Being named: leave it as it is.
-    if (v.chip.contains(document.activeElement) && document.activeElement.classList.contains("selname")) continue;
+    // Being named or sized: leave it as it is.
+    if (v.chip.contains(document.activeElement) && (document.activeElement.classList.contains("selname") || document.activeElement.tagName === "INPUT")) continue;
     const evLine = (path) => { const e = members?.find((x) => x.path === path)?.evidence; return e ? `<span class="ev ${e.state}">${e.state}</span> · ${e.points.toLocaleString()} points, ${e.rays_through} of ${e.rays_through + e.rays_ending} rays through` : ""; };
-    const nameField = (text, plane) => `<span class="selname" ${plane ? 'data-plane="1"' : ""} contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(text)}</span>`;
+    const nameField = (text) => `<span class="selname" contenteditable="plaintext-only" data-ph="name it" title="Its name: type, Enter keeps it">${esc(text)}</span>`;
     let head = "", body = "";
     if (c.kind === "point") {
       head = `<b>Point</b> ${f3(p.model)}`;
@@ -655,19 +1025,31 @@ function renderChips() {
       head = `<b>Member</b> ${esc(shortPath(c.id))}`;
       body = evLine(c.id);
     } else if (c.kind === "selection") {
-      head = `<b>Selection</b> ${esc(s.id)} ${nameField(s.label, false)}`;
+      head = `<b>Selection</b> ${esc(s.id)} ${nameField(s.label)}`;
       body = `${s.count.toLocaleString()} points${vis("selections", `sel:${s.id}`) ? "" : " · hidden"}`;
-    } else {
-      head = `<b>Plane</b> ${esc(pn.id)} ${nameField(pn.name, true)}`;
+    } else if (c.kind === "plane") {
+      head = `<b>Plane</b> ${esc(pn.id)} ${nameField(pn.name)}`;
       body = `facing ${f3(pn.normal)} · ${pn.count.toLocaleString()} points, rms ${(pn.rms * 1000).toFixed(1)} mm · ${(pn.ext[1] - pn.ext[0]).toFixed(2)} × ${(pn.ext[3] - pn.ext[2]).toFixed(2)} m` +
         (sel.fits?.[pn.id] ? `<details><summary>What the fit found</summary><pre>${esc(sel.fits[pn.id])}</pre></details>` : "");
+    } else if (c.kind === "slab") {
+      const dim = (k, title) => `<input type="number" step="0.05" min="0.01" data-dim="${k}" value="${(2 * sb.half[k]).toFixed(2)}" title="${title}">`;
+      head = `<b>Slab</b> ${esc(sb.id)} ${sb.temp ? `<span class="muted">not kept</span>` : nameField(sb.name)}`;
+      body = `<span class="dims">${dim(0, "Its width (m)")} × ${dim(1, "Its height (m)")} × ${dim(2, "Its thickness (m)")} m</span> · seen from ${f3(sb.axes[2])}<br>Drag its faces to size it, its middle to slide it, ⟳ to turn it.`;
+    } else {
+      head = `<b>Polyline</b> ${esc(ln.id)} ${nameField(ln.name)}`;
+      body = `${ln.points.length} points · ${lineLength(ln).toFixed(3)} m${ln.closed ? " around (closed)" : ""}<br>Drag a point to move it, a length to add one; right-click a point to remove it.`;
     }
     v.chip.innerHTML = `<div class="cardhead"><span>${head}</span><span class="cardbtns"><button data-a="issue" title="New issue on this">＋</button><button data-a="menu" title="What can be done with it (the same as right-clicking it)">⋯</button><button data-a="clear" title="Let go of it">×</button></span></div><div class="muted">${body}</div>`;
     const name = v.chip.querySelector(".selname");
     if (name) {
-      const plane = !!name.dataset.plane, was = plane ? pn.name : s.label;
+      const was = { selection: s?.label, plane: pn?.name, slab: sb?.name, polyline: ln?.name }[c.kind] ?? "";
+      const save = { selection: (t) => nameSelection(c.id, t), plane: (t) => service.call("surfaces", { action: "label", id: c.id, label: t }), slab: (t) => updateSlab(c.id, { name: t }), polyline: (t) => updateLine(c.id, { name: t }) }[c.kind];
       name.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); name.blur(); } if (e.key === "Escape") { name.textContent = was; name.blur(); } };
-      name.onblur = () => { const t = name.textContent.trim(); if (t !== was) plane ? service.call("surfaces", { action: "label", id: pn.id, label: t }) : nameSelection(s.id, t); };
+      name.onblur = () => { const t = name.textContent.trim(); if (t !== was) save(t); };
+    }
+    for (const i of v.chip.querySelectorAll("input[data-dim]")) {
+      i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") i.blur(); };
+      i.onchange = () => { const half = sb.half.slice(); if (Number(i.value) > 0) { half[Number(i.dataset.dim)] = Number(i.value) / 2; updateSlab(sb.id, { half }); } };
     }
     for (const b of v.chip.querySelectorAll("button")) b.onclick = (e) => {
       const a = b.dataset.a;
@@ -710,6 +1092,8 @@ const stored = (k, d) => { try { return JSON.parse(localStorage.getItem(k) ?? "n
 const hidden = new Set(stored("topo.scan.hidden", []));
 const open = new Set(stored("topo.scan.open", ["scan", "model", "issues", "selections", "planes"]));
 const keep = () => { try { localStorage.setItem("topo.scan.hidden", JSON.stringify([...hidden])); localStorage.setItem("topo.scan.open", JSON.stringify([...open])); } catch (_) {} };
+// (Groups that came later start open too.)
+if (stored("topo.scan.groups", 1) < 2) { open.add("slabs"); open.add("polylines"); keep(); try { localStorage.setItem("topo.scan.groups", "2"); } catch (_) {} }
 const vis = (...keys) => keys.every((k) => !hidden.has(k));
 
 /** A member's place in the tree: its groups (below the building) and its own name. */
@@ -820,6 +1204,10 @@ function renderTree() {
   if (open.has("selections")) for (const s of st.selections || []) html += row(1, "sel", `sel:${s.id}`, selName(s), { id: s.id, on: s.id === sel.selection, note: s.count.toLocaleString() });
   html += row(0, "top", "planes", "Planes", { group: true, note: (st.surfaces || []).length || "right-click: fit" });
   if (open.has("planes")) for (const s of st.surfaces || []) html += row(1, "plane", `plane:${s.id}`, planeName(s), { id: s.id, on: s.id === sel.plane, note: `${(s.rms * 1000).toFixed(0)} mm` });
+  html += row(0, "top", "slabs", "Slabs", { group: true, note: slabs().length || "right-click: slab", title: "Slabs: boxes a 3D view can be clipped to, to see a section. Double-click one to look through it" });
+  if (open.has("slabs")) for (const s of slabs()) html += row(1, "slab", `slab:${s.id}`, slabName(s), { id: s.id, on: s.id === sel.slab, note: `${(2 * s.half[0]).toFixed(1)} × ${(2 * s.half[1]).toFixed(1)} × ${(2 * s.half[2]).toFixed(2)}${KINDS.some((k) => views[k].slab === s.id && app.shown(k)) ? " · in view" : ""}` });
+  html += row(0, "top", "polylines", "Polylines", { group: true, note: lines().length || "draw in a view" });
+  if (open.has("polylines")) for (const l of lines()) html += row(1, "polyline", `line:${l.id}`, lineName(l), { id: l.id, on: l.id === sel.polyline, note: `${lineLength(l).toFixed(2)} m` });
   if ((st.rooms || []).length) html += row(0, "top", "rooms", "Rooms", { note: st.rooms.length });
   const top = box.scrollTop;
   box.innerHTML = `<div class="tree">${html}</div>`;
@@ -851,6 +1239,8 @@ function bindTree() {
     else if (kind === "issue") openIssue(Number(r.id));
     else if (kind === "selection") choose("selection", r.id);
     else if (kind === "plane") choose("plane", r.id);
+    else if (kind === "slab") choose("slab", r.id);
+    else if (kind === "polyline") { hidden.delete(r.key); keep(); choose("polyline", r.id); }
   });
   box.addEventListener("contextmenu", (e) => {
     const r = rowOf(e);
@@ -871,40 +1261,65 @@ const ICON = {
   nofloor: svg("M2 8l6-5 6 5 M3.5 8v5.5 M12.5 8v5.5", `<path d="M3.5 13.5h9" stroke-dasharray="1.6 1.8"/>`),
   back: svg("M10 3L5 8l5 5"),
   fwd: svg("M6 3l5 5-5 5"),
+  square: svg("M3 3h10v10H3z M8 5.5v5 M5.5 8h5"),
+  lock: svg("M4.5 7.5h7v5.5h-7z M6 7.5V5.5a2 2 0 0 1 4 0v2"),
+  line: svg("M2.5 12.5l4-7 4 4 3-6", `<circle cx="2.5" cy="12.5" r="1.1" fill="currentColor"/><circle cx="6.5" cy="5.5" r="1.1" fill="currentColor"/><circle cx="10.5" cy="9.5" r="1.1" fill="currentColor"/><circle cx="13.5" cy="3.5" r="1.1" fill="currentColor"/>`),
+  cut: svg("M2 13L14 3", `<path d="M5 14.5l-3-1.5 1.5-3 M12.5 1.5l1.5 1.5-3 1.5" stroke-width="1"/>`),
 };
 
 function renderTools(v) {
-  const s = v.state, sec = s.kind === "section";
+  const s = v.state, sb = slabOf(v.slab);
   // Not while one of its fields is being typed in.
   if (v.tools.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
   const btn = (a, icon, title, on) => `<button data-a="${a}" class="${on ? "on" : ""}" title="${title}">${icon}</button>`;
   v.tools.innerHTML =
     `<select data-k="colour" title="Colour the points by">${COLOURS.map((c) => `<option ${c === s.colour ? "selected" : ""}>${c}</option>`).join("")}</select>` +
-    (sec
-      ? `<span class="grp">${btn("plan", "Plan", "A plan section (walls: 0.1 to 2.4 m)")}${btn("secx", "X", "A section across the model's x, at the 3D view's target")}${btn("secy", "Y", "A section across the model's y, at the 3D view's target")}</span>` +
-        `<span class="grp" title="The slab: its thickness (m), and stepping it back and forward by half of that">${btn("back", ICON.back, "Slab back")}<input type="number" step="0.05" min="0.01" value="${s.section ? (2 * s.section.half).toFixed(2) : ""}" data-a="thick">${btn("fwd", ICON.fwd, "Slab forward")}</span>`
-      : `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}</span>`) +
+    `<select data-k="slab" title="What of the scan this view shows: all of it, or what is in a slab (a section)"><option value="">Whole scan</option>${slabs().map((x) => `<option value="${esc(x.id)}" ${x.id === v.slab ? "selected" : ""}>Slab ${esc(slabName(x))}</option>`).join("")}<option value="+plan">New slab: plan…</option><option value="+x">New slab: across x…</option><option value="+y">New slab: across y…</option></select>` +
+    `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}</span>` +
+    (sb
+      ? `<span class="grp">${btn("square", ICON.square, "Look square on at the slab, fitted in the view")}${btn("flat", ICON.lock, "Held square on: a drag slides the view. Off: a drag turns it", s.flat)}</span>` +
+        `<span class="grp" title="The slab: its thickness (m), and stepping it back and forward by half of that">${btn("back", ICON.back, "Slab back (away from the viewer)")}<input type="number" step="0.05" min="0.01" value="${(2 * sb.half[2]).toFixed(2)}" data-a="thick">${btn("fwd", ICON.fwd, "Slab forward (toward the viewer)")}</span>`
+      : "") +
+    `<span class="grp">${btn("line", ICON.line, "Draw a polyline: click its points (on the scan, or in the slab seen square on)", drawing?.view === v.name)}${btn("cut", ICON.cut, "Cut a slab: drag a line across the building, seen from above, to look at what it cuts through", v.tool === "line")}</span>` +
     `<span class="grp">${btn("noroof", ICON.noroof, "Cut away what is above 2.3 m (the roof)", s.zMax != null)}${btn("nofloor", ICON.nofloor, "Cut away what is below 0.1 m (the floor)", s.zMin != null)}</span>` +
     `<span class="grp" title="Point size">${btn("smaller", "−", "Smaller points")}${btn("bigger", "+", "Larger points")}</span>` +
     `<details class="more"><summary title="Height cut, exactly">⋯</summary><div>Show model z from <input type="number" step="0.1" placeholder="any" value="${s.zMin ?? ""}" data-z="zMin"> to <input type="number" step="0.1" placeholder="any" value="${s.zMax ?? ""}" data-z="zMax"> m</div></details>`;
-  const target = () => toModel(views.scan3d.state.target);
+  const step = (g) => updateSlab(sb.id, { centre: vec.add(sb.centre, vec.scale(sb.axes[2], g * sb.half[2])) });
   const acts = {
     ortho: () => v.set({ ortho: !s.ortho }),
+    square: () => v.squareOn(boxOf(sb)),
+    flat: () => (s.flat ? v.set({ flat: false }) : v.squareOn(boxOf(sb))),
+    line: () => (drawing ? endDrawing(true) : startDrawing(v)),
+    cut: () => { v.tool = v.tool === "line" ? null : "line"; },
     top: () => v.animate({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true }),
     fit: () => { const b = modelBounds(); if (b) v.frame(toScan(b.centre), b.radius); },
     noroof: () => v.set({ zMax: s.zMax != null ? null : 2.3 }), nofloor: () => v.set({ zMin: s.zMin != null ? null : 0.1 }),
     smaller: () => v.set({ pointSize: Math.max(1, s.pointSize - 0.5) }), bigger: () => v.set({ pointSize: Math.min(6, s.pointSize + 0.5) }),
-    back: () => { const c = s.section; v.set({ section: { ...c, origin: vec.add(c.origin, vec.scale(c.n, -c.half)) } }); },
-    fwd: () => { const c = s.section; v.set({ section: { ...c, origin: vec.add(c.origin, vec.scale(c.n, c.half)) } }); },
-    plan: () => setSection(sectionFrom({ view: "plan" })),
-    secx: () => setSection(sectionFrom({ view: "x", at: target()[0] })),
-    secy: () => setSection(sectionFrom({ view: "y", at: target()[1] })),
+    back: () => step(-1),
+    fwd: () => step(1),
   };
-  for (const b of v.tools.querySelectorAll("button[data-a]")) b.onclick = () => { acts[b.dataset.a](); requestSlab(); rebuildMarks(); };
-  v.tools.querySelector("select").onchange = (e) => v.set({ colour: e.target.value });
+  for (const b of v.tools.querySelectorAll("button[data-a]")) b.onclick = () => { acts[b.dataset.a](); renderTools(v); };
+  v.tools.querySelector("select[data-k=colour]").onchange = (e) => v.set({ colour: e.target.value });
+  v.tools.querySelector("select[data-k=slab]").onchange = async (e) => {
+    const id = e.target.value;
+    active = v.name;
+    if (id.startsWith("+")) {
+      // A new slab through what the view is looking at.
+      const at = toModel(s.target), how = id.slice(1);
+      const g = slabOver(at, axesFromNormal(how === "plan" ? [0, 0, 1] : how === "x" ? [1, 0, 0] : [0, -1, 0]), how === "plan" ? 0.1 : 0.2);
+      const made = await createSlab({ centre: round(g.centre), axes: g.axes, half: round(g.half) });
+      if (!made) return renderTools(v);
+      pushHistory(); choose("slab", made);
+      return viewSlab(made, v.name);
+    }
+    pushHistory();
+    if (id) return viewSlab(id, v.name);
+    v.slab = null;
+    syncSlabs(); renderLayers(); rebuildMarks();
+  };
   for (const i of v.tools.querySelectorAll("[data-z]")) i.onchange = () => v.set({ [i.dataset.z]: i.value === "" ? null : Number(i.value) });
   const th = v.tools.querySelector("input[data-a=thick]");
-  if (th) th.onchange = () => { if (s.section && Number(th.value) > 0) { v.set({ section: { ...s.section, half: Number(th.value) / 2 } }); requestSlab(); } };
+  if (th) th.onchange = () => { if (Number(th.value) > 0) updateSlab(sb.id, { half: [sb.half[0], sb.half[1], Number(th.value) / 2] }); };
 }
 
 /** The 3D view's compass: the model's north, east, south and west as the view has them. Click one to look from that side; the middle, straight down. */
@@ -946,7 +1361,7 @@ function renderViews() {
     if (e.target.dataset.x != null) { if (confirm(`Delete the view “${st.views[i].name}”?`)) service.call("views", { action: "delete", name: st.views[i].name }); }
     else followLink(st.views[i].state);
   };
-  for (const li of box.querySelectorAll("li[data-s]")) li.onclick = () => { const a = st.sections[Number(li.dataset.s)].args; followLink({ pane: "section", section: a, colour: a.color }); };
+  for (const li of box.querySelectorAll("li[data-s]")) li.onclick = () => { const a = st.sections[Number(li.dataset.s)].args; followLink({ section: a, colour: a.color }); };
   $("saveView").onclick = async () => {
     const name = prompt("Name for this view:", describeView());
     if (name) await service.call("views", { action: "save", name, state: linkOfView() });
@@ -1003,6 +1418,8 @@ async function createIssue(title, text) {
   if (text) args.text = text;
   if (where === "selection") args.selection = sel.selection;
   else if (where === "plane") args.plane = sel.plane;
+  else if (where === "slab") args.slab = sel.slab;
+  else if (where === "polyline") args.polyline = sel.polyline;
   else if (where === "member") args.member = sel.pick?.member?.path ?? sel.member;
   else if (where === "point") { args.frame = "scan"; args.point = sel.pick.hit; }
   const r = await service.call("issues", args);
@@ -1063,7 +1480,9 @@ function renderIssues() {
 
 /// Text with what it refers to made live: a selection by its id (s3) shows that selection; an issue (#4) opens it.
 function refs(text) {
-  return esc(text).replace(/(^|[^\w#])(s\d+|p\d+|#\d+)\b/g, (all, pre, id) => {
+  return esc(text).replace(/(^|[^\w#])(s\d+|p\d+|b\d+|l\d+|#\d+)\b/g, (all, pre, id) => {
+    if (id[0] === "b") { const s = st.slabs?.find((x) => x.id === id); return s ? `${pre}<a href="#" class="ref sel" data-objref="slab:${id}" title="Look through this slab">${esc(slabName(s))}</a>` : all; }
+    if (id[0] === "l") { const l = st.polylines?.find((x) => x.id === id); return l ? `${pre}<a href="#" class="ref sel" data-objref="polyline:${id}" title="Show this polyline (${lineLength(l).toFixed(2)} m)">${esc(lineName(l))}</a>` : all; }
     if (id[0] === "p") { const pn = st.surfaces?.find((x) => x.id === id); return pn ? `${pre}<a href="#" class="ref sel" data-planeref="${id}" title="Show this plane">${esc(planeName(pn))}</a>` : all; }
     if (id[0] === "#") return st.issues.some((i) => i.id === Number(id.slice(1))) ? `${pre}<a href="#" class="ref" data-issue="${id.slice(1)}">${id}</a>` : all;
     const s = st.selections?.find((x) => x.id === id);
@@ -1109,10 +1528,10 @@ function renderThread(box, i) {
       <select id="iAssignee" title="Whose it is"><option value="">nobody's</option>${st.participants.map((p) => `<option value="${esc(p.id)}" ${p.id === i.assignee ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
     </div>
     <div class="ihead"><b>#${i.id}</b> <span id="iTitle" title="Click to rename">${esc(i.title)}</span>
-      <div class="muted">${i.category} · raised by ${esc(service.participant(i.by).name)} ${when(i.time)}${i.place ? ` · <a href="#" id="iGo" title="Go there (Back returns)">${i.place.member ? "member " + esc(shortPath(i.place.member)) : i.place.selection ? "selection " + esc(selName(st.selections?.find((s) => s.id === i.place.selection) ?? { id: i.place.selection })) : i.place.plane ? "plane " + esc(planeName(st.surfaces?.find((s) => s.id === i.place.plane) ?? { id: i.place.plane })) : "at model " + f3(toModel(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k]))))}</a>` : " · not pinned"}${i.status === "waiting" ? ` · <b>waiting on ${esc(waitingOn(i))}</b>` : ""}</div></div>
+      <div class="muted">${i.category} · raised by ${esc(service.participant(i.by).name)} ${when(i.time)}${i.place ? ` · <a href="#" id="iGo" title="Go there (Back returns)">${i.place.member ? "member " + esc(shortPath(i.place.member)) : i.place.selection ? "selection " + esc(selName(st.selections?.find((s) => s.id === i.place.selection) ?? { id: i.place.selection })) : i.place.plane ? "plane " + esc(planeName(st.surfaces?.find((s) => s.id === i.place.plane) ?? { id: i.place.plane })) : i.place.object ? (i.place.object[0] === "b" ? "slab " : "polyline ") + esc(i.place.object) : "at model " + f3(toModel(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k]))))}</a>` : " · not pinned"}${i.status === "waiting" ? ` · <b>waiting on ${esc(waitingOn(i))}</b>` : ""}</div></div>
     <div class="thread">${i.entries.map((e, k) => entryHtml(i, e, k)).join("") || `<div class="muted" style="padding:8px 2px">Nothing said yet.</div>`}</div>
     <div class="composer"><textarea id="reply" rows="2" placeholder="Reply in #${i.id}… (Enter sends; @name to call someone)"></textarea>
-      <div class="row"><label class="c" title="Attach the focused scan view (${esc(describeView())}) as a link others can follow"><input type="checkbox" id="attach" ${attach ? "checked" : ""}> attach my view</label>${theSelection() ? `<button data-ref="${esc(sel.selection)}" title="Refer to the selection you have shown: its id is put in your reply, and becomes a link">+ ${esc(selName(theSelection()))}</button>` : ""}${thePlane() ? `<button data-ref="${esc(sel.plane)}" title="Refer to the plane you have shown">+ ${esc(planeName(thePlane()))}</button>` : ""}<button class="act primary" id="send">Send</button></div></div>`;
+      <div class="row"><label class="c" title="Attach the focused scan view (${esc(describeView())}) as a link others can follow"><input type="checkbox" id="attach" ${attach ? "checked" : ""}> attach my view</label>${theSelection() ? `<button data-ref="${esc(sel.selection)}" title="Refer to the selection you have shown: its id is put in your reply, and becomes a link">+ ${esc(selName(theSelection()))}</button>` : ""}${thePlane() ? `<button data-ref="${esc(sel.plane)}" title="Refer to the plane you have shown">+ ${esc(planeName(thePlane()))}</button>` : ""}${slabOf(sel.slab) && !slabOf(sel.slab).temp ? `<button data-ref="${esc(sel.slab)}" title="Refer to the slab you have selected">+ ${esc(slabName(slabOf(sel.slab)))}</button>` : ""}${lineOf(sel.polyline) ? `<button data-ref="${esc(sel.polyline)}" title="Refer to the polyline you have selected">+ ${esc(lineName(lineOf(sel.polyline)))}</button>` : ""}<button class="act primary" id="send">Send</button></div></div>`;
   const reply = $("reply");
   reply.value = draft;
   if (caret) { reply.focus(); reply.setSelectionRange(...caret); }
@@ -1144,7 +1563,8 @@ function renderThread(box, i) {
   };
   title.onblur = () => { const t = title.textContent.trim(); if (t && t !== i.title) update({ title: t }); else title.textContent = i.title; };
   const go = $("iGo");
-  if (go) go.onclick = (e) => { e.preventDefault(); followLink({ pane: views[active].state.kind === "section" ? "section" : "3d", camera: { issue: i.id } }); };
+  if (go) go.onclick = (e) => { e.preventDefault(); i.place.object ? gotoObject(i.place.object[0] === "b" ? "slab" : "polyline", i.place.object) : gotoIssue(i.id); };
+  for (const a of box.querySelectorAll("a[data-objref]")) a.onclick = (e) => { e.preventDefault(); gotoObject(...a.dataset.objref.split(":")); };
   for (const b of box.querySelectorAll("button[data-view]")) b.onclick = () => followLink(i.entries[Number(b.dataset.view)].view);
   for (const a of box.querySelectorAll("a[data-selref]")) a.onclick = (e) => { e.preventDefault(); gotoSelection(a.dataset.selref); };
   for (const a of box.querySelectorAll("a[data-planeref]")) a.onclick = (e) => { e.preventDefault(); gotoPlane(a.dataset.planeref); };
@@ -1226,6 +1646,9 @@ function onState(s) {
   if (!s) return;
   st = s;
   if (s.placement) pl = { yaw: (s.placement.yaw_deg * Math.PI) / 180, t: s.placement.t };
+  // What was dragged here is in the service's state now.
+  if (live?.done) live = null;
+  syncSlabs();
   for (const v of Object.values(views)) { v.zOffset = pl.t[2]; v.floorZ = s.scan.floor_z ?? 0; }
   if (s.cloud && !cloudLoaded) loadCloud();
   loadMembers();
@@ -1237,11 +1660,11 @@ function onState(s) {
 export async function initScan(hooks) {
   app = hooks;
   // Panes.
-  makeGlPane("scan3d", "3d");
-  makeGlPane("section", "section");
+  for (const k of KINDS) makeGlPane(k);
   $("parked").appendChild(el("div", { id: "boardPane", class: "board" }));
-  app.registerPane("scan3d", { label: "3D with scan", el: "scan3dPane", shown: () => { active = "scan3d"; renderLayers(); app.showBrowser("layers"); } });
-  app.registerPane("section", { label: "Section", el: "sectionPane", shown: () => { active = "section"; renderLayers(); requestSlab(); rebuildMarks(); app.showBrowser("layers"); } });
+  // Three 3D views of the scan: the second and third are for looking through slabs beside the first.
+  for (const [k, label] of [["scan3d", "3D with scan"], ["view2", "3D with scan, 2"], ["view3", "3D with scan, 3"]])
+    app.registerPane(k, { label, el: `${k}Pane`, shown: () => { active = k; if (st) { syncSlabs(); rebuildMarks(); } renderLayers(); app.showBrowser("layers"); } });
   app.registerPane("board", { label: "Issue board", el: "boardPane", shown: () => renderBoard() });
   // The browser: layers and views.
   for (const [k, label] of [["layers", "Objects"], ["views", "Views"]]) {
@@ -1266,8 +1689,14 @@ export async function initScan(hooks) {
   // The right-click menu closes on anything else.
   document.addEventListener("pointerdown", (e) => { if (!e.target.closest?.("#ctxmenu")) closeMenu(); }, true);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+  // A polyline being drawn: Enter keeps it, Esc drops it.
+  document.addEventListener("keydown", (e) => {
+    if (!drawing || e.target.closest?.("input, textarea, [contenteditable]")) return;
+    if (e.key === "Enter") endDrawing(true);
+    if (e.key === "Escape") endDrawing(false);
+  });
   service.onState(onState);
   service.connect();
   // A first look: the scan beside what was open.
-  if (!app.shown("scan3d") && !app.shown("section")) app.openBeside("scan3d");
+  if (!KINDS.some((k) => app.shown(k))) app.openBeside("scan3d");
 }

@@ -106,9 +106,9 @@ export const service = {
     if (!r.ok) return null;
     return parseCloud(await r.arrayBuffer());
   },
-  /** Every point within `half` of the plane (scan frame), thinned to `max`. */
-  async slab(origin, normal, half, max = 2000000) {
-    const r = await fetch(`api/slab?o=${origin.join(",")}&n=${normal.join(",")}&half=${half}&max=${max}`);
+  /** Every point in a box ({ c, u, v, n, h }: centre, unit axes, half sizes; scan frame), thinned to `max`. */
+  async slab(box, max = 2000000) {
+    const r = await fetch(`api/slab?${["c", "u", "v", "n", "h"].map((k) => `${k}=${box[k].join(",")}`).join("&")}&max=${max}`);
     if (!r.ok) return null;
     return parseCloud(await r.arrayBuffer());
   },
@@ -118,7 +118,7 @@ export const service = {
     if (!r.ok) return null;
     return parseCloud(await r.arrayBuffer());
   },
-  /** What a ray meets (scan frame); `z` (model frame) and `slab` are the view's cuts. */
+  /** What a ray meets (scan frame); `z` (model frame) and `slab` (a box, as above) are the view's cuts. */
   async pick(origin, dir, z, slab) {
     const r = await fetch("api/pick", { method: "POST", body: JSON.stringify({ origin, dir, z, slab }) });
     return r.json();

@@ -119,6 +119,10 @@ impl Workspace {
                     }
                     let c = (0..3).fold([0.0; 3], |a, k| add(a, scale(axes[k], 0.5 * (lo[k] + hi[k]))));
                     (c, axes, std::array::from_fn(|k| (0.5 * (hi[k] - lo[k]) + 0.05).max(0.05)))
+                } else if let (Some(c), Some(a), Some(h)) = (args.get("centre").and_then(arr3), args.get("axes").and_then(|v| v.as_array()).filter(|a| a.len() == 3), args.get("half").and_then(arr3)) {
+                    // As it is (the app, which has worked it out): model frame.
+                    let (u, v, n) = (arr3(&a[0]).context("axes")?, arr3(&a[1]).context("axes")?, arr3(&a[2]).context("axes")?);
+                    (c, [unit(u), unit(v), unit(n)], h.map(|x| x.max(0.005)))
                 } else {
                     let c = args.get("centre").and_then(arr3).context("centre [x, y, z] with normal (the direction toward the viewer), or a plane, or a selection")?;
                     let n = args.get("normal").and_then(arr3).context("normal: the direction toward the viewer")?;

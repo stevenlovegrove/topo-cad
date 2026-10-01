@@ -131,8 +131,22 @@ impl ScanIndex {
     /// The normal of the surface a point lies on (of its cell; toward the
     /// sensor), if its cell is a clean surface.
     pub fn normal_at(&self, p: V3) -> Option<V3> {
-        let n = self.normals.get(&key(p, CELL))?;
-        (n != &[0; 3]).then(|| n.map(|x| x as f32 / 127.0))
+        // The cell the point is in; if its points gave no normal (too few, or an
+        // edge), what the cells about it agree on.
+        let k = key(p, CELL);
+        if let Some(n) = self.normals.get(&k).filter(|n| **n != [0; 3]) {
+            return Some(n.map(|x| x as f32 / 127.0));
+        }
+        let (mut sum, mut first) = ([0.0f32; 3], None::<V3>);
+        for (dx, dy, dz) in (-2..=2).flat_map(|x| (-2..=2).flat_map(move |y| (-2..=2).map(move |z| (x, y, z)))) {
+            let Some(n) = self.normals.get(&(k.0 + dx, k.1 + dy, k.2 + dz)).filter(|n| **n != [0; 3]) else { continue };
+            let n = n.map(|x| x as f32 / 127.0);
+            // (A normal's sign is arbitrary: taken the way of the first.)
+            let s = if crate::dot(n, *first.get_or_insert(n)) < 0.0 { -1.0 } else { 1.0 };
+            sum = crate::add(sum, crate::scale(n, s));
+        }
+        let len = crate::norm(sum);
+        (len > 0.5).then(|| crate::scale(sum, 1.0 / len))
     }
 
     /// Every used point in an oriented box (centre, unit axes, half sizes; scan

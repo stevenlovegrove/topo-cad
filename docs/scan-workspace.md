@@ -98,9 +98,9 @@ An issue is a question or a fault pinned to a place, with a thread.
 
 ## Views and view links
 
-A **view state** is one object: the pane's kind (3D, plan, a section and
-its slab), camera and projection, point colouring (density, depth,
-normal, intensity), point filters (height cuts, slab, intensity range),
+A **view state** is one object: the slab the view is clipped to (if any:
+that is what a section is), camera and projection, point colouring
+(density, depth, normal, intensity), point filters (height cuts, slab),
 layer visibility, highlighted members, marks, and the diff display of a
 selected proposal.
 
@@ -118,7 +118,7 @@ selected proposal.
 A proposal belongs to an issue. Selecting it shows it, one at a time:
 
 - as a **text diff** in a script pane;
-- in the 3D and section panes, with a switch: **before**, **after**,
+- in the 3D views (clipped to a slab or not), with a switch: **before**, **after**,
   **changed only**, **both**. Changed members are coloured by kind
   (added, removed, moved);
 - with its evidence change (members supported, contradicted, unseen, and
@@ -134,8 +134,10 @@ Apply or Reject is recorded in the thread.
   surfaces, rooms, selections), drawings (grouped: plans, elevations,
   details, schedules), files, saved views.
 - **Centre: panes.** The area splits into one or more panes. Each picks
-  its kind: 3D, section, drawing, script, board. A script beside a 3D
-  view, or a sheet beside its script, is a two-pane arrangement.
+  its kind: 3D with the scan (up to three of them), drawing, script,
+  board. A script beside a 3D view, a sheet beside its script, or a 3D
+  view beside the same scan seen through a slab, is a two-pane
+  arrangement.
 - **Right:** issues (list, then the thread), member, loads, measure.
 - **Board:** a strip under the panes that expands, or a pane. Columns by
   status; drag between columns, and within one for priority.
@@ -189,7 +191,7 @@ Without a scan, `topo serve` and any static host serve the app as before.
 | `crates/topo-scan` | The computation and the workspace. `scan`, `ply`, `trajectory`, `axes`: loading a scan. `lib`: prediction, registration, evidence. `fit`, `render`, `cloud`: plane fits, section images, the thinned cloud and slabs. `git`, `issues`: the project as a repository. `workspace`, `tools`, `view`: the workspace, its tools, and what the app draws from. `mcp`: the tools for agents. |
 | `crates/topo-cli/src/work.rs` | The service: `/api/…` and `/mcp` beside the app's files. |
 | `web/app/service.js` | The app's client of the service (absent: the app is as before). |
-| `web/app/glview.js` | A WebGL2 view: an orbit camera or a section's slab, over the same points. |
+| `web/app/glview.js` | A WebGL2 view: an orbit camera over the points, optionally clipped to a box (a slab), with handles to drag. |
 | `web/app/scan.js` | The scan's panes, layers, views, issues, threads, proposals, board, people. |
 | `web/index.html` | The shell: the browser of drawings and files, the panes, the inspector. |
 
@@ -210,15 +212,15 @@ Details that were decided in the building:
   assigned or took part in, issues nobody has taken, and `@name` mentions.
 - **A tool called with `issue: N`** is noted in that issue's thread.
 - **The browser draws** a cloud thinned to one point per 2.5 cm cube (with
-  intensity and a surface normal per point), and asks for every point of
-  a section's slab when the section changes.
+  intensity and a surface normal per point), and asks for every point in
+  a slab when a view is clipped to it or it changes.
 - **A selection** is kept as how it was made (the window and the view it
   was dragged in, or a box), not as a list of points: it is small, lives
   in the repository, and gives the same points again from the same scan.
   Shift-drag in a scan view makes one. In 3D only the surface nearest the
   viewer is taken (within 8 cm of the nearest point around it), so a
-  surface seen at a grazing angle is taken thinly; in a section, all of
-  the slab's points in the window. `measure`, `fit_surface` and an
+  surface seen at a grazing angle is taken thinly; in a view clipped to a
+  slab, all of the slab's points in the window. `measure`, `fit_surface` and an
   issue's place take a selection by its id.
 - **Pointing at things is one flow.** In a scan view a click picks a
   point (and the member there), shift-drag selects a region, and a
@@ -228,18 +230,20 @@ Details that were decided in the building:
   its draft says what it is pinned to, to change before it is raised.
 - **The objects are one tree** (the browser's Objects tab): the scan, the
   model's groups and members (each with its evidence as a dot), issues,
-  selections, planes, rooms. Groups fold. Each row has an eye, whether it
+  selections, planes, slabs, polylines, rooms. Groups fold. Each row has an eye, whether it
   is drawn, which is apart from clicking the row, which selects it (the
   chip, the Member tab and a new issue then refer to it). Hiding a group
   hides what is in it. Double-click goes to it; right-click offers what
-  can be done with it (an issue on it, name, delete, hide, fit, section).
+  can be done with it (an issue on it, name, delete, hide, fit, slab).
 - **A scan view's own controls are in the view**: how the points are
-  coloured, orthographic, top-down, fit, cutting away the roof or the
-  floor, point size; in a section, its kind and its slab. The 3D view
-  has a compass: click a letter to look from that side of the model, the
+  coloured, what it shows (the whole scan, or a slab), orthographic,
+  top-down, fit, drawing a polyline, cutting a slab, cutting away the
+  roof or the floor, point size; clipped to a slab, looking square on,
+  whether it is held so, and the slab's thickness and stepping. Each has
+  a compass: click a letter to look from that side of the model, the
   middle to look straight down.
 - **One thing is selected at a time**: a point (a click in a view), a
-  member, a selection or a plane, or an issue. The card over the views
+  member, a selection, a plane, a slab or a polyline, or an issue. The card over the views
   says what it is in a line or two, with three small buttons (an issue on
   it, its menu, let go). Its menu is the same wherever it is opened: on
   its row in the tree, on the card, or by right-clicking in a view (which
@@ -254,16 +258,47 @@ Details that were decided in the building:
   depth of the view's target.
 - **Selecting a member** (in a view or the tree) fills the Member tab:
   what the scan shows of it, then its structural checks.
-- **Selections and planes are things with ids** (`s3`, `p2`): shown,
-  named in place, deleted, and referred to. An id written in a reply
+- **Selections, planes, slabs and polylines are things with ids** (`s3`,
+  `p2`, `b1`, `l4`): shown, named in place, deleted, and referred to. An id written in a reply
   becomes a link that shows the thing and goes to it; an issue's number
   (`#4`) likewise.
 - **A plane** is a fit kept: to a selection's points, or about a picked
   point ("Fit a plane" in the menu; `fit_surface` with `keep` for
-  agents). "Section on a plane" opens the slab about it, seen square on:
-  a volume between two planes offset from it, whose thickness and
-  position are set in Layers. A shift-drag in that section selects the
-  points of the volume.
+  agents).
+- **A section is a 3D view clipped to a slab.** There is no section pane:
+  a slab is an object (an oriented box in the model's frame: a centre,
+  three axes — right, up, toward the viewer — and half sizes), kept with
+  the project, and any of the three scan views can be clipped to one
+  (its "Whole scan / Slab …" menu). "View it" (or a double-click on its
+  row) opens a second view on it, seen square on and held so (a drag
+  slides the view; the lock in its toolbar lets it turn), drawing every
+  scan point in the box. Up to three panes: a view already on the slab
+  is used, else a second view not open, else the second view that is.
+- **Making a slab is pointing at what to see.** Right-click a point:
+  along the surface there, cut through that surface, a plan at that
+  height, a cut across x or y. On a selection: around it. On a plane: on
+  it. With the cut tool: a line dragged across the building, seen from
+  above. From a view's menu: a plan or a cut through what it looks at.
+  Slabs stand upright (turned only about the vertical) and square to the
+  model when within 5° of it, unless made from a tilted surface; they
+  reach over the model and are 0.1 to 0.2 m thick to start.
+- **A slab is changed by its handles**, in any view while it is selected:
+  each face drags along its normal (the one across from it stays), the
+  middle slides it along its thin direction, ⟳ turns it about the
+  vertical in 5° steps (alt: freely); its sizes can be typed in the
+  card. A view clipped to it follows as it is dragged. A handle that
+  would move toward or away from the viewer is not shown.
+- **A section in a link** (`section`, as `render_section` takes it) opens
+  as a slab that is not kept, until someone keeps it; a link can name a
+  kept slab instead (`slab`). A person's attached view carries both.
+- **A polyline** is a run of points in the model's frame, open or closed,
+  with its length (and each stretch's). It is drawn in a view point by
+  point: on the scan under the cursor, or, square on to a slab, in the
+  slab's middle plane (so over a plan or a section it is flat). Enter or
+  a double-click ends it, the first point again closes it, Esc drops it.
+  Selected, its points drag (landing on the scan, or staying in the
+  slab's plane), a stretch's length drags out a new point, and a point's
+  right-click removes it. Agents have the same (`polylines`).
 - **The model over the points** is coloured by evidence where the points
   are grey (intensity), and drawn in white outline where the points are
   coloured by hue (depth, normal, height).
@@ -277,7 +312,9 @@ Details that were decided in the building:
 | The workspace and its tools; MCP | built, tested (MCP by hand-made requests, not yet by a model) |
 | The service in `topo serve` | built, run on a real scan |
 | The app's shell: browser, split panes, inspector | built |
-| 3D with scan, sections, layers, picks | built |
+| 3D with scan, the object tree, picks | built |
+| Slabs: made by pointing, shown in a clipped 3D view, changed by handles | built, tried by hand (no automated test of the browser side) |
+| Polylines: drawn, points dragged, added and removed | built, tried by hand |
 | Selections (a window in a view, or a box) | built, tested (the window by scripted events) |
 | Issues: list, threads, typing in place, pins, board with drag | built |
 | View links, Back and Forward, saved views | built |

@@ -270,6 +270,17 @@
   .ctxmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 4px 9px; border-radius: 4px; font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ctxmenu button:hover { background: #eef3fd; } .ctxmenu button.danger { color: var(--bad); }
   .ctxmenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  /* Handles over a scan view: a slab's faces, middle and turn; a polyline's points and lengths. */
+  .hdl { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: grab; touch-action: none; user-select: none; box-sizing: border-box; }
+  .hdl:active { cursor: grabbing; }
+  .hdl.face { width: 12px; height: 12px; background: #ff9628; border: 1.5px solid #16171b; border-radius: 2px; }
+  .hdl.face.thin { background: #ffe0b8; }
+  .hdl.mid { width: 14px; height: 14px; border-radius: 50%; background: #16171b; border: 2.5px solid #ff9628; }
+  .hdl.yaw { width: 20px; height: 20px; border-radius: 50%; background: #16171b; color: #ff9628; border: 1px solid #ff9628; font: 700 13px/18px sans-serif; text-align: center; }
+  .hdl.node { width: 11px; height: 11px; border-radius: 50%; background: #e6ff7a; border: 1.5px solid #16171b; }
+  .hdl.seg { font: 10.5px/1.3 system-ui, sans-serif; color: #f0ffc0; background: rgba(22,23,27,.82); border: 1px solid rgba(214,255,90,.55); border-radius: 8px; padding: 0 5px; white-space: nowrap; }
+  .hdl:hover { box-shadow: 0 0 0 2px rgba(255,255,255,.7); }
+  .glchip .dims input { width: 54px; font: inherit; font-size: 12px; padding: 0 2px; border: 1px solid var(--line); border-radius: 3px; }
   .draft .where { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin: 6px 0 3px; font-size: 12px; }
   .draft .where button { border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer; }
   .draft .where button.on { background: var(--ink); color: #fff; border-color: var(--ink); }

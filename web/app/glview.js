@@ -44,12 +44,14 @@ export const COLOURS = ["intensity", "height", "normal", "depth"];
 const POINT_VS = `#version 300 es
 in vec3 a_pos; in float a_int; in vec3 a_nrm;
 uniform mat4 u_vp; uniform float u_size; uniform float u_persp; uniform int u_mode;
-uniform vec2 u_z; uniform vec4 u_plane; uniform float u_half; uniform vec3 u_toEye; uniform float u_floor;
+uniform vec2 u_z; uniform vec3 u_bc; uniform mat3 u_bax; uniform vec3 u_bh; uniform float u_box; uniform vec3 u_toEye; uniform float u_floor;
 out vec3 v_col;
 vec3 hue(float h) { return clamp(abs(fract(h + vec3(0., 2. / 3., 1. / 3.)) * 6. - 3.) - 1., 0., 1.); }
 void main() {
-  float off = dot(u_plane.xyz, a_pos) - u_plane.w;
-  if (a_pos.z < u_z.x || a_pos.z > u_z.y || (u_half > 0. && abs(off) > u_half)) { gl_Position = vec4(2., 2., 2., 1.); gl_PointSize = 0.; return; }
+  // Where the point is in the box the view is clipped to (along its right, up and toward-the-viewer axes).
+  vec3 q = (a_pos - u_bc) * u_bax;
+  float off = q.z;
+  if (a_pos.z < u_z.x || a_pos.z > u_z.y || (u_box > 0. && any(greaterThan(abs(q), u_bh)))) { gl_Position = vec4(2., 2., 2., 1.); gl_PointSize = 0.; return; }
   gl_Position = u_vp * vec4(a_pos, 1.);
   gl_PointSize = u_persp > 0. ? clamp(u_size * 6. / max(gl_Position.w, .5), 1., u_size * 2.) : u_size;
   bool surf = dot(a_nrm, a_nrm) > .2;
@@ -57,7 +59,7 @@ void main() {
   float lit = surf ? .55 + .45 * abs(dot(normalize(a_nrm), u_toEye)) : .8;
   if (u_mode == 1) v_col = hue(.66 - .66 * clamp((a_pos.z - u_floor) / 3.6, 0., 1.)) * (.35 + .65 * lit);
   else if (u_mode == 2) v_col = surf ? .2 + .8 * abs(normalize(a_nrm)) : vec3(.42);
-  else if (u_mode == 3) { float t = u_half > 0. ? clamp(off / u_half, -1., 1.) : 0.; v_col = hue(.33 - .33 * t) * (.55 + .45 * lit); }
+  else if (u_mode == 3) { float t = u_box > 0. ? clamp(off / u_bh.z, -1., 1.) : 0.; v_col = hue(.33 - .33 * t) * (.55 + .45 * lit); }
   else if (u_mode == 4) v_col = vec3(1., .82, .1);
   else v_col = vec3(.12 + .88 * pow(a_int, .55)) * vec3(1., .98, .94) * lit;
 }`;
@@ -73,10 +75,10 @@ void main() { gl_Position = u_vp * vec4(a_pos, 1.); v_col = a_col; v_pos = a_pos
 const FLAT_FS = `#version 300 es
 precision mediump float;
 in vec4 v_col; in vec3 v_pos; out vec4 o;
-uniform vec2 u_z; uniform vec4 u_plane; uniform float u_half;
+uniform vec2 u_z; uniform vec3 u_bc; uniform mat3 u_bax; uniform vec3 u_bh; uniform float u_box;
 void main() {
   if (v_pos.z < u_z.x || v_pos.z > u_z.y) discard;
-  if (u_half > 0. && abs(dot(u_plane.xyz, v_pos) - u_plane.w) > u_half) discard;
+  if (u_box > 0. && any(greaterThan(abs((v_pos - u_bc) * u_bax), u_bh))) discard;
   o = v_col;
 }`;
 
@@ -99,14 +101,14 @@ function program(gl, vs, fs) {
   return { p, u };
 }
 
-export function defaultState(kind) {
+export function defaultState() {
   return {
-    kind,
-    // 3d: an orbit about `target`, seen from compass bearing `az`, `el` up (degrees).
+    // An orbit about `target`, seen from compass bearing `az`, `el` up (degrees).
     target: [0, 0, 1.2], az: 215, el: 28, dist: 14, ortho: false, half: 6,
-    // section: the plane and slab, and where in the plane the view is.
-    section: null, centre: [0, 0], zoom: 4,
-    colour: kind === "section" ? "depth" : "intensity",
+    // The box the view is clipped to (a slab: { c, u, v, n, h }, scan frame), and
+    // whether a drag slides the view (seen square on) rather than turning it.
+    box: null, flat: false,
+    colour: "intensity",
     // Height cuts, in the model's frame (null: none).
     zMin: null, zMax: null,
     layers: { scan: true, model: true, marks: true, issues: true },
@@ -115,7 +117,7 @@ export function defaultState(kind) {
 }
 
 export class GLView {
-  constructor(host, kind) {
+  constructor(host) {
     this.host = host;
     this.canvas = document.createElement("canvas");
     this.canvas.style.cssText = "width:100%;height:100%;display:block;touch-action:none";
@@ -126,7 +128,14 @@ export class GLView {
     if (!gl) throw new Error("this browser has no WebGL2");
     this.points = program(gl, POINT_VS, POINT_FS);
     this.flat = program(gl, FLAT_VS, FLAT_FS);
-    this.state = defaultState(kind);
+    this.state = defaultState();
+    this.handles = [];
+    this.handleEls = new Map();
+    /** "line": the next drag draws a line (onLine gets the rays at its ends). */
+    this.tool = null;
+    this.rule = document.createElement("div");
+    this.rule.style.cssText = "position:absolute;height:0;border-top:2px dashed #ff9628;transform-origin:0 0;display:none";
+    this.overlay.appendChild(this.rule);
     /** The model's floor in the scan (model z = scan z − zOffset). */
     this.zOffset = 0;
     this.floorZ = 0;
@@ -247,18 +256,46 @@ export class GLView {
     }
     this.redraw();
   }
+  /**
+   * Handles to drag, at places: [{ id, pos, cls, text, title, along }].
+   * `onHandle(id, "start" | "move" | "end", ray, event)` as one is dragged;
+   * `onHandleMenu(id, event)` on a right-click. One whose `along` (the line
+   * it moves on) points at the viewer is not shown: it could not be dragged.
+   */
+  setHandles(list) {
+    this.handles = list;
+    for (const [id, el] of this.handleEls) if (!list.some((h) => h.id === id) && !el.dragging) { el.remove(); this.handleEls.delete(id); }
+    for (const h of list) {
+      let el = this.handleEls.get(h.id);
+      if (!el) {
+        el = document.createElement("div");
+        const at = (e) => { const r = this.canvas.getBoundingClientRect(); return this.ray(e.clientX - r.left, e.clientY - r.top); };
+        el.onpointerdown = (e) => {
+          e.stopPropagation();
+          if (e.button !== 0) return;
+          e.preventDefault();
+          el.setPointerCapture(e.pointerId);
+          el.dragging = true;
+          this.onHandle?.(h.id, "start", at(e), e);
+        };
+        el.onpointermove = (e) => { if (el.dragging) this.onHandle?.(h.id, "move", at(e), e); };
+        el.onpointerup = (e) => { if (el.dragging) { el.dragging = false; this.onHandle?.(h.id, "end", at(e), e); } };
+        el.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); this.onHandleMenu?.(h.id, e); };
+        this.overlay.appendChild(el);
+        this.handleEls.set(h.id, el);
+      }
+      el.className = `hdl ${h.cls || ""}`;
+      el.textContent = h.text || "";
+      el.title = h.title || "";
+    }
+    this.redraw();
+  }
 
   // ----- camera -------------------------------------------------------------------
 
   /** The camera: view-projection matrix, basis (right, up, forward), eye. */
   camera() {
     const s = this.state, w = this.canvas.clientWidth || 1, h = this.canvas.clientHeight || 1, aspect = w / h;
-    if (s.kind === "section" && s.section) {
-      const { origin, n, u, v } = s.section;
-      const c = add(origin, add(mulS(u, s.centre[0]), mulS(v, s.centre[1])));
-      const eye = add(c, mulS(n, 200)), f = mulS(n, -1);
-      return { vp: matMul(orthographic(s.zoom * aspect, s.zoom, 1, 400), viewMatrix(eye, u, v, f)), right: u, up: v, forward: f, eye, ortho: true, hh: s.zoom, hw: s.zoom * aspect, w, h };
-    }
     const az = s.az * D2R, el = Math.max(-89.9, Math.min(89.9, s.el)) * D2R;
     const t = [Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el)];  // toward the viewer
     const f = mulS(t, -1);
@@ -295,19 +332,23 @@ export class GLView {
   cuts() {
     const s = this.state;
     const z = s.zMin == null && s.zMax == null ? undefined : [s.zMin ?? -1e9, s.zMax ?? 1e9];
-    const slab = s.kind === "section" && s.section ? { origin: s.section.origin, normal: s.section.n, half: s.section.half } : undefined;
-    return { z, slab };
+    return { z, slab: s.box || undefined };
   }
 
   /** Frames a sphere (keeping the direction of view). */
   frame(centre, radius) {
-    const s = this.state;
-    if (s.kind === "section" && s.section) {
-      const q = sub(centre, s.section.origin);
-      this.animate({ centre: [dot(q, s.section.u), dot(q, s.section.v)], zoom: Math.max(0.3, radius * 1.2) });
-    } else {
-      this.animate({ target: centre, dist: Math.max(1.5, radius / Math.sin(FOVY / 2) * 1.1), half: Math.max(0.5, radius * 1.2) });
-    }
+    this.animate({ target: centre, dist: Math.max(1.5, radius / Math.sin(FOVY / 2) * 1.1), half: Math.max(0.3, radius * 1.2) });
+  }
+
+  /** Looks square on at a box (from its `n` side, its `v` up), fitted in the view; a drag then slides it. */
+  squareOn(box, ms) {
+    const { c, v, n, h } = box, aspect = (this.canvas.clientWidth || 4) / (this.canvas.clientHeight || 3);
+    // Seen from above (or below), the bearing is what puts the box's `v` up.
+    const flat = Math.abs(n[2]) > 0.999;
+    this.animate({
+      target: c, az: (flat ? Math.atan2(-v[0] * n[2], -v[1] * n[2]) : Math.atan2(n[0], n[1])) / D2R, el: Math.asin(Math.max(-1, Math.min(1, n[2]))) / D2R,
+      half: 1.06 * Math.max(h[1], h[0] / aspect), dist: Math.max(this.state.dist, 2), ortho: true, flat: true,
+    }, ms);
   }
 
   /**
@@ -324,8 +365,9 @@ export class GLView {
     // A bearing turns the short way round.
     if ("az" in to) to.az = from.az + ((((to.az - from.az) % 360) + 540) % 360 - 180);
     if (Object.keys(rest).length) this.set(rest, true);
-    cancelAnimationFrame(this.anim);
+    // (Nothing of the camera's named: a flight under way goes on.)
     if (!Object.keys(to).length) return this.onChange?.();
+    cancelAnimationFrame(this.anim);
     const t0 = performance.now(), scaled = new Set(["dist", "half", "zoom"]);
     const step = (now) => {
       const x = Math.min(1, (now - t0) / ms), e = x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
@@ -348,8 +390,9 @@ export class GLView {
     c.addEventListener("pointerdown", (e) => {
       try { c.setPointerCapture(e.pointerId); } catch (_) {}
       cancelAnimationFrame(this.anim);
-      // Shift-drag marks a window of points; right- or alt-drag pans (a section pans with any drag).
-      drag = { x: e.clientX, y: e.clientY, select: e.shiftKey && e.button === 0, pan: e.button === 2 || e.altKey || this.state.kind === "section", moved: false, s: this.get() };
+      // Shift-drag marks a window of points; right- or alt-drag pans (a view held square on pans with any drag).
+      const line = this.tool === "line" && e.button === 0;
+      drag = { x: e.clientX, y: e.clientY, line, select: !line && e.shiftKey && e.button === 0, pan: e.button === 2 || e.altKey || this.state.flat, moved: false, s: this.get() };
     });
     c.addEventListener("pointermove", (e) => {
       if (!drag) return;
@@ -361,11 +404,13 @@ export class GLView {
         Object.assign(this.band.style, { display: "block", left: `${Math.min(drag.x, e.clientX) - r.left}px`, top: `${Math.min(drag.y, e.clientY) - r.top}px`, width: `${Math.abs(dx)}px`, height: `${Math.abs(dy)}px` });
         return;
       }
+      if (drag.line) {
+        const r = c.getBoundingClientRect();
+        Object.assign(this.rule.style, { display: "block", left: `${drag.x - r.left}px`, top: `${drag.y - r.top}px`, width: `${Math.hypot(dx, dy)}px`, transform: `rotate(${Math.atan2(dy, dx)}rad)` });
+        return;
+      }
       const s0 = drag.s, cam = this.camera();
-      if (s0.kind === "section" && s0.section) {
-        const k = (2 * s0.zoom) / cam.h;
-        this.set({ centre: [s0.centre[0] - dx * k, s0.centre[1] + dy * k] }, true);
-      } else if (drag.pan) {
+      if (drag.pan) {
         const k = s0.ortho ? (2 * s0.half) / cam.h : (2 * s0.dist * Math.tan(FOVY / 2)) / cam.h;
         this.set({ target: add(s0.target, add(mulS(cam.right, -dx * k), mulS(cam.up, dy * k))) }, true);
       } else {
@@ -377,6 +422,11 @@ export class GLView {
       drag = null;
       if (!d) return;
       const r = c.getBoundingClientRect();
+      if (d.line) {
+        this.rule.style.display = "none";
+        if (d.moved) this.onLine?.(this.ray(d.x - r.left, d.y - r.top), this.ray(e.clientX - r.left, e.clientY - r.top));
+        return;
+      }
       if (d.select) {
         this.band.style.display = "none";
         if (!d.moved) return;
@@ -394,12 +444,7 @@ export class GLView {
       e.preventDefault();
       cancelAnimationFrame(this.anim);
       const f = Math.exp(e.deltaY * 0.0015), s = this.state;
-      if (s.kind === "section" && s.section) {
-        // Zoom about the cursor.
-        const r = c.getBoundingClientRect(), cam = this.camera();
-        const ux = ((e.clientX - r.left) / cam.w * 2 - 1) * cam.hw, vy = (1 - (e.clientY - r.top) / cam.h * 2) * cam.hh;
-        this.set({ zoom: s.zoom * f, centre: [s.centre[0] + ux * (1 - f), s.centre[1] + vy * (1 - f)] }, true);
-      } else {
+      {
         // Zoom toward what is under the cursor, so it stays there: the scan point
         // it is on (asked of the host, once per place the cursor rests), or until
         // that is known, the point at the depth of the view's target.
@@ -434,15 +479,19 @@ export class GLView {
     gl.depthFunc(gl.LEQUAL);
     const s = this.state, cam = this.camera();
     const z = [s.zMin == null ? -1e9 : s.zMin + this.zOffset, s.zMax == null ? 1e9 : s.zMax + this.zOffset];
-    const sec = s.kind === "section" ? s.section : null;
-    const plane = sec ? [...sec.n, dot(sec.n, sec.origin)] : [0, 0, 1, 0];
+    const box = s.box;
     const cuts = (u) => {
       gl.uniformMatrix4fv(u.u_vp, false, cam.vp);
       gl.uniform2f(u.u_z, z[0], z[1]);
-      gl.uniform4f(u.u_plane, ...plane);
-      gl.uniform1f(u.u_half, sec ? sec.half : 0);
+      gl.uniform1f(u.u_box, box ? 1 : 0);
+      if (box) {
+        gl.uniform3f(u.u_bc, ...box.c);
+        gl.uniformMatrix3fv(u.u_bax, false, [...box.u, ...box.v, ...box.n]);
+        gl.uniform3f(u.u_bh, ...box.h);
+      }
     };
-    const cloud = s.kind === "section" ? this.clouds.slab || this.clouds.thin : this.clouds.thin;
+    // Clipped to a box, every point of the scan in it is drawn (once they have come).
+    const cloud = box ? this.clouds.slab || this.clouds.thin : this.clouds.thin;
     if (s.layers.scan && cloud) {
       const u = this.points.u;
       gl.useProgram(this.points.p);
@@ -467,8 +516,8 @@ export class GLView {
     }
     gl.useProgram(this.flat.p);
     cuts(this.flat.u);
-    // In a section the model is drawn over the slab's points: it is what they are read against.
-    if (sec) gl.disable(gl.DEPTH_TEST);
+    // In a slab the model is drawn over the points: it is what they are read against.
+    if (box) gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     if (s.layers.model && this.tris) {
@@ -484,7 +533,7 @@ export class GLView {
     }
     if (s.layers.marks && this.marks) {
       gl.disable(gl.DEPTH_TEST);
-      gl.uniform1f(this.flat.u.u_half, 0);
+      gl.uniform1f(this.flat.u.u_box, 0);
       gl.uniform2f(this.flat.u.u_z, -1e9, 1e9);
       gl.bindVertexArray(this.marks.vao);
       gl.drawArrays(gl.LINES, 0, this.marks.count);
@@ -495,10 +544,19 @@ export class GLView {
     for (const l of this.labels) {
       const el = this.labelEls.get(l.id);
       const p = s.layers.issues ? this.project(cam, l.pos) : null;
-      const cut = sec && Math.abs(dot(sec.n, sub(l.pos, sec.origin))) > Math.max(sec.half, 0.3);
+      const q = box && sub(l.pos, box.c);
+      const cut = box && [box.u, box.v, box.n].some((a, k) => Math.abs(dot(a, q)) > Math.max(box.h[k], 0.3));
       if (!p || cut || p[0] < -40 || p[1] < -20 || p[0] > cam.w + 40 || p[1] > cam.h + 20) { el.style.display = "none"; continue; }
       el.style.display = "";
       el.style.transform = `translate(${p[0].toFixed(1)}px, ${p[1].toFixed(1)}px)`;
+    }
+    for (const h of this.handles) {
+      const el = this.handleEls.get(h.id);
+      if (!el) continue;
+      const p = this.project(cam, h.pos);
+      if (!p || (h.along && Math.abs(dot(h.along, cam.forward)) > 0.94) || p[0] < 0 || p[1] < 0 || p[0] > cam.w || p[1] > cam.h) { if (!el.dragging) el.style.display = "none"; continue; }
+      el.style.display = "";
+      el.style.transform = `translate(${p[0].toFixed(1)}px, ${p[1].toFixed(1)}px) translate(-50%, -50%)`;
     }
     // What the host draws over the view to match it (a compass).
     this.onDraw?.(cam);
