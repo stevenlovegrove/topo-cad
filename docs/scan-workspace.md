@@ -57,8 +57,8 @@ A scan project is always a git repository.
 
 - **A proposal is a commit** on its own ref, made from a text diff
   against the project's files. It carries the evidence change it causes.
-- **Applying** a proposal merges it onto the working branch, authored by
-  whoever applied it. **Undo** is a revert.
+- **Applying** a proposal puts it onto the working branch (proposed by its
+  author, applied by whoever applied it). **Undo** is a revert.
 - **Issues are files in the repository**, one per issue, so their threads
   have history and merge cleanly.
 - The scan is referenced by path, not copied in.
@@ -145,18 +145,96 @@ match their quality.
 ## What an agent sees
 
 - Sections, rendered in the service (`topo_scan::render`).
-- 3D images: to be decided (rendered in the service, or by a connected
-  browser offscreen). Never the person's own pane.
+- 3D images: to be rendered in the service with pangolino's `pango-render`
+  (offscreen, behind an optional cargo feature, since pangolino is not
+  public). Not built yet. Never the person's own pane.
+
+## Running it
+
+```
+./web/build.sh                                     # the app's engine (once)
+cargo build --release -p topo-cli
+target/release/topo serve MODEL.ts SCAN.ply        # http://127.0.0.1:8765/
+```
+
+- The model's folder must be in a git repository (`git init` there).
+- Folders the model imports from outside its own are given too, so the
+  app can read them: `topo serve MODEL.ts ../../examples SCAN.ply`.
+- The scan is a binary PLY; a trajectory beside it (`full.tum` or
+  `odom.tum`) gives the sensor rays. After the first run the project
+  remembers its scan: `topo serve MODEL.ts --scan`.
+- An agent attaches over MCP, under a name of its own:
+
+  ```
+  claude mcp add --transport http topo http://127.0.0.1:8765/mcp?as=claude-1
+  ```
+
+Without a scan, `topo serve` and any static host serve the app as before.
+
+## How it is built
+
+| Where | What |
+|---|---|
+| `crates/topo-scan` | The computation and the workspace. `scan`, `ply`, `trajectory`, `axes`: loading a scan. `lib`: prediction, registration, evidence. `fit`, `render`, `cloud`: plane fits, section images, the thinned cloud and slabs. `git`, `issues`: the project as a repository. `workspace`, `tools`, `view`: the workspace, its tools, and what the app draws from. `mcp`: the tools for agents. |
+| `crates/topo-cli/src/work.rs` | The service: `/api/…` and `/mcp` beside the app's files. |
+| `web/app/service.js` | The app's client of the service (absent: the app is as before). |
+| `web/app/glview.js` | A WebGL2 view: an orbit camera or a section's slab, over the same points. |
+| `web/app/scan.js` | The scan's panes, layers, views, issues, threads, proposals, board, people. |
+| `web/index.html` | The shell: the browser of drawings and files, the panes, the inspector. |
+
+Details that were decided in the building:
+
+- **A proposal** is made with a scratch index, so the working tree and
+  index are untouched until it is applied. It is applied by cherry-pick:
+  its author stays the proposer, its committer is whoever applied it. One
+  that no longer applies changes nothing and says so.
+- **Edits made outside the app** are committed as such before a proposal
+  is applied or reverted.
+- **Every change to an issue** is a commit on the working branch
+  (`#4: comment`).
+- **Waiting.** A comment ending in a question mark, from someone other
+  than the issue's raiser, leaves the issue waiting on the raiser; their
+  reply hands it back. Taking an issue in hand assigns it.
+- **What concerns an agent** (what `wait` returns): issues it raised, is
+  assigned or took part in, issues nobody has taken, and `@name` mentions.
+- **A tool called with `issue: N`** is noted in that issue's thread.
+- **The browser draws** a cloud thinned to one point per 2.5 cm cube (with
+  intensity and a surface normal per point), and asks for every point of
+  a section's slab when the section changes.
+- **The model over the points** is coloured by evidence where the points
+  are grey (intensity), and drawn in white outline where the points are
+  coloured by hue (depth, normal, height).
 
 ## Status
 
 | Part | State |
 |---|---|
-| `topo-scan`: scan loading, floor and wall direction, registration (ICP), per-member evidence, plane fits, section images | exists, tested |
-| Workspace service in `topo serve` (SSE, actions, point data) | not started |
-| Git-backed issues and proposals | not started |
-| Web app: panes, WebGL 3D, sections, issues, board | not started |
-| MCP tools for agents | not started |
+| `topo-scan`: scan loading, registration, evidence, plane fits, section images, thinned cloud | built, tested |
+| The project as a git repository: proposals, apply, revert, issues as files | built, tested |
+| The workspace and its tools; MCP | built, tested (MCP by hand-made requests, not yet by a model) |
+| The service in `topo serve` | built, run on a real scan |
+| The app's shell: browser, split panes, inspector | built |
+| 3D with scan, sections, layers, picks | built |
+| Issues: list, threads, typing in place, pins, board with drag | built |
+| View links, Back and Forward, saved views | built |
+| Proposals: text diff, before / after / changed / both, apply, reject, revert | built |
+| Participants: names, badges, presence | built |
+
+Not built yet:
+
+- **3D images for agents** (pangolino, as above). Agents have sections.
+- **Selections of points** (window and paint). Issues pin to a point, a
+  box or a member.
+- **Checks as issues.** The model's checks are listed as a category while
+  they fail, and one can be kept as an issue to discuss; a kept one does
+  not yet close itself when the check passes.
+- **The board as a strip** under the panes: it is a pane kind.
+- **Evidence in the Member tab** and as a "Colour by" on the drawings:
+  it is in the scan views and their pick chip.
+- **A proposal's diff in the script pane**: it is in the thread.
+- **Placement by hand** in the app: agents have the placement tools.
+- **Drawings grouped** (plans, elevations, schedules) in the browser:
+  they are one list.
 
 ## `topo-scan`
 

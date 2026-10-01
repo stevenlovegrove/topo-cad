@@ -60,8 +60,15 @@ region such as [unincorporated King County, WA](examples/sites/king-county-wa.ts
 
 The drawing set is code too: `.sheets(standardSheets("cover"), sheet("S-102",
 "Typical truss", elevation(roof.truss(2)), detail(heel, [roof.truss(2), walls],
-{ scale: '1-1/2"' })), standardSheets("walls"))` — the sheets are the tabs in
-`topo serve`, which also has a Script tab for editing the model in place.
+{ scale: '1-1/2"' })), standardSheets("walls"))` — the sheets are listed in
+the app's browser. The app shows views in panes side by side (a drawing, the
+3D model, the script to edit in place), so a sheet can sit beside its script.
+
+Given a lidar scan, `topo serve MODEL.ts SCAN.ply` makes the app a **scan
+workspace**: people and LLM agents (over MCP) work the model against the
+scan together, with issues pinned to places, proposals to the model as
+diffs, and the project as a git repository. See
+[docs/scan-workspace.md](docs/scan-workspace.md).
 
 `out/` gets: sheet SVGs (`G-001`, `S-101`, `S-201`, …) + `index.html`, DXF per
 sheet (paper space) and per view (full-size model space), `model.json` (the IR),
@@ -80,7 +87,8 @@ sheet (paper space) and per view (full-size model space), `model.json` (the IR),
 | `topo-script` | TypeScript models → one JS bundle (oxc) → scene spec → model; runs natively in QuickJS |
 | `topo-app` | the app engine: a model session answering the UI's requests (no server, files or clock) |
 | `topo-wasm` | wasm-bindgen: the app engine for the browser, and the `Project` API |
-| `topo-cli` | `topo` binary: run/render models; `serve` and `site` for the web app |
+| `topo-scan` | a model against a lidar scan: registration, per-member evidence, plane fits, sections; the scan workspace (issues, proposals, MCP tools) |
+| `topo-cli` | `topo` binary: run/render models; `serve` and `site` for the web app, and the scan workspace service |
 
 ## Minimal example
 
