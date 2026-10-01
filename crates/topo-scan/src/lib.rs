@@ -24,9 +24,12 @@ pub mod mcp;
 pub mod ply;
 pub mod rays;
 pub mod render;
+#[cfg(feature = "pango")]
+pub mod render3d;
 pub mod scan;
 pub mod stats;
 pub mod tools;
+pub mod tools3d;
 pub mod trajectory;
 pub mod view;
 pub mod workspace;

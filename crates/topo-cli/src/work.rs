@@ -87,7 +87,9 @@ impl Work {
             say("thinning the scan for the 3D view");
             let ix = ScanIndex::build(&scan, 0.025);
             eprintln!("topo serve: {} of {} points in the thinned cloud", ix.thin.len(), scan.xyz.len());
-            *w.index.lock().unwrap() = Some(Arc::new(ix));
+            let ix = Arc::new(ix);
+            w.ws.lock().unwrap().index = Some(ix.clone());
+            *w.index.lock().unwrap() = Some(ix);
             say("");
         });
         Ok(work)

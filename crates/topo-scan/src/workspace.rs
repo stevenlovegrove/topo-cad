@@ -153,6 +153,8 @@ pub struct Workspace {
     model_abs: String,
     items_path: PathBuf,
     pub scan: Option<Arc<Scan>>,
+    /// The scan thinned for drawing (made once the scan is loaded).
+    pub index: Option<Arc<crate::cloud::ScanIndex>>,
     pub model: Option<Model>,
     /// Why the model as it is on disk does not evaluate.
     pub model_error: Option<String>,
@@ -229,7 +231,7 @@ impl Workspace {
             items.placement = None;
         }
         let placement = items.placement.map(Into::into);
-        let mut w = Workspace { repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, model: None, model_error: None, placement, model_rev: 0, ev: None, proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
+        let mut w = Workspace { repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, model_rev: 0, ev: None, proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
         if changed {
             w.save_items("topo-cad")?;
         }
@@ -419,6 +421,7 @@ impl Workspace {
             "proposal" => self.proposal(who, args),
             "members" => self.members(args),
             "render_section" => self.render(who, args),
+            "render_view" => self.render_view(args),
             "measure" => self.measure(args),
             "probe" => self.probe(args),
             "walls" => self.walls(args),

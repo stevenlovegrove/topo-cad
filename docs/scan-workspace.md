@@ -145,9 +145,18 @@ match their quality.
 ## What an agent sees
 
 - Sections, rendered in the service (`topo_scan::render`).
-- 3D images: to be rendered in the service with pangolino's `pango-render`
-  (offscreen, behind an optional cargo feature, since pangolino is not
-  public). Not built yet. Never the person's own pane.
+- 3D pictures (`render_view`), drawn offscreen in the service by
+  Pangolino's `pango-render`: the thinned scan, coloured by intensity,
+  height or normal, with the model's edges by evidence; of the whole
+  model, a member or an issue; perspective or top-down; with height cuts.
+  They are for finding where to look; sections are what is measured in.
+  Never the person's own pane.
+
+  This is the cargo feature `pango` (`cargo build --release -p topo-cli
+  --features pango`). Pangolino is not published yet, so `topo-scan` names
+  it by a local path: until it is, the workspace only builds on a machine
+  with that checkout, feature or not. Without the feature the tool says
+  it is not there.
 
 ## Running it
 
@@ -219,10 +228,10 @@ Details that were decided in the building:
 | View links, Back and Forward, saved views | built |
 | Proposals: text diff, before / after / changed / both, apply, reject, revert | built |
 | Participants: names, badges, presence | built |
+| 3D pictures for agents (`render_view`, feature `pango`) | built, run on a real scan |
 
 Not built yet:
 
-- **3D images for agents** (pangolino, as above). Agents have sections.
 - **Selections of points** (window and paint). Issues pin to a point, a
   box or a member.
 - **Checks as issues.** The model's checks are listed as a category while
