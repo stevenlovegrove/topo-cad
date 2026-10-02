@@ -64,8 +64,6 @@ positions because the solve found them.
 | Constraints are between anonymous points; bearing points are made after the solve, by geometry | Nodes are first class in the solve, named; a model's nodes are the solve's nodes |
 | `TrussRoof.bearingOn` finds what is under each truss inside the roof generator | An explicit utility the script calls, returning nodes; the roof rests on nodes |
 | Walls, perimeters, floors, roofs: placed by coordinates in the world, written straight into the model | Bodies with published nodes in the scene, placed by datums and relations |
-| A model node is made with `node_at`, which reuses any node within half a millimetre: things placed at the same point are joined | Nodes are one only by a relation (`coincide`) or inside a generator |
-| `Assembly.bearingOn`: connects where axes happen to meet | Explicit relations between named nodes |
 | `TrussRoof` has a plan `origin` | Its stations are nodes along the plates it bears on |
 | `shifted`, `studsAt`, surveyed walls: as-built numbers written over the layout rule | Readings: measured constraints on the same unknowns the layout rule hints |
 | The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier |
@@ -92,17 +90,24 @@ Each step leaves everything working and removes one row above.
    relations, kept upright by a hint), nodes fixed in them, members
    between nodes, relations (`coincide`, `datum`, `rest`); solved, then
    written into the model, which keeps the solve.
-4. **Assemblies on the scene.** *Mostly done.* Each assembly is a body,
-   its points are nodes (`Assembly name/point`), `free()` makes it placed
+4. **Assemblies on the scene.** *Done.* Each assembly is a body, its
+   points are nodes (`Assembly name/point`), `free()` makes it placed
    only by relations; the script has node handles (`assembly.node(...)`)
    and `coincide`, `datum`; `resting` is a node on the faces of both,
-   with two bounded numbers on each, solved. Still to go:
-   `Assembly.bearingOn`, and the model's `node_at` merging nodes by
-   position when the scene is written (kept for now: the pergola example
-   relies on it).
+   with two bounded numbers on each, solved. Writing the scene makes a
+   model node for each node and joins none by position (the pergola's
+   bays are now joined by `coincide`). `Assembly.bearingOn` is a utility
+   that makes a `rest` for each member crossing a cap plate, and says so
+   where one does not touch.
 5. **Walls and perimeters publish nodes** (plate ends, corners, points
    along plates) and are placed by datums; roofs take their stations
    from nodes along the plates they bear on. `TrussRoof.origin` goes.
+   *Begun:* the ends of any member a generator made are nodes a script
+   can name (`walls.node("Front/cap_plate", "start")`), brought into the
+   scene when a relation names them; the scene can also bring in a
+   generator's member for something to rest on. Still to go: perimeters
+   and walls as bodies of the scene (placed by datums, not coordinates),
+   points along their plates as nodes, and the roof on them.
 6. **Readings as measured constraints.** `shifted`, `studsAt`, surveyed
    walls and the truss-shape fit move onto the measured tier; the layout
    rules become hints.

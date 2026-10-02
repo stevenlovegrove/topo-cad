@@ -239,7 +239,8 @@ pub struct AssemblySpec {
 struct Declared {
     points: HashMap<String, scene::NodeRef>,
     members: Vec<scene::MemberRef>,
-    rests: Vec<(scene::NodeRef, usize, usize)>,
+    /// Each place one member rests on another: its node, and the two (in the scene).
+    rests: Vec<(scene::NodeRef, scene::MemberRef, scene::MemberRef)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -699,7 +700,25 @@ impl Builder {
         for (upper, lower) in &a.rests {
             let (u, l) = (find(upper)?, find(lower)?);
             let n = sc.rest(&format!("{}/{upper} on {lower}", a.name), members[u], members[l], &self.m)?;
-            rests.push((n, u, l));
+            rests.push((n, members[u], members[l]));
+        }
+        // `bearingOn`: a utility the script calls. Each of its members that crosses a cap plate of
+        // these perimeters (on plan) rests on it: a node on both, as for `resting`. They have to touch.
+        let f = a.placement.frame();
+        for name in &a.bears_on {
+            let (parts, _) = self.perimeters.get(name).ok_or_else(|| format!("assembly {}: no perimeter named {name}", a.name))?;
+            for plate in parts.cap_plates() {
+                let (pa, pb) = (self.m.pos(self.m.member(plate).start()), self.m.pos(self.m.member(plate).end()));
+                for (i, mm) in a.members.iter().enumerate() {
+                    let at = |n: &String| a.points.iter().find(|p| p.name == *n).map(|p| f.to_world(v3(p.at[0], p.at[1], p.at[2]))).unwrap();
+                    let (ma, mb) = (at(&mm.path[0]), at(mm.path.last().unwrap()));
+                    if crosses_on_plan((ma, mb), (pa, pb)) {
+                        let lower = sc.import_member(&self.m, plate, &self.m.member_path(plate));
+                        let n = sc.rest(&format!("{}/{}#{} on {}", a.name, mm.role, a.members[..i].iter().filter(|o| o.role == mm.role).count() + 1, self.m.member_path(plate)), members[i], lower, &self.m)?;
+                        rests.push((n, members[i], lower));
+                    }
+                }
+            }
         }
         Ok(Declared { points, members, rests })
     }
@@ -725,7 +744,7 @@ impl Builder {
         // Where one rests on another: fastened at that node.
         for &(n, u, l) in &d.rests {
             let c = self.m.add_connection(fx::joist_to_plate());
-            self.m.connect(w.nodes[n.0], ids[u], Some(ids[l]), c);
+            self.m.connect(w.nodes[n.0], w.members[u.0], Some(w.members[l.0]), c);
         }
         let conn = match &a.joints {
             JointsSpec::Kind(k) => match k.as_str() {
@@ -788,24 +807,19 @@ impl Builder {
                 _ => return Err(format!("assembly {}: a load needs a member or a point", a.name)),
             }
         }
-        let mut plates = vec![];
-        for name in &a.bears_on {
-            let (parts, _) = self.perimeters.get(name).ok_or_else(|| format!("assembly {}: no perimeter named {name}", a.name))?;
-            plates.extend(parts.cap_plates());
-        }
-        if !plates.is_empty() {
-            let c = self.m.add_connection(fx::joist_to_plate());
-            for n in self.m.connect_members(&ids, &plates) {
-                for &id in &ids {
-                    if self.m.member(id).path.contains(&n) {
-                        let plate = plates.iter().copied().find(|p| self.m.member(*p).path.contains(&n));
-                        self.m.connect(n, id, plate, c);
-                    }
-                }
-            }
-        }
         Ok(())
     }
+}
+
+/// Whether two members' axes cross on plan, within both.
+fn crosses_on_plan(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
+    let (d1, d2, w) = (a.1 - a.0, b.1 - b.0, b.0 - a.0);
+    let den = d1.x * d2.y - d1.y * d2.x;
+    if den.abs() < 1e-12 {
+        return false;
+    }
+    let (s, t) = ((w.x * d2.y - w.y * d2.x) / den, (w.x * d1.y - w.y * d1.x) / den);
+    (-1e-9..=1.0 + 1e-9).contains(&s) && (-1e-9..=1.0 + 1e-9).contains(&t)
 }
 
 /// Expands a scene spec into a model. Each building is built in its own
@@ -892,15 +906,33 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
             declared.push((a, b.declare(&mut sc, a)?));
         }
     }
-    let node = |sc: &scene::Scene, name: &str| sc.node_named(name).ok_or_else(|| format!("no node named {name} (nodes: {})", sc.node_names().collect::<Vec<_>>().join(", ")));
+    // A node by name: one of the scene's, or an end of a member a generator wrote
+    // (`Walls/Front/cap_plate:start`), brought in.
+    let node = |sc: &mut scene::Scene, m: &Model, name: &str| -> Result<scene::NodeRef, String> {
+        if let Some(n) = sc.node_named(name) {
+            return Ok(n);
+        }
+        let end = name.rsplit_once(':').and_then(|(path, end)| {
+            let id = m.find_member(path).ok()?;
+            match end {
+                "start" => Some(m.member(id).start()),
+                "end" => Some(m.member(id).end()),
+                _ => None,
+            }
+        });
+        match end {
+            Some(n) => sc.import_node(name, m, n),
+            None => Err(format!("no node named {name} (an assembly's point, as `Assembly/point`, or an end of a member, as `Perimeter/Wall/cap_plate:start` or `:end`)")),
+        }
+    };
     for item in &spec.items {
         match item {
             ItemSpec::Coincide { a, b: other } => {
-                let (na, nb) = (node(&sc, a)?, node(&sc, other)?);
+                let (na, nb) = (node(&mut sc, &b.m, a)?, node(&mut sc, &b.m, other)?);
                 sc.coincide(&format!("{a} is {other}"), na, nb);
             }
             ItemSpec::Datum { node: n, at } => {
-                let nn = node(&sc, n)?;
+                let nn = node(&mut sc, &b.m, n)?;
                 sc.datum(&format!("{n} at [{}, {}, {}]", at[0], at[1], at[2]), nn, v3(at[0], at[1], at[2]));
             }
             _ => {}

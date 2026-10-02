@@ -595,6 +595,14 @@ export class Perimeter {
   static start(name: string, at: Point, opts: { z?: Length } = {}): Perimeter {
     return new Perimeter(name, at, opts.z ?? 0, [], false);
   }
+  /**
+   * An end of one of its members, as a node to relate others to:
+   * `walls.node("Front/cap_plate", "start")` (the member's path within the
+   * perimeter; `cap_plate#2` where a wall's cap is in pieces).
+   */
+  node(member: string, end: "start" | "end"): NodeHandle {
+    return new NodeHandle(`${this.name}/${member}:${end}`);
+  }
   /** Current end point of the path. */
   get end(): Point {
     return this.segments.length ? this.segments[this.segments.length - 1].to : this.start;
@@ -1164,7 +1172,12 @@ export class Assembly {
   joints(kind: Joints): Assembly {
     return this.copy({ joints: kind });
   }
-  /** Connect to the cap plates of these perimeters where axes meet. */
+  /**
+   * A utility: each of its members that crosses a cap plate of these
+   * perimeters (on plan) rests on it, at a node on both (as `resting`).
+   * They have to touch: it joins them where they do, and says so where they
+   * do not.
+   */
   bearingOn(...ps: Perimeter[]): Assembly {
     return this.copy({ bearsOn: [...this.bearsOn, ...ps.map((p) => p.name)] });
   }

@@ -319,10 +319,19 @@ its pose, a model node per node (one for nodes made one), the members,
 and the nodes on faces as attachments (their numbers are the solve's).
 The solve is kept in the model to be shown.
 
+Writing makes a model node for each node, and joins none to another
+because of where it is: only `coincide` (or a generator, inside what it
+makes) does that. What a generator already wrote can be brought in: a
+model node as a node fixed in the world, a member as a member fixed
+there (for something to rest on); relations to them join to them.
+
 In the script, assemblies are bodies in one scene: their points are
 nodes named `Assembly name/point`, and `Assembly.free()`,
 `assembly.node(point)`, `coincide(a, b)` and `datum(node, at)` relate
-them. `examples/primitives/04-placed-by-nodes.ts` places a free beam on
+them. The end of any member a generator made is a node too:
+`walls.node("Front/cap_plate", "start")`. `Assembly.bearingOn(walls)` is
+a utility: each of the assembly's members that crosses a cap plate rests
+on it (`examples/primitives/05-joists-on-walls.ts`). `examples/primitives/04-placed-by-nodes.ts` places a free beam on
 two posts by its end nodes alone.
 
 ## Seeing it

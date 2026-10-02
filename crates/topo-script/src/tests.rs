@@ -206,6 +206,34 @@ fn the_primitives_examples_show_what_they_say() {
     let e = run(&long, "long.ts").unwrap_err().to_string();
     assert!(e.contains("Beam/east end is Posts/b top"), "{e}");
 
+    // Joists on walls: where each crosses a cap plate it rests on it, at a node in the middle of where they touch:
+    // on the joist's axis (in its path), and on the plate's top face (whose axis is along one edge of it, on the
+    // wall's line), fastened there.
+    let src = include_str!("../../../examples/primitives/05-joists-on-walls.ts");
+    let m = run(src, "05-joists-on-walls.ts").unwrap();
+    sound(&m);
+    all_clean(&m);
+    let caps: Vec<_> = m.members.iter().filter(|x| x.role == "cap_plate").map(|x| x.id).collect();
+    for j in m.members.iter().filter(|x| x.role == "joist") {
+        let on: Vec<_> = m.attachments.iter().filter(|a| caps.contains(&a.member) && j.path.contains(&a.node)).collect();
+        assert_eq!(on.len(), 2, "{}", m.member_path(j.id));
+        assert!(on.iter().all(|a| a.across.abs() < 1e-9 && m.joint(a.node).is_some_and(|jt| jt.connections.iter().any(|u| u.member == j.id && u.to == Some(a.member)))));
+    }
+    // A joist half an inch high does not touch the plates it crosses: said, with how far.
+    let high = src.replace("[x, -inch(6), ft(8)]", "[x, -inch(6), ft(8) + inch(0.5)]").replace("[x, ft(10) + inch(6), ft(8)]", "[x, ft(10) + inch(6), ft(8) + inch(0.5)]");
+    let e = run(&high, "high.ts").unwrap_err().to_string();
+    assert!(e.contains("does not rest on") && e.contains("12.7 mm above"), "{e}");
+    // A free post, its top made one node with the start of the front wall's cap plate (a node the perimeter made).
+    let post = src.replace(
+        "export default Building.named(\"Joists on walls\").add(walls, joists.bearingOn(walls));",
+        "import { coincide } from \"topo-cad\";\nconst post = Assembly.named(\"Post\").point(\"foot\", [0, 0, 0]).point(\"top\", [0, 0, ft(8)]).member(\"post\", [\"foot\", \"top\"], { size: [4, 4], grade }).moved([2, 3, 0]).free();\nexport default Building.named(\"Joists on walls\").add(walls, post, coincide(post.node(\"top\"), walls.node(\"Front/cap_plate\", \"start\")));",
+    );
+    let m = run(&post, "post.ts").unwrap();
+    let cap = m.find_member("Walls/Front/cap_plate").unwrap();
+    let p = m.members.iter().find(|x| x.role == "post").unwrap();
+    assert_eq!(p.end(), m.member(cap).start(), "the post's top is the plate's start node");
+    assert!(m.pos(p.start()).distance(m.pos(p.end()) - topo_core::Vec3::Z * ft(8.0)) < 1e-9, "upright under it");
+
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
     sound(&m);
