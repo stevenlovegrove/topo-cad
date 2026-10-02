@@ -178,12 +178,13 @@ function slabOver(origin, axes, thickness) {
 
 /** A slab from a link's section (as `render_section` takes it, model frame). */
 function slabFromSpec(spec) {
-  const thick = spec.thickness, c = modelBounds()?.centre ?? [0, 0, 1.2];
+  // (Origins as `render_section` has them: its `bounds` are measured from them.)
+  const thick = spec.thickness;
   let origin, n, up, t;
-  if (spec.view === "x") [origin, n, up, t] = [[spec.at ?? 0, c[1], c[2]], [1, 0, 0], [0, 0, 1], thick ?? 0.3];
-  else if (spec.view === "y") [origin, n, up, t] = [[c[0], spec.at ?? 0, c[2]], [0, -1, 0], [0, 0, 1], thick ?? 0.3];
+  if (spec.view === "x") [origin, n, up, t] = [[spec.at ?? 0, 0, 0], [1, 0, 0], [0, 0, 1], thick ?? 0.3];
+  else if (spec.view === "y") [origin, n, up, t] = [[0, spec.at ?? 0, 0], [0, -1, 0], [0, 0, 1], thick ?? 0.3];
   else if (spec.view === "custom") [origin, n, up, t] = [spec.origin, spec.normal, spec.up ?? [0, 0, 1], thick ?? 0.3];
-  else { const z = spec.z ?? [0.1, 2.4]; [origin, n, up, t] = [[c[0], c[1], 0.5 * (z[0] + z[1])], [0, 0, 1], [0, 1, 0], Math.abs(z[1] - z[0])]; }
+  else { const z = spec.z ?? [0.1, 2.4]; [origin, n, up, t] = [[0, 0, 0.5 * (z[0] + z[1])], [0, 0, 1], [0, 1, 0], Math.abs(z[1] - z[0])]; }
   n = vec.unit(n);
   let v = vec.sub(up, vec.scale(n, vec.dot(up, n)));
   if (Math.hypot(...v) < 1e-6) v = Math.abs(n[0]) < 0.9 ? vec.cross(n, [1, 0, 0]) : vec.cross(n, [0, 1, 0]);
