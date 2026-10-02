@@ -125,6 +125,8 @@ export function defaultState() {
     box: null, flat: false,
     // Whether free space (where the rays pass in the box) is shown under the points.
     free: false,
+    // Whether a window dragged in the view takes every point in it, not only the surface nearest the viewer.
+    selectAll: false,
     colour: "intensity",
     // Height cuts, in the model's frame (null: none).
     zMin: null, zMax: null,
@@ -487,7 +489,7 @@ export class GLView {
         if (!d.moved) return;
         // The window, as the view projects it: what the service needs to find the points in it.
         const cam = this.camera(), nx = (x) => (2 * (x - r.left)) / cam.w - 1, ny = (y) => 1 - (2 * (y - r.top)) / cam.h;
-        this.onSelect?.({ vp: Array.from(cam.vp), rect: [nx(d.x), ny(d.y), nx(e.clientX), ny(e.clientY)], eye: cam.eye, forward: cam.forward });
+        this.onSelect?.({ vp: Array.from(cam.vp), rect: [nx(d.x), ny(d.y), nx(e.clientX), ny(e.clientY)], eye: cam.eye, forward: cam.forward }, e);
         return;
       }
       if (d.moved) this.onChange?.();

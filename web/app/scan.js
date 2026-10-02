@@ -858,9 +858,10 @@ function makeGlPane(kind) {
   });
   // A window dragged with shift: the points in it become a selection. Of the whole scan only the
   // surface nearest the viewer is taken; in a view clipped to a slab, all of the slab's points.
-  v.onSelect = async (w) => {
+  // (With alt, or with the view's "everything in the window" on: all that is behind it too.)
+  v.onSelect = async (w, e) => {
     const cuts = v.cuts();
-    const r = await service.call("selections", { action: "window", ...w, z: cuts.z, slab: cuts.slab, front_only: !cuts.slab });
+    const r = await service.call("selections", { action: "window", ...w, z: cuts.z, slab: cuts.slab, front_only: !cuts.slab && !e?.altKey && !v.state.selectAll });
     if (r.error) return setInfo(kind, r.error);
     const id = r.text.match(/selected (s\d+)/)?.[1];
     if (id) showSelection(id);
@@ -1449,8 +1450,9 @@ function renderTools(v) {
       : "") +
     `<span class="grp">${btn("line", ICON.line, "Draw a polyline: click its points (on the scan, or in the slab seen square on)", drawing?.view === v.name)}${btn("cut", ICON.cut, "Cut a slab: drag a line across the building, seen from above, to look at what it cuts through", v.tool === "line")}</span>` +
     `<span class="grp">${btn("noroof", ICON.noroof, "Cut away what is above 2.3 m (the roof)", s.zMax != null)}${btn("nofloor", ICON.nofloor, "Cut away what is below 0.1 m (the floor)", s.zMin != null)}</span>` +
-    `<details class="more" ${wasOpen ? "open" : ""}><summary title="Point size, and the height cut exactly">⋯</summary><div><label>Point size <input type="range" min="1" max="6" step="0.5" value="${s.pointSize}" data-a="size"></label><br>Show model z from <input type="number" step="0.1" placeholder="any" value="${s.zMin ?? ""}" data-z="zMin"> to <input type="number" step="0.1" placeholder="any" value="${s.zMax ?? ""}" data-z="zMax"> m</div></details>`;
-  const size = v.tools.querySelector("input[data-a=size]");
+    `<details class="more" ${wasOpen ? "open" : ""}><summary title="Point size, and the height cut exactly">⋯</summary><div><label>Point size <input type="range" min="1" max="6" step="0.5" value="${s.pointSize}" data-a="size"></label><br>Show model z from <input type="number" step="0.1" placeholder="any" value="${s.zMin ?? ""}" data-z="zMin"> to <input type="number" step="0.1" placeholder="any" value="${s.zMax ?? ""}" data-z="zMax"> m<br><label title="A shift-drag then takes every point inside the window, however far behind. Off: only the surface nearest you (alt-shift-drag takes everything once)"><input type="checkbox" data-a="selall" ${s.selectAll ? "checked" : ""}> A shift-drag selects everything in the window, not only the nearest surface</label></div></details>`;
+  v.tools.querySelector("input[data-a=selall]").onchange = (e) => v.set({ selectAll: e.target.checked }, true);
+  const size =v.tools.querySelector("input[data-a=size]");
   size.oninput = () => v.set({ pointSize: Number(size.value) }, true);
   const step = (g) => updateSlab(sb.id, { centre: vec.add(sb.centre, vec.scale(sb.axes[2], g * sb.half[2])) });
   const acts = {

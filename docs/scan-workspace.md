@@ -225,7 +225,9 @@ Details that were decided in the building:
   Shift-drag in a scan view makes one. In 3D only the surface nearest the
   viewer is taken (within 8 cm of the nearest point around it), so a
   surface seen at a grazing angle is taken thinly; in a view clipped to a
-  slab, all of the slab's points in the window. `measure`, `fit_surface` and an
+  slab, all of the slab's points in the window. Alt-shift-drag, or the
+  view's "selects everything in the window" (under ⋯), takes all that is
+  behind the nearest surface too: for scattered points with no surface. `measure`, `fit_surface` and an
   issue's place take a selection by its id.
 - **Pointing at things is one flow.** In a scan view a click picks a
   point (and the member there), shift-drag selects a region, and a
