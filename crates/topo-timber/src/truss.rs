@@ -590,8 +590,11 @@ pub struct TrussRoof {
 pub struct RoofParts {
     pub group: GroupId,
     pub trusses: Vec<TrussParts>,
-    /// The trusses (1-based numbers) seated on bearings.
-    pub seated: Vec<usize>,
+    /// For each truss seated on bearings: under its near heel and its far one, which bearing
+    /// (its place in `TrussRoof::bearings`) and the point of it the bottom chord is on.
+    pub seats: Vec<Option<[(usize, Vec3); 2]>>,
+    /// Trusses (1-based numbers) with bearings to sit on but none under a heel (which one): left at the layout's height.
+    pub unseated: Vec<(usize, &'static str)>,
     /// Trusses that could not be seated on the bearings found for them, and why.
     pub problems: Vec<String>,
 }
@@ -687,24 +690,31 @@ impl TrussRoof {
         for (i, &heel) in heels.iter().enumerate() {
             let shape = self.overrides.iter().find(|(ns, _)| ns.contains(&(i + 1))).map(|(_, s)| s).unwrap_or(&self.shape);
             // The highest bearing under each heel (within a wall's thickness of it).
-            let under = |at: f64| self.bearings.iter().filter_map(|&l| crossing(heel, l).map(|c| (l, c))).filter(|(_, c)| (c.1 - at).abs() < 0.3).max_by(|a, b| a.1 .2.total_cmp(&b.1 .2));
+            let under = |at: f64| self.bearings.iter().enumerate().filter_map(|(k, &l)| crossing(heel, l).map(|c| (k, c))).filter(|(_, c)| (c.1 - at).abs() < 0.3).max_by(|a, b| a.1 .2.total_cmp(&b.1 .2));
             let (Some(near), Some(far)) = (under(0.0), under(shape.span)) else {
+                if !self.bearings.is_empty() {
+                    parts.unseated.push((i + 1, if under(0.0).is_none() { "near" } else { "far" }));
+                }
                 frames.push(None);
                 continue;
             };
             let name = format!("T{}", i + 1);
             let pose = Pose { r: [[span.x, normal.x, 0.0], [span.y, normal.y, 0.0], [span.z, normal.z, 1.0]], t: arr(heel) };
             let truss = sys.frame(&name, WORLD, Joint::Free, pose);
-            for (which, (line, (t, s, _))) in [("near", near), ("far", far)] {
+            let mut on = vec![];
+            for (which, (k, (t, s, _))) in [("near", near), ("far", far)] {
+                let line = self.bearings[k];
                 let on_chord = sys.scalar(truss, &format!("where {name} bears, {which}"), s);
                 let on_bearing = sys.scalar(WORLD, &format!("where the {which} bearing carries {name}"), t);
-                sys.constrain(&format!("{name} on its {which} bearing"), Tier::Hard, Kind::Coincident(Point::at(truss, [0.0; 3]).plus(on_chord, [1.0, 0.0, 0.0]), Point::along(WORLD, arr(line.0), arr(line.1), on_bearing)));
+                let there = Point::along(WORLD, arr(line.0), arr(line.1), on_bearing);
+                sys.constrain(&format!("{name} on its {which} bearing"), Tier::Hard, Kind::Coincident(Point::at(truss, [0.0; 3]).plus(on_chord, [1.0, 0.0, 0.0]), there.clone()));
+                on.push((k, there));
             }
             let (laid, heel) = (Point::at(WORLD, arr(heel)), Point::at(truss, [0.0; 3]));
             sys.constrain(&format!("{name} at its place along the ridge"), Tier::Hard, Kind::offset(laid.clone(), heel.clone(), Dir(WORLD, arr(run)), 0.0));
             sys.constrain(&format!("{name} at its place along the span"), Tier::Hard, Kind::offset(laid, heel, Dir(WORLD, arr(span)), 0.0));
             sys.constrain(&format!("{name} square to the ridge"), Tier::Default, Kind::Aligned(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, arr(normal))));
-            frames.push(Some(truss));
+            frames.push(Some((truss, on)));
         }
         let report = sys.solve();
         for c in &report.conflicts {
@@ -712,14 +722,21 @@ impl TrussRoof {
             parts.problems.push(format!("{} cannot sit on its bearings: {}", c.frames.join(", "), gaps.join("; ")));
         }
         (frames.iter().zip(nominal).enumerate())
-            .map(|(i, (frame, nominal))| match frame {
-                Some(f) if !report.conflicts.iter().any(|c| c.frames.iter().any(|n| n == sys.name(*f))) => {
-                    parts.seated.push(i + 1);
+            .map(|(_, (frame, nominal))| match frame {
+                Some((f, on)) if !report.conflicts.iter().any(|c| c.frames.iter().any(|n| n == sys.name(*f))) => {
+                    let at = |k: usize| {
+                        let p = sys.point(&on[k].1);
+                        (on[k].0, v3(p[0], p[1], p[2]))
+                    };
+                    parts.seats.push(Some([at(0), at(1)]));
                     let p = sys.in_world(*f);
                     let col = |k: usize| v3(p.r[0][k], p.r[1][k], p.r[2][k]);
                     (v3(p.t[0], p.t[1], p.t[2]), col(0), col(2))
                 }
-                _ => nominal,
+                _ => {
+                    parts.seats.push(None);
+                    nominal
+                }
             })
             .collect()
     }
@@ -752,7 +769,7 @@ mod tests {
         // The ridge runs along x; plates under each heel line, a little inside it (as a wall's line is).
         let (plain, _) = roof_on(vec![]);
         let (m, parts) = roof_on(vec![(v3(-0.5, 0.05, 2.4), v3(3.0, 0.05, 2.4)), (v3(-0.5, 5.95, 2.4), v3(3.0, 5.95, 2.4))]);
-        assert_eq!((parts.seated.len(), parts.problems.len()), (5, 0), "{parts:#?}");
+        assert_eq!((parts.seats.iter().flatten().count(), parts.problems.len(), parts.unseated.len()), (5, 0, 0), "{parts:#?}");
         assert_eq!(m.nodes.iter().map(|n| n.pos).collect::<Vec<_>>(), plain.nodes.iter().map(|n| n.pos).collect::<Vec<_>>());
     }
 
@@ -764,7 +781,7 @@ mod tests {
             (v3(-0.5, 5.95, 2.362), v3(3.0, 5.95, 2.362)),
             (v3(0.4, 0.05, 2.43), v3(1.4, 0.05, 2.43)),
         ]);
-        assert_eq!((parts.seated.len(), parts.problems.len()), (5, 0), "{parts:#?}");
+        assert_eq!((parts.seats.iter().flatten().count(), parts.problems.len(), parts.unseated.len()), (5, 0, 0), "{parts:#?}");
         for (i, t) in parts.trusses.iter().enumerate() {
             let near = if i == 1 || i == 2 { 2.43 } else { 2.4 };
             let (a, b) = low_ends(&m, t);
@@ -777,11 +794,12 @@ mod tests {
     }
 
     #[test]
-    fn a_truss_with_nothing_under_a_heel_is_left_at_the_layout_height() {
+    fn a_truss_with_nothing_under_a_heel_is_left_at_the_layout_height_and_said_so() {
         // A plate under the near heels only.
         let (plain, _) = roof_on(vec![]);
         let (m, parts) = roof_on(vec![(v3(-0.5, 0.05, 2.5), v3(3.0, 0.05, 2.5))]);
-        assert!(parts.seated.is_empty() && parts.problems.is_empty(), "{parts:#?}");
+        assert!(parts.seats.iter().all(Option::is_none) && parts.problems.is_empty(), "{parts:#?}");
+        assert_eq!(parts.unseated, (1..=5).map(|n| (n, "far")).collect::<Vec<_>>());
         assert_eq!(m.nodes.iter().map(|n| n.pos).collect::<Vec<_>>(), plain.nodes.iter().map(|n| n.pos).collect::<Vec<_>>());
     }
 

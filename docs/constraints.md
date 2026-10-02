@@ -196,12 +196,23 @@ in one system for the roof (`TrussRoof::seats`):
 Nothing ties one truss to another, so each is a component of ten
 unknowns. On level plates the answer is the layout's, exactly (no step is
 taken). Over a plate that is lower, or a header's cap that is higher, the
-truss sits on it and tilts as it says. Where the bearing's axis is on its
-top face (a wall's cap plate), the chord's axis then meets it and the
-connection is made as before; for a member whose axis is elsewhere it is
-still not (see the audit). A truss that cannot sit
-on what is under it is an error naming the truss and the gaps. A truss
-with nothing under a heel is left at the layout's height, as before.
+truss sits on it and tilts as it says.
+
+Each seated truss is then connected to what it sits on, at each heel: at
+a shared node where the chord's axis meets the bearing's (a wall's cap
+plate, whose axis is on its top face), and otherwise face to face (a
+bond: a beam or header whose axis is through its middle), which the
+analysis and the load path read as they do a doubled plate.
+
+What cannot be done is said:
+
+- a truss that cannot sit on what is under it (the hard constraints
+  cannot all hold) is an error naming the truss and the gaps, and the
+  model does not build;
+- a truss with bearings to sit on but nothing under one heel is left at
+  the layout's height and is an error on the model
+  (`truss-not-seated`), unless it lies along a plate and meets it at
+  nodes (a gable truss on its end wall).
 
 ## How it solves
 
@@ -216,9 +227,11 @@ outside solver is used.
 ## Not yet
 
 - **Only truss seating uses it.** Walls and assemblies are still placed
-  by coordinates. A truss with nothing under a heel is still left where
-  the layout puts it, silently; `raised` still lifts a truss off what was
-  found for it. The roof's layers do not follow a tilted truss.
+  by coordinates. `raised` still lifts a truss off what was found for it.
+  The roof's layers do not follow a tilted truss. A perimeter's walls
+  cannot yet differ in height (its cap plates must meet at the corners),
+  so a roof tilted by its walls needs the lower bearing made as an
+  assembly.
 - **A scope handle for generators**: a generator is not yet handed its
   frame and its parent's to add hints to; the roof's seating writes the
   truss's hint itself.

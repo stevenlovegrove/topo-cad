@@ -136,6 +136,49 @@ fn standard_shapes_come_from_the_rust_generators() {
     }
 }
 
+fn roof_on_beams(far: Option<f64>) -> topo_core::Model {
+    // Beams with their axes through their middles (so their tops are half their depth above), under the heels.
+    let far = far.map_or(String::new(), |z| format!(r#".point("c", [-1, ft(20) - inch(2), {z}]).point("d", [ft(12) + 1, ft(20) - inch(2), {z}]).member("beam", ["c", "d"], o)"#));
+    let src = format!(
+        r#"
+        import {{ Assembly, Building, DFL, ft, inch, TrussRoof, TrussShape }} from "topo-cad";
+        const shape = TrussShape.fink({{ span: ft(20), pitch: 6 / 12, overhang: inch(12) }});
+        const o = {{ size: [4, 8], grade: DFL.No2 }};
+        const beams = Assembly.named("Beams").point("a", [-1, inch(2), ft(8)]).point("b", [ft(12) + 1, inch(2), ft(8)]).member("beam", ["a", "b"], o){far};
+        const roof = TrussRoof.of(shape, {{ origin: [0, 0], spanDir: [0, 1], length: ft(12), height: ft(8), grade: DFL.No2 }}).bearingOn(beams);
+        export default Building.named("t").add(beams, roof);
+    "#
+    );
+    run(&src, "t.ts").unwrap()
+}
+
+#[test]
+fn a_truss_with_nothing_under_a_heel_is_an_error_on_the_model() {
+    let m = roof_on_beams(None);
+    let unseated: Vec<_> = m.issues.iter().filter(|i| i.code == "truss-not-seated").collect();
+    assert!(!unseated.is_empty() && unseated.iter().all(|i| i.severity == topo_core::Severity::Error && i.message.contains("far heel")), "{:#?}", m.issues);
+}
+
+#[test]
+fn trusses_sit_on_the_top_of_a_beam_and_are_fastened_to_it() {
+    // The far beam 38 mm lower than the near one.
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let m = roof_on_beams(Some(ft(8.0) - 0.038));
+    assert!(m.issues.iter().all(|i| i.code != "truss-not-seated"), "{:#?}", m.issues);
+    let top = ft(8.0) + inch(7.25) / 2.0;
+    let beams: Vec<_> = m.members.iter().filter(|mm| mm.role == "beam").map(|mm| mm.id).collect();
+    for c in m.members.iter().filter(|mm| mm.role == "bottom_chord") {
+        // Its bottom is on the beams' tops, not at the height the roof was given (the beams' axes).
+        // (and tilted, as they say).
+        let (a, b) = (m.pos(c.start()), m.pos(c.end()));
+        let at = |y: f64| a.z + (b.z - a.z) * (y - a.y) / (b.y - a.y);
+        let (near, far) = (at(inch(2.0)), at(ft(20.0) - inch(2.0)));
+        assert!((near - top).abs() < 1e-6 && (far - (top - 0.038)).abs() < 1e-6, "{}: {near} {far}", m.member_path(c.id));
+        // The axes do not meet, so it is fastened face to face, to each.
+        assert_eq!(m.bonds.iter().filter(|x| x.a == c.id && beams.contains(&x.b)).count(), 2, "{}", m.member_path(c.id));
+    }
+}
+
 #[test]
 fn every_standard_truss_roof_builds_clean_from_typescript() {
     for ctor in [

@@ -541,6 +541,36 @@ impl Builder {
                 }
             }
         }
+        // Each truss and what it sits on are connected: at a node where their axes meet there,
+        // or (the bearing's axis being elsewhere than its top) face to face.
+        for (i, t) in roof.trusses.iter().enumerate() {
+            let shares = |m: &Model, plate: MemberId| t.bottom_chords.iter().any(|&bc| m.member(bc).path.iter().any(|n| m.member(plate).path.contains(n)));
+            let Some(seat) = roof.seats[i] else {
+                if let Some(&(_, heel)) = roof.unseated.iter().find(|(n, _)| *n == i + 1) {
+                    // (A truss along a wall, as at a gable, crosses no plate but lies on one: it meets it at nodes.)
+                    let mut met: Vec<NodeId> = t.bottom_chords.iter().flat_map(|&bc| self.m.member(bc).path.clone()).filter(|n| plates.iter().any(|&p| self.m.member(p).path.contains(n))).collect();
+                    met.sort();
+                    met.dedup();
+                    if met.len() < 2 {
+                        let message = format!("roof {}: truss T{} bears on nothing: none of what the roof bears on is under its {heel} heel", r.name, i + 1);
+                        self.m.issues.push(Issue::new(Severity::Error, "truss-not-seated", message).members(t.bottom_chords.clone()));
+                    }
+                }
+                continue;
+            };
+            for (end, (k, at)) in seat.into_iter().enumerate() {
+                let plate = plates[k];
+                if shares(&self.m, plate) {
+                    continue;
+                }
+                let chord = if end == 0 { t.bottom_chords[0] } else { *t.bottom_chords.last().unwrap() };
+                let node = t.bottom_chords.iter().find_map(|&bc| self.m.node_on(bc, at).ok().map(|n| (bc, n)));
+                match node {
+                    Some((bc, n)) if self.m.insert_node_on(plate, n).is_ok() => self.m.connect(n, bc, Some(plate), c),
+                    _ => self.m.bond(chord, plate, c),
+                }
+            }
+        }
         for l in &r.loads {
             let case = self.case(&l.kind)?;
             let basis = match l.basis.as_deref() {
