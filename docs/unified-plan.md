@@ -1,0 +1,115 @@
+# One system: the plan
+
+Where the model is going, what is in the way, and the order of work. API
+breaks are accepted throughout. [constraints.md](constraints.md) describes
+what exists; [topology-audit.md](topology-audit.md) why this is wanted.
+
+## The vision
+
+**A model is one problem, and its geometry is that problem's solution.**
+Nothing has a position because a script computed one. Things have
+positions because the solve found them.
+
+- **Bodies.** A rigid thing is a frame: a truss, a wall, a single member
+  of an assembly. What is inside a body is given in its own coordinates and
+  cannot move in it. A body that is used many times is a definition, used
+  through instances.
+- **Nodes.** A node is a named point. It is fixed in a body (a truss's
+  heel, a plate's end), or free on a body's line or face (somewhere along
+  a plate: one number; somewhere on a face: two, bounded by the face).
+  Generators publish their nodes by name; any scope may refer to them.
+  Members run between nodes.
+- **Relations.** Everything that places one thing relative to another is
+  a constraint between nodes, directions and numbers: coincide, rest on,
+  distance, offset, aligned, equal. Coincident nodes are one node in the
+  topology; the solver may eliminate the variable.
+- **Glue.** Where two things meet at faces, whatever joins them makes
+  the node: a bearing point, held to a plane of each (its two numbers on
+  each face bounded by that face), with a hint for where in the patch.
+- **Contact is one-sided.** "Rests on" is not "is fixed to": a thing may
+  be clear of a support that is under it. So resting is an inequality (no
+  lower than the support), and what presses the thing onto its supports
+  is its weight. Which supports carry it is found by the solve, not
+  chosen beforehand.
+- **Datums.** A coordinate is allowed in exactly two places: inside a
+  body's own frame, and as a hard constraint to the world (a survey
+  point, a slab corner). Everywhere else it is only where the solve
+  starts from.
+- **Tiers.** Hard (must hold; includes inequalities and bounds), weight
+  (things settle as low as the hard constraints let them), measured
+  (readings, to a tolerance), default (hints). Each acts within what the
+  ones before leave free.
+- **Said, not silent.** Hard constraints that cannot all hold: refused,
+  with the part in conflict. A thing its weight carries off without
+  limit: it is not held, and that is an error. A freedom nothing settles:
+  reported open.
+- **The model that results** (nodes with positions, members, which nodes
+  are on which axes and faces, connections) is read off the solution, and
+  the problem is kept with it, so that everything shown, checked and
+  analysed is the same thing.
+- **Nothing particular to buildings in the core.** A rule from a code or
+  a trade (trusses bear at panel points, studs at 16 inches) is a
+  generator's default, a hint, or a check the script asks for.
+
+## What is not yet this
+
+| Today | What it should be |
+| --- | --- |
+| Truss seating picks which bearings carry a truss before solving (a hull over their heights), then solves | Every candidate support is a one-sided contact; the truss's weight and the solve find which are touched |
+| Bearing points are worked out by geometry after the solve, and their two numbers back-computed | The contacts are in the solve; bearing nodes are what it touched |
+| `Assembly.resting` only checks that two members already touch | The upper member is a body; resting places it |
+| Assembly points, walls, perimeters, floors: placed by coordinates in the world | Bodies with published nodes, placed by datums and relations |
+| `Assembly.bearingOn`: connects where axes happen to meet | Explicit relations between named nodes |
+| `TrussRoof` has a plan `origin` and looks for what is under each truss by geometry | Its stations are nodes along the plates it bears on; each truss rests at its stations |
+| `shifted`, `studsAt`, surveyed walls: as-built numbers written over the layout rule | Readings: measured constraints on the same unknowns the layout rule hints |
+| The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier |
+| Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
+| Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
+| The scan is compared with the model after the fact | Scan evidence is measured constraints |
+
+## The order of work
+
+Each step leaves everything working and removes one row above.
+
+1. **Contact in the solver.** Inequalities (at least, above) and bounds
+   on numbers, held by an active set; weights on bodies, as a tier after
+   hard; "not held" detected. *This is the piece everything else needs.*
+2. **Truss seating by contact.** Every candidate support a one-sided
+   contact; plumb and square to the ridge hard (a truss is braced);
+   weight does the rest. The hull goes. Bearing nodes are the touched
+   contacts.
+3. **A scene: bodies, nodes, relations, then solve, then the model.** A
+   builder that generators and the script write to, in place of writing
+   positions into the model. The model becomes its output.
+4. **Assemblies on the scene.** Each member a body, or the assembly one
+   body; points become nodes; `resting`, `coincide`, `datum`. Coordinates
+   only in a body's frame. `Assembly.bearingOn` goes.
+5. **Walls and perimeters publish nodes** (plate ends, corners, points
+   along plates) and are placed by datums; roofs take their stations
+   from nodes along the plates they bear on. `TrussRoof.origin` goes.
+6. **Readings as measured constraints.** `shifted`, `studsAt`, surveyed
+   walls and the truss-shape fit move onto the measured tier; the layout
+   rules become hints.
+7. **Loads in the graph.** Loads on nodes and members; reactions from the
+   contacts; the takedown reads them.
+8. **Deformable bodies.** Deflection under load in the same solve, so a
+   sagged or tilted as-built state is a solution, and "unloaded" and
+   "as loaded" are two states of one model.
+9. **The scan as evidence in the solve.**
+
+Along the way, as each needs it: the script API for named nodes; scopes
+solved once and reused (definitions); a sparse step for large components;
+checks a script asks for (rulesets).
+
+## Open questions
+
+- **Where weight sits among the tiers.** Proposed: after hard, before
+  measured. A reading then cannot lift a truss off its bearings; it can
+  only inform what physics leaves open. The alternative (measured before
+  weight) lets a reading override gravity, which seems wrong for a rigid
+  thing but may be what "as built" needs before bodies can deform.
+- **What weight acts on.** Proposed: bodies' poses only, never a shape
+  parameter (a wall does not get shorter to lower the roof).
+- **Edges of a face.** A tilted chord on a flat plate touches along an
+  edge. Proposed: a contact at each edge of the supporting face (as
+  seating does now), the bearing node in the middle of what is touched.

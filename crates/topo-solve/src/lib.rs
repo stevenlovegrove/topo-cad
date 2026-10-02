@@ -227,6 +227,11 @@ pub enum Kind {
     Perpendicular(Dir, Dir),
     /// The two numbers are the same.
     Equal(Num, Num),
+    /// The first number is no less than the second. (Hard only: a bound.)
+    AtLeast(Num, Num),
+    /// From the first point to the second is no less than this far along the direction:
+    /// the second is on or beyond a plane through the first. (Hard only: a one-sided contact.)
+    Above(Point, Point, Dir, Num),
 }
 
 impl Kind {
@@ -238,6 +243,17 @@ impl Kind {
     }
     pub fn equal(a: impl Into<Num>, b: impl Into<Num>) -> Kind {
         Kind::Equal(a.into(), b.into())
+    }
+    pub fn at_least(a: impl Into<Num>, b: impl Into<Num>) -> Kind {
+        Kind::AtLeast(a.into(), b.into())
+    }
+    pub fn above(a: Point, b: Point, along: Dir, d: impl Into<Num>) -> Kind {
+        Kind::Above(a, b, along, d.into())
+    }
+
+    /// Whether it holds on one side only (it may be met with room to spare).
+    pub fn one_sided(&self) -> bool {
+        matches!(self, Kind::AtLeast(..) | Kind::Above(..))
     }
 
     /// The frames and the scalars it reads.
@@ -258,14 +274,14 @@ impl Kind {
                 point(b, &mut frames);
                 nums.push(d);
             }
-            Kind::Offset(a, b, along, d) => {
+            Kind::Offset(a, b, along, d) | Kind::Above(a, b, along, d) => {
                 point(a, &mut frames);
                 point(b, &mut frames);
                 frames.push(along.0 .0);
                 nums.push(d);
             }
             Kind::Aligned(a, b) | Kind::Parallel(a, b) | Kind::Perpendicular(a, b) => frames.extend([a.0 .0, b.0 .0]),
-            Kind::Equal(a, b) => nums.extend([a, b]),
+            Kind::Equal(a, b) | Kind::AtLeast(a, b) => nums.extend([a, b]),
         }
         scalars.extend(nums.iter().flat_map(|n| n.terms.iter().map(|(s, _)| s.0)));
         (frames, scalars)
@@ -324,12 +340,18 @@ pub struct Report {
     /// The unknowns, and how many of them each tier settled.
     pub unknowns: usize,
     pub by_hard: usize,
+    /// (By things settling under their weight onto what holds them up.)
+    pub by_weight: usize,
     pub by_measured: usize,
     pub by_default: usize,
     /// What is still open: each a freedom nothing settles, in words.
     pub open: Vec<String>,
-    /// For each frame, for each of its joint's freedoms: the tier that settled it (0 hard,
-    /// 1 measured, 2 default), or none if it is open (alone, or together with others).
+    /// The one-sided constraints that are met exactly (a bound reached, a contact touching).
+    pub touching: Vec<String>,
+    /// Things their weight carries off without limit: nothing holds them up.
+    pub falls: Vec<String>,
+    /// For each frame, for each of its joint's freedoms: what settled it (0 hard,
+    /// 1 measured, 2 default, 3 weight), or none if it is open (alone, or together with others).
     pub frames: Vec<Vec<Option<usize>>>,
     /// The same for each scalar.
     pub scalars: Vec<Option<usize>>,
@@ -362,7 +384,7 @@ pub struct Freedom {
     /// In the world: the direction it moves along, or the axis it turns about.
     pub dir: V3,
     pub turn: bool,
-    /// The tier that settled it (0 hard, 1 measured, 2 default), or none: open.
+    /// What settled it (0 hard, 1 measured, 2 default, 3 weight), or none: open.
     pub settled: Option<usize>,
 }
 
@@ -373,6 +395,8 @@ pub struct Shown {
     pub tier: usize,
     pub kind: &'static str,
     pub gap: f64,
+    /// For a one-sided constraint: whether it is met exactly (touching), and otherwise by how much it is clear.
+    pub room: Option<f64>,
     /// The points it relates, in the world.
     pub points: Vec<V3>,
     /// The unknowns it depends on, by name.
@@ -620,12 +644,43 @@ pub struct System {
     joints: Diagonal<Joint>,
     scalars: Vec<Scalar>,
     pub constraints: Vec<Constraint>,
+    /// Weights: a frame, the point of it the weight acts at, and how much.
+    weights: Vec<(usize, V3, f64)>,
+    /// The way weights pull (a unit vector in the world).
+    pub down: V3,
 }
 
 /// The world: the frame everything is in.
 pub const WORLD: FrameId = FrameId(0);
 
 const AXES: [V3; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// A step asked of a part (see `System::step`).
+struct Stepped {
+    dx: Vec<f64>,
+    /// One-sided constraints the step would cross: to be taken as met exactly.
+    add: Vec<usize>,
+    /// One taken as met that should not be: things would move off it.
+    release: Option<usize>,
+    /// The weights are still carrying things down.
+    descending: bool,
+    /// How many freedoms each settled: 0 hard, 1 measured, 2 default, 3 weight.
+    ranks: [usize; 4],
+    /// What is left free (a basis, as columns).
+    free: Mat,
+    /// For each unknown, what settled it.
+    settled: Vec<Option<usize>>,
+}
+
+/// What solving a part found.
+struct Solved {
+    passes: usize,
+    ranks: [usize; 4],
+    open: Vec<String>,
+    settled: Vec<Option<usize>>,
+    /// Its weights were still carrying it down when the solve gave up: nothing holds it.
+    falls: bool,
+}
 
 impl Default for System {
     fn default() -> System {
@@ -635,7 +690,7 @@ impl Default for System {
 
 impl System {
     pub fn new() -> System {
-        let mut s = System { names: vec![], poses: ParentChild::default(), joints: Diagonal(vec![]), scalars: vec![], constraints: vec![] };
+        let mut s = System { names: vec![], poses: ParentChild::default(), joints: Diagonal(vec![]), scalars: vec![], constraints: vec![], weights: vec![], down: [0.0, 0.0, -1.0] };
         s.names.push("world".into());
         s.poses.push(None, Pose::identity());
         s.joints.0.push(Joint::Fixed);
@@ -656,7 +711,21 @@ impl System {
     }
 
     pub fn constrain(&mut self, name: &str, tier: Tier, kind: Kind) {
+        assert!(tier == Tier::Hard || !kind.one_sided(), "a one-sided constraint is hard");
         self.constraints.push(Constraint { name: name.into(), tier, kind });
+    }
+
+    /// Keeps a scalar between two values.
+    pub fn bound(&mut self, s: ScalarId, lo: f64, hi: f64) {
+        let name = self.scalars[s.0].name.clone();
+        self.constrain(&format!("{name}: at least {lo}"), Tier::Hard, Kind::at_least(s, lo));
+        self.constrain(&format!("{name}: at most {hi}"), Tier::Hard, Kind::at_least(hi, s));
+    }
+
+    /// Gives a frame weight, acting at a point of it: once the hard constraints are met, things
+    /// settle as low (along `down`) as those let them. It moves frames, never a scalar.
+    pub fn weigh(&mut self, frame: FrameId, at: V3, weight: f64) {
+        self.weights.push((frame.0, at, weight));
     }
 
     pub fn name(&self, f: FrameId) -> &str {
@@ -744,7 +813,9 @@ impl System {
             Kind::Aligned(a, b) => own(sub(dir(b), dir(a))),
             Kind::Parallel(a, b) => own(sub(dir(b), scale(dir(a), sense(dir(a), dir(b))))),
             Kind::Perpendicular(a, b) => vec![dot(dir(a), dir(b))],
-            Kind::Equal(a, b) => vec![self.num(a) - self.num(b)],
+            Kind::Equal(a, b) | Kind::AtLeast(a, b) => vec![self.num(a) - self.num(b)],
+            // (For a one-sided constraint: how much room it has; negative when it is not met.)
+            Kind::Above(a, b, along, d) => vec![dot(sub(point(b), point(a)), dir(along)) - self.num(d)],
         }
     }
 
@@ -793,7 +864,7 @@ impl System {
                 self.point_terms(world, a, &neg(&n), &mut out);
                 self.num_terms(d, -1.0, &mut out);
             }
-            Kind::Offset(a, b, along, d) => {
+            Kind::Offset(a, b, along, d) | Kind::Above(a, b, along, d) => {
                 let u = [self.dir_in(world, along)];
                 self.point_terms(world, b, &u, &mut out);
                 self.point_terms(world, a, &neg(&u), &mut out);
@@ -817,7 +888,7 @@ impl System {
                 self.dir_terms(world, a, &[db], &mut out);
                 self.dir_terms(world, b, &[da], &mut out);
             }
-            Kind::Equal(a, b) => {
+            Kind::Equal(a, b) | Kind::AtLeast(a, b) => {
                 self.num_terms(a, 1.0, &mut out);
                 self.num_terms(b, -1.0, &mut out);
             }
@@ -872,7 +943,8 @@ impl System {
         }
         let rows = self.linearised(&self.everything().constraints).rows();
         let unknowns = |r: &Row| r.frames.iter().map(|(f, _)| *f).chain(r.scalars.iter().map(|(s, _)| frames + s)).collect::<Vec<usize>>();
-        for r in &rows {
+        // (A weight ties together the joints it would move: the frame's, and those it hangs from.)
+        for r in rows.iter().chain(&self.weight_rows(&(0..self.weights.len()).collect::<Vec<_>>())) {
             let u = unknowns(r);
             for pair in u.windows(2) {
                 let (a, b) = (find(&mut group, pair[0]), find(&mut group, pair[1]));
@@ -897,7 +969,7 @@ impl System {
             parts[i].1.scalars.push(s);
         }
         // Constraints between things that cannot move are a part with no unknowns.
-        for r in &rows {
+        for r in rows.iter() {
             let key = unknowns(r).first().map_or(usize::MAX, |&u| find(&mut group, u));
             let i = part(&mut parts, key);
             parts[i].1.constraints.push(r.constraint);
@@ -942,14 +1014,21 @@ impl System {
         s
     }
 
-    /// The residuals of one tier's constraints among these (measured ones in units of their tolerance), stacked.
+    /// The residuals of one tier's constraints among these (measured ones in units of their
+    /// tolerance), stacked. (Not the one-sided ones: those are met or not, by `room`.)
     fn tier_residual(&self, constraints: &[usize], tier: usize) -> Vec<f64> {
         let world = self.world();
-        (constraints.iter().map(|&i| &self.constraints[i]).filter(|c| tier_of(c.tier) == tier)).flat_map(|c| self.residual(&world, &c.kind).into_iter().map(move |r| r * weight(c.tier))).collect()
+        (constraints.iter().map(|&i| &self.constraints[i]).filter(|c| tier_of(c.tier) == tier && !c.kind.one_sided())).flat_map(|c| self.residual(&world, &c.kind).into_iter().map(move |r| r * weight(c.tier))).collect()
     }
 
-    /// One tier's rows over a part's unknowns laid out flat, as a small dense matrix, and its residual.
-    fn dense(&self, part: &Component, rows: &[Row], tier: usize) -> (Vec<f64>, Mat) {
+    /// How much room a one-sided constraint has (negative: it is not met).
+    fn room(&self, world: &[Pose], i: usize) -> f64 {
+        self.residual(world, &self.constraints[i].kind)[0]
+    }
+
+    /// The rows chosen from `rows`, over a part's unknowns laid out flat, as a small dense
+    /// matrix, with their residuals and which constraint each line is of.
+    fn dense_where(&self, part: &Component, rows: &[Row], pick: &dyn Fn(usize) -> bool) -> (Vec<f64>, Mat, Vec<usize>) {
         let (mut frame_at, mut scalar_at, mut n) = (vec![usize::MAX; self.names.len()], vec![usize::MAX; self.scalars.len()], 0);
         for &f in &part.frames {
             frame_at[f] = n;
@@ -959,8 +1038,8 @@ impl System {
             scalar_at[s] = n;
             n += 1;
         }
-        let (mut r, mut j) = (vec![], vec![]);
-        for row in rows.iter().filter(|row| tier_of(self.constraints[row.constraint].tier) == tier) {
+        let (mut r, mut j, mut of) = (vec![], vec![], vec![]);
+        for row in rows.iter().filter(|row| pick(row.constraint)) {
             let mut lines = zeros(row.residual.len(), n);
             for (f, block) in &row.frames {
                 for (line, b) in lines.iter_mut().zip(block) {
@@ -972,22 +1051,149 @@ impl System {
                     line[scalar_at[*s]] = *b;
                 }
             }
+            of.extend(std::iter::repeat(row.constraint).take(row.residual.len()));
             r.extend(&row.residual);
             j.extend(lines);
         }
+        (r, j, of)
+    }
+
+    /// One tier's rows (the two-sided ones) as a small dense matrix, and its residual.
+    fn dense(&self, part: &Component, rows: &[Row], tier: usize) -> (Vec<f64>, Mat) {
+        let (r, j, _) = self.dense_where(part, rows, &|i| tier_of(self.constraints[i].tier) == tier && !self.constraints[i].kind.one_sided());
         (r, j)
     }
 
-    /// The step the tiers ask of a part, tier by tier, each within what the ones before leave free:
-    /// the step, how many freedoms each tier settled, what is left free (a basis, as columns),
-    /// and for each unknown the tier after which it could no longer change.
-    fn tiered_step(&self, part: &Component, n: usize) -> (Vec<f64>, [usize; 3], Mat, Vec<Option<usize>>) {
+    /// The weights, as rows: how each one's height (against `down`, times its weight) changes with the unknowns.
+    fn weight_rows(&self, which: &[usize]) -> Vec<Row> {
+        let world = self.world();
+        let mut l = self.linearised(&[]);
+        for &k in which {
+            let (f, at, w) = self.weights[k];
+            let mut t = Terms::default();
+            self.point_terms(&world, &Point::at(FrameId(f), at), &[scale(self.down, -w)], &mut t);
+            l.scopes.push(0);
+            l.constraints.push(usize::MAX);
+            l.residual.push(vec![0.0]);
+            l.on_frames.0.push(t.frames);
+            l.on_scalars.0.push(vec![]);
+        }
+        l.rows()
+    }
+
+    /// The weights that move a part's unknowns.
+    fn weights_of(&self, part: &Component) -> Vec<usize> {
+        let rows = self.weight_rows(&(0..self.weights.len()).collect::<Vec<_>>());
+        (0..self.weights.len()).filter(|&k| rows[k].frames.iter().any(|(f, _)| part.frames.contains(f))).collect()
+    }
+
+    /// How high a part's weights are, each times its weight: what settling lowers.
+    fn height(&self, weights: &[usize]) -> f64 {
+        let world = self.world();
+        weights.iter().map(|&k| self.weights[k]).map(|(f, at, w)| -w * dot(self.down, world[f].apply(at))).sum()
+    }
+
+    /// The step asked of a part where the system is, given which one-sided constraints are
+    /// taken as met exactly (`active`: bounds reached, contacts touching):
+    ///
+    /// 1. the hard constraints and the active ones, as equalities;
+    /// 2. within what those leave free, the weights' descent, as far as `cap` and no further
+    ///    than the first inactive one-sided constraint it would cross (which becomes active);
+    /// 3. within what is left (and not along the weights' pull), the measured, then the hints.
+    ///
+    /// An active one is let go (`release`) if, without it, the whole step would move off it into
+    /// the clear: nothing is pressing on it. (`probe`: this is such a trial; it lets nothing go.)
+    fn step(&self, part: &Component, n: usize, active: &[usize], weights: &[usize], cap: f64, probe: bool) -> Stepped {
+        let world = self.world();
         let rows = self.linearised(&part.constraints).rows();
-        let (mut dx, mut free, mut ranks) = (vec![0.0; n], linalg::identity(n), [0; 3]);
-        let mut settled = vec![None; n];
-        for tier in 0..3 {
+        let one_sided = |i: usize| self.constraints[i].kind.one_sided();
+        let hard = |i: usize| tier_of(self.constraints[i].tier) == 0 && (!one_sided(i) || active.contains(&i));
+        let (r, j, _) = self.dense_where(part, &rows, &hard);
+        let (mut dx, mut free, rank) = lsq_null(&j, &r, n);
+        let mut out = Stepped { dx: vec![], add: vec![], release: None, descending: false, ranks: [rank, 0, 0, 0], free: vec![], settled: vec![None; n] };
+        let cols = |m: &Mat| m.first().map_or(0, Vec::len);
+        let mark = |free: &Mat, settled: &mut [Option<usize>], by: usize| {
+            for (j, s) in settled.iter_mut().enumerate() {
+                if s.is_none() && free[j].iter().all(|x| x.abs() < 1e-8) {
+                    *s = Some(by);
+                }
+            }
+        };
+        // What the two-sided hard constraints alone settle is settled by them; what the active
+        // one-sided ones add is put down to the weights that press on them (or, without weights, to them).
+        {
+            let (re, je, _) = self.dense_where(part, &rows, &|i| tier_of(self.constraints[i].tier) == 0 && !one_sided(i));
+            let (_, null, rank_two_sided) = lsq_null(&je, &re, n);
+            mark(&null, &mut out.settled, 0);
+            if weights.is_empty() {
+                mark(&free, &mut out.settled, 0);
+            } else {
+                out.ranks[0] = rank_two_sided;
+            }
+        }
+        // The inactive one-sided constraints, as lines: for seeing which a step would cross.
+        let (room, lines, which) = self.dense_where(part, &rows, &|i| one_sided(i) && !active.contains(&i));
+        let along = |line: &[f64], d: &[f64]| line.iter().zip(d).map(|(a, b)| a * b).sum::<f64>();
+        for &a in active.iter().filter(|_| !probe) {
+            let without: Vec<usize> = active.iter().copied().filter(|&x| x != a).collect();
+            let trial = self.step(part, n, &without, weights, cap, true);
+            let (ra, ja, _) = self.dense_where(part, &rows, &|i| i == a);
+            if !trial.add.contains(&a) && ra[0] + along(&ja[0], &trial.dx) > 1e-9 {
+                out.release = Some(a);
+                return out;
+            }
+        }
+        // The hard step must not cross an inactive one: those it would are taken as met, and the step asked again.
+        for (k, line) in lines.iter().enumerate() {
+            if room[k] + along(line, &dx) < -1e-9 {
+                out.add.push(which[k]);
+            }
+        }
+        if !out.add.is_empty() {
+            out.dx = vec![0.0; n];
+            out.free = free;
+            return out;
+        }
+        if !weights.is_empty() {
+            let c: Vec<f64> = self.dense_where(part, &self.weight_rows(weights), &|_| true).1.iter().fold(vec![0.0; n], |a, line| a.iter().zip(line).map(|(x, y)| x + y).collect());
+            let size = c.iter().fold(0.0f64, |a, x| a.max(x.abs())).max(1e-300);
+            let k = cols(&free);
+            let pull: Vec<f64> = (0..k).map(|q| (0..n).map(|j| free[j][q] * c[j]).sum()).collect();
+            let d: Vec<f64> = (0..n).map(|j| -(0..k).map(|q| free[j][q] * pull[q]).sum::<f64>()).collect();
+            let reach = d.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+            if reach > 1e-9 * size {
+                // Downhill, as far as the cap, or to the first contact (or bound) in the way.
+                let d: Vec<f64> = d.iter().map(|x| x * cap / reach).collect();
+                let (mut far, mut hits) = (1.0f64, vec![]);
+                for (i, line) in lines.iter().enumerate() {
+                    let (now, rate) = (room[i] + along(line, &dx), along(line, &d));
+                    if rate < -1e-14 {
+                        let a = now.max(0.0) / -rate;
+                        if a < far - 1e-12 {
+                            far = a;
+                            hits = vec![which[i]];
+                        } else if (a - far).abs() <= 1e-12 && far < 1.0 {
+                            hits.push(which[i]);
+                        }
+                    }
+                }
+                for (x, y) in dx.iter_mut().zip(&d) {
+                    *x += far * y;
+                }
+                out.add = hits;
+                out.descending = true;
+            }
+            // The lower tiers do not work against the weights: they act across the pull.
+            if k > 0 {
+                let (_, across, _) = lsq_null(&vec![pull], &[0.0], k);
+                free = if cols(&across) == 0 { zeros(n, 0) } else { mul(&free, &across) };
+            }
+            mark(&free, &mut out.settled, 3);
+            out.ranks[3] = n - cols(&free) - out.ranks[0];
+        }
+        for tier in 1..3 {
             let (r, j) = self.dense(part, &rows, tier);
-            let k = free.first().map_or(0, Vec::len);
+            let k = cols(&free);
             if r.is_empty() || k == 0 {
                 continue;
             }
@@ -998,19 +1204,38 @@ impl System {
             for (d, m) in dx.iter_mut().zip(mul_vec(&free, &z)) {
                 *d += m;
             }
-            free = if null.first().map_or(0, Vec::len) == 0 { zeros(n, 0) } else { mul(&free, &null) };
-            ranks[tier] = rank;
-            for (j, s) in settled.iter_mut().enumerate() {
-                if s.is_none() && free[j].iter().all(|x| x.abs() < 1e-8) {
-                    *s = Some(tier);
-                }
-            }
+            free = if cols(&null) == 0 { zeros(n, 0) } else { mul(&free, &null) };
+            out.ranks[tier] = rank;
+            mark(&free, &mut out.settled, tier);
         }
-        (dx, ranks, free, settled)
+        let _ = world;
+        out.dx = dx;
+        out.free = free;
+        out
     }
 
+    /// The system brought back onto its hard constraints (and the active one-sided ones), by the
+    /// least change that does it.
+    fn restored(&self, part: &Component, n: usize, active: &[usize]) -> System {
+        let mut s = self.clone();
+        for _ in 0..4 {
+            let rows = s.linearised(&part.constraints).rows();
+            let (r, j, _) = s.dense_where(part, &rows, &|i| tier_of(s.constraints[i].tier) == 0 && (!s.constraints[i].kind.one_sided() || active.contains(&i)));
+            if r.iter().map(|x| x * x).sum::<f64>().sqrt() < 1e-12 {
+                break;
+            }
+            let (z, _, _) = lsq_null(&j, &r, n);
+            s = s.stepped(&s.step_of(part, &z));
+        }
+        s
+    }
+
+    /// How far the hard constraints are from being met: the two-sided ones' residuals, and how
+    /// far past the one-sided ones things are.
     fn hard_gap(&self, constraints: &[usize]) -> f64 {
-        self.tier_residual(constraints, 0).iter().map(|x| x * x).sum::<f64>().sqrt()
+        let world = self.world();
+        let past: f64 = constraints.iter().filter(|&&i| self.constraints[i].kind.one_sided()).map(|&i| self.room(&world, i).min(0.0).powi(2)).sum();
+        (self.tier_residual(constraints, 0).iter().map(|x| x * x).sum::<f64>() + past).sqrt()
     }
 
     /// What the lower tiers cost: the measured, then (far behind) the hints.
@@ -1019,53 +1244,93 @@ impl System {
         sq(1) + 1e-8 * sq(2)
     }
 
-    /// Whether going from `self` to `next` is no worse for these constraints: judged on the hard
-    /// ones while they are not met, and on the rest only once they are.
-    fn no_worse(&self, next: &System, constraints: &[usize]) -> bool {
+    /// Whether going from `self` to `next` is no worse for a part. Without weights: judged on
+    /// the hard constraints while they are not met, and on the rest only once they are. With
+    /// weights: on how high things are (with being off the hard constraints counted against,
+    /// heavily), and on the rest where that is the same.
+    fn no_worse(&self, next: &System, constraints: &[usize], weights: &[usize]) -> bool {
         const MET: f64 = 1e-9;
         let (before, after) = (self.hard_gap(constraints), next.hard_gap(constraints));
-        if before > MET {
-            after < before
-        } else {
-            after <= MET && next.soft_cost(constraints) <= self.soft_cost(constraints) * (1.0 + 1e-9) + 1e-20
+        let softer = || next.soft_cost(constraints) <= self.soft_cost(constraints) * (1.0 + 1e-9) + 1e-20;
+        if weights.is_empty() {
+            return if before > MET { after < before } else { after <= MET && softer() };
         }
+        let heavy = 100.0 * weights.iter().map(|&k| self.weights[k].2.abs()).sum::<f64>();
+        let (a, b) = (self.height(weights) + heavy * before, next.height(weights) + heavy * after);
+        let same = 1e-12 * (1.0 + a.abs());
+        b < a - same || ((b - a).abs() <= same && softer())
     }
 
-    /// Solves one part: how many passes it took, how many freedoms each tier settled, what is
-    /// open, and the tier that settled each unknown.
-    fn solve_part(&mut self, part: &Component) -> (usize, [usize; 3], Vec<String>, Vec<Option<usize>>) {
+    /// Solves one part.
+    fn solve_part(&mut self, part: &Component) -> Solved {
         let unknowns = self.unknowns(part);
         let n = unknowns.len();
+        let world = self.world();
+        let one_sided: Vec<usize> = part.constraints.iter().copied().filter(|&i| self.constraints[i].kind.one_sided()).collect();
+        let weights = self.weights_of(part);
+        let mut out = Solved { passes: 0, ranks: [0; 4], open: vec![], settled: vec![], falls: false };
         if n == 0 {
-            return (0, [0; 3], vec![], vec![]);
+            return out;
         }
-        let mut passes = 0;
-        for _ in 0..60 {
-            passes += 1;
-            let (dx, ..) = self.tiered_step(part, n);
-            let size = dx.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if size < 1e-11 {
+        // To start with, the one-sided constraints that are not met are taken as ones to meet.
+        let mut active: Vec<usize> = one_sided.iter().copied().filter(|&i| self.room(&world, i) < -1e-10).collect();
+        let (mut cap, limit) = (0.05, if one_sided.is_empty() && weights.is_empty() { 60 } else { 400 });
+        for _ in 0..limit {
+            out.passes += 1;
+            let s = self.step(part, n, &active, &weights, cap, false);
+            out.falls = s.descending;
+            if let Some(a) = s.release {
+                active.retain(|&x| x != a);
+                continue;
+            }
+            let grew = s.add.iter().any(|a| !active.contains(a));
+            for a in s.add {
+                if !active.contains(&a) {
+                    active.push(a);
+                }
+            }
+            if s.dx.iter().map(|x| x * x).sum::<f64>().sqrt() < 1e-11 {
+                if grew {
+                    continue;
+                }
                 break;
             }
             // The whole step, or as much of it as does not make things worse.
             let mut taken = false;
             for halving in 0..12 {
                 let f = 0.5f64.powi(halving);
-                let next = self.stepped(&self.step_of(part, &dx.iter().map(|x| x * f).collect::<Vec<_>>()));
-                if self.no_worse(&next, &part.constraints) {
+                let mut next = self.stepped(&self.step_of(part, &s.dx.iter().map(|x| x * f).collect::<Vec<_>>()));
+                if s.descending {
+                    // A stride downhill is straight, and leaves the hard constraints a little (a turn
+                    // is not straight): it is judged once it has been brought back onto them.
+                    next = next.restored(part, n, &active);
+                }
+                if self.no_worse(&next, &part.constraints, &weights) {
                     *self = next;
                     taken = true;
                     break;
                 }
             }
-            if !taken {
+            if s.descending {
+                // Settling: longer strides while they work, shorter when one does not.
+                // (Never long: a stride is a straight line, and a turn is not.)
+                cap = if taken { (cap * 2.0).min(0.1) } else { cap * 0.25 };
+                if cap < 1e-10 {
+                    out.falls = false;
+                    break;
+                }
+            } else if !taken && !grew {
                 break;
             }
         }
-        let (_, ranks, free, settled) = self.tiered_step(part, n);
+        let world = self.world();
+        let touching: Vec<usize> = one_sided.iter().copied().filter(|&i| self.room(&world, i).abs() <= 1e-7).collect();
+        let last = self.step(part, n, &touching, &weights, cap, true);
+        out.ranks = last.ranks;
+        out.settled = last.settled;
         // What is still open, each as the unknowns that move together in it.
-        let tidy = tidy_basis(&free);
-        let open = (0..tidy.first().map_or(0, Vec::len))
+        let tidy = tidy_basis(&last.free);
+        out.open = (0..tidy.first().map_or(0, Vec::len))
             .map(|c| {
                 let col: Vec<f64> = (0..n).map(|j| tidy[j][c]).collect();
                 let top = col.iter().fold(0.0f64, |a, x| a.max(x.abs()));
@@ -1073,7 +1338,7 @@ impl System {
                 parts.join(", together with: ")
             })
             .collect();
-        (passes, ranks, open, settled)
+        out
     }
 
     /// Solves for the unknowns, each part on its own (the frames' poses and the scalars are
@@ -1084,31 +1349,57 @@ impl System {
     }
 
     /// The same, with the parts and how many of each one's freedoms each tier settled.
-    fn solve_parts(&mut self) -> (Report, Vec<Component>, Vec<[usize; 3]>) {
+    fn solve_parts(&mut self) -> (Report, Vec<Component>, Vec<[usize; 4]>) {
         let parts = self.components();
         let mut settled = vec![];
-        let mut report = Report { refused: false, conflicts: vec![], gaps: vec![], passes: 0, components: parts.len(), unknowns: 0, by_hard: 0, by_measured: 0, by_default: 0, open: vec![], frames: vec![vec![]; self.names.len()], scalars: vec![None; self.scalars.len()] };
+        let mut report = Report {
+            refused: false,
+            conflicts: vec![],
+            gaps: vec![],
+            passes: 0,
+            components: parts.len(),
+            unknowns: 0,
+            by_hard: 0,
+            by_weight: 0,
+            by_measured: 0,
+            by_default: 0,
+            open: vec![],
+            touching: vec![],
+            falls: vec![],
+            frames: vec![vec![]; self.names.len()],
+            scalars: vec![None; self.scalars.len()],
+        };
         for part in &parts {
-            let (passes, ranks, open, by) = self.solve_part(part);
+            let solved = self.solve_part(part);
             // (Laid out as the part's unknowns are: each frame's freedoms, then the scalars.)
-            let mut by = by.into_iter();
+            let mut by = solved.settled.into_iter();
             for &f in &part.frames {
                 report.frames[f] = by.by_ref().take(self.joints.0[f].basis().len()).collect();
             }
             for &s in &part.scalars {
                 report.scalars[s] = by.next().flatten();
             }
-            report.passes = report.passes.max(passes);
-            settled.push(ranks);
+            if solved.falls {
+                report.falls.extend(part.frames.iter().map(|&f| self.names[f].clone()));
+            }
+            report.passes = report.passes.max(solved.passes);
+            settled.push(solved.ranks);
             report.unknowns += self.unknowns(part).len();
-            report.by_hard += ranks[0];
-            report.by_measured += ranks[1];
-            report.by_default += ranks[2];
-            report.open.extend(open);
+            report.by_hard += solved.ranks[0];
+            report.by_measured += solved.ranks[1];
+            report.by_default += solved.ranks[2];
+            report.by_weight += solved.ranks[3];
+            report.open.extend(solved.open);
         }
         let world = self.world();
-        let gap = |c: &Constraint| Gap { constraint: c.name.clone(), tier: c.tier, size: self.residual(&world, &c.kind).iter().map(|x| x * x).sum::<f64>().sqrt() };
+        // (A one-sided constraint's gap is how far past it things are: nothing, when it is met.)
+        let gap = |c: &Constraint| {
+            let r = self.residual(&world, &c.kind);
+            let size = if c.kind.one_sided() { (-r[0]).max(0.0) } else { r.iter().map(|x| x * x).sum::<f64>().sqrt() };
+            Gap { constraint: c.name.clone(), tier: c.tier, size }
+        };
         report.gaps = self.constraints.iter().map(gap).collect();
+        report.touching = (self.constraints.iter().enumerate()).filter(|(i, c)| c.kind.one_sided() && self.room(&world, *i).abs() <= 1e-7).map(|(_, c)| c.name.clone()).collect();
         for part in &parts {
             // (A tenth of a micron, or of a microradian.)
             const MET: f64 = 1e-7;
@@ -1147,7 +1438,7 @@ impl System {
         }
         fn points(k: &Kind) -> Vec<&Point> {
             match k {
-                Kind::Coincident(a, b) | Kind::Distance(a, b, _) | Kind::Offset(a, b, _, _) => vec![a, b],
+                Kind::Coincident(a, b) | Kind::Distance(a, b, _) | Kind::Offset(a, b, _, _) | Kind::Above(a, b, _, _) => vec![a, b],
                 _ => vec![],
             }
         }
@@ -1166,11 +1457,14 @@ impl System {
                 Kind::Parallel(..) => "parallel",
                 Kind::Perpendicular(..) => "perpendicular",
                 Kind::Equal(..) => "equal",
+                Kind::AtLeast(..) => "at least",
+                Kind::Above(..) => "on or beyond a plane",
             };
+            let room = c.kind.one_sided().then(|| self.residual(&world, &c.kind)[0]);
             let (frames, scalars) = c.kind.touches();
             let mut touches: Vec<String> = frames.into_iter().filter(|&f| self.joints.0[f] != Joint::Fixed).map(|f| self.names[f].clone()).chain(scalars.into_iter().map(|s| self.scalars[s].name.clone())).collect();
             touches.dedup();
-            out.constraints.push(Shown { name: c.name.clone(), tier: tier_of(c.tier), kind, gap: gap.size, points: points(&c.kind).into_iter().map(|p| self.point_in(&world, p)).collect(), touches });
+            out.constraints.push(Shown { name: c.name.clone(), tier: tier_of(c.tier), kind, gap: gap.size, room, points: points(&c.kind).into_iter().map(|p| self.point_in(&world, p)).collect(), touches });
         }
         out
     }
@@ -1319,6 +1613,8 @@ impl Instance {
             Kind::Parallel(a, b) => Kind::Parallel(self.dir(a), self.dir(b)),
             Kind::Perpendicular(a, b) => Kind::Perpendicular(self.dir(a), self.dir(b)),
             Kind::Equal(a, b) => Kind::Equal(self.num(a), self.num(b)),
+            Kind::AtLeast(a, b) => Kind::AtLeast(self.num(a), self.num(b)),
+            Kind::Above(a, b, along, d) => Kind::Above(self.point(a), self.point(b), self.dir(along), self.num(d)),
         }
     }
 }
@@ -1690,6 +1986,102 @@ mod tests {
             assert!(!r.refused && r.open.is_empty(), "from {start}: {r:#?}");
             assert!((s.dir(&Dir(f, [0.0, 1.0, 0.0]))[2] - y_dot_z).abs() < 1e-9, "from {start}");
         }
+    }
+
+    #[test]
+    fn a_number_is_kept_within_its_bounds() {
+        // A hint asks for 5; the number may be 0 to 3. It goes to 3, the hint says how far it is off, and the bound is touching.
+        let mut s = System::new();
+        let x = s.scalar(WORLD, "x", 1.0);
+        s.bound(x, 0.0, 3.0);
+        s.constrain("x is 5, if it may be", Tier::Default, Kind::equal(x, 5.0));
+        let r = s.solve();
+        assert!(!r.refused && (s.value(x) - 3.0).abs() < 1e-9, "{} {r:#?}", s.value(x));
+        assert_eq!(r.touching, ["x: at most 3"]);
+        assert!((r.gaps.iter().find(|g| g.constraint.starts_with("x is 5")).unwrap().size - 2.0).abs() < 1e-9);
+        // A hint inside the bounds is simply met, with neither bound touching.
+        let mut s = System::new();
+        let x = s.scalar(WORLD, "x", 2.9);
+        s.bound(x, 0.0, 3.0);
+        s.constrain("x is 1", Tier::Default, Kind::equal(x, 1.0));
+        let r = s.solve();
+        assert!((s.value(x) - 1.0).abs() < 1e-9 && r.touching.is_empty(), "{r:#?}");
+        // Started outside its bounds, it is brought in; and it comes off the bound if a hint asks it further in.
+        let mut s = System::new();
+        let x = s.scalar(WORLD, "x", 7.0);
+        s.bound(x, 0.0, 3.0);
+        s.constrain("x is 2", Tier::Default, Kind::equal(x, 2.0));
+        let r = s.solve();
+        assert!(!r.refused && (s.value(x) - 2.0).abs() < 1e-9, "{} {r:#?}", s.value(x));
+        // A hard constraint outside the bounds cannot hold with them: refused, and both are named.
+        let mut s = System::new();
+        let x = s.scalar(WORLD, "x", 1.0);
+        s.bound(x, 0.0, 3.0);
+        s.constrain("x is 5", Tier::Hard, Kind::equal(x, 5.0));
+        let r = s.solve();
+        let names: Vec<&str> = r.conflicts.iter().flat_map(|c| c.constraints.iter().map(|g| g.constraint.as_str())).collect();
+        assert!(r.refused && names.contains(&"x is 5") && names.contains(&"x: at most 3"), "{r:#?}");
+    }
+
+    /// A bar 4 long (along its x, its middle at 2), free to move in the upright plane through the
+    /// world's x, held in place along x, over supports at these places and heights.
+    fn a_bar_over(supports: &[(f64, f64)]) -> (System, FrameId) {
+        let mut s = System::new();
+        let bar = s.frame("bar", WORLD, Joint::Planar([0.0, 1.0, 0.0]), Pose::at([0.0, 0.0, 3.0]));
+        s.constrain("the bar's end is at 0 along", Tier::Hard, Kind::offset(Point::at(WORLD, [0.0; 3]), Point::at(bar, [0.0; 3]), Dir(WORLD, [1.0, 0.0, 0.0]), 0.0));
+        for &(x, z) in supports {
+            // The point of the bar that is over the support (wherever along the bar that is) is no lower than it.
+            let over = s.scalar(bar, &format!("where the bar is over the support at {x}"), x);
+            let (top, on_bar) = (Point::at(WORLD, [x, 0.0, z]), Point::at(bar, [0.0; 3]).plus(over, [1.0, 0.0, 0.0]));
+            s.constrain(&format!("over the support at {x}"), Tier::Hard, Kind::offset(top.clone(), on_bar.clone(), Dir(WORLD, [1.0, 0.0, 0.0]), 0.0));
+            s.constrain(&format!("on the support at {x}"), Tier::Hard, Kind::above(top, on_bar, Dir(WORLD, [0.0, 0.0, 1.0]), 0.0));
+        }
+        s.weigh(bar, [2.0, 0.0, 0.0], 1.0);
+        (s, bar)
+    }
+
+    #[test]
+    fn a_thing_settles_onto_what_holds_it_up() {
+        // Three supports: the ends at 1.0 and 1.2, the middle lower, at 0.5. The bar comes down from 3,
+        // onto the two ends, tilted as they say, and is clear of the middle one.
+        let (mut s, bar) = a_bar_over(&[(0.0, 1.0), (2.0, 0.5), (4.0, 1.2)]);
+        let r = s.solve();
+        assert!(!r.refused && r.falls.is_empty() && r.open.is_empty(), "{r:#?}");
+        assert_eq!(r.touching, ["on the support at 0", "on the support at 4"]);
+        let (a, b) = (s.point(&Point::at(bar, [0.0; 3])), s.point(&Point::at(bar, [4.0, 0.0, 0.0])));
+        assert!((a[2] - 1.0).abs() < 1e-8 && ((b[2] - a[2]) / (b[0] - a[0]) - 0.05).abs() < 1e-8, "{a:?} {b:?}");
+        // Its place along x is the hard constraint's doing; its height and its tilt are its weight's.
+        // (Freedom by freedom they are all put down to its weight: its own axes are tilted with it,
+        // so none of them is the world's x alone.)
+        assert_eq!((r.by_hard, r.by_weight), (4, 2), "{r:#?}");
+        let e = s.explain(&r);
+        assert!(e.variables[0].freedoms.iter().all(|f| f.settled == Some(3)), "{:#?}", e.variables[0]);
+        let clear = e.constraints.iter().find(|c| c.name == "on the support at 2").unwrap();
+        assert!((clear.room.unwrap() - 0.6).abs() < 1e-6 && clear.gap == 0.0, "{clear:?}");
+
+        // The middle one the highest: it rocks onto the middle and one end. Its middle is over the middle support,
+        // so either end would do; it is on two of them and clear of the third.
+        let (mut s, _) = a_bar_over(&[(0.0, 1.0), (2.0, 1.5), (4.0, 1.2)]);
+        let r = s.solve();
+        assert!(!r.refused && r.falls.is_empty(), "{r:#?}");
+        assert!(r.touching.len() == 2 && r.touching.contains(&"on the support at 2".to_string()), "{r:#?}");
+
+        // Already resting where it starts: nothing moves at all.
+        let (mut s, bar) = a_bar_over(&[(0.0, 3.0), (4.0, 3.0)]);
+        let before = s.in_parent(bar);
+        let r = s.solve();
+        assert!(s.in_parent(bar) == before && r.touching.len() == 2, "{r:#?}");
+    }
+
+    #[test]
+    fn a_thing_with_nothing_to_hold_it_falls_and_that_is_said() {
+        // One support, at one end: the bar turns about it and goes on down.
+        let (mut s, _) = a_bar_over(&[(0.0, 1.0)]);
+        let r = s.solve();
+        assert_eq!(r.falls, ["bar"], "{r:#?}");
+        // None at all.
+        let (mut s, _) = a_bar_over(&[]);
+        assert_eq!(s.solve().falls, ["bar"]);
     }
 
     #[test]
