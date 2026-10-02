@@ -1312,6 +1312,11 @@ function renderChips() {
   }
 }
 
+/// The proposal's strip sits under the view's toolbar, which wraps to more rows in a narrow pane (and would cover it).
+function placeDiffbar(v) {
+  if (!v.diffbar.hidden) v.diffbar.style.top = `${v.tools.offsetTop + v.tools.offsetHeight + 8}px`;
+}
+
 function renderDiffBars() {
   for (const v of Object.values(views)) {
     const p = sel.proposal;
@@ -1321,6 +1326,7 @@ function renderDiffBars() {
     v.diffbar.innerHTML = `<span>#${p.issue} proposal ${p.n}${diff ? ` · ${n} member${n === 1 ? "" : "s"} change` : " · loading"}</span>` +
       ["before", "after", "changed", "both"].map((m) => `<button data-m="${m}" class="${m === p.mode ? "on" : ""}">${m[0].toUpperCase() + m.slice(1)}</button>`).join("") + `<button data-m="">×</button>`;
     for (const b of v.diffbar.querySelectorAll("button")) b.onclick = () => (b.dataset.m ? selectProposal({ ...p, mode: b.dataset.m }) : selectProposal(null));
+    placeDiffbar(v);
   }
 }
 
@@ -1602,7 +1608,7 @@ function drawCompass(v, cam) {
 
 function renderLayers() {
   renderTree();
-  for (const v of Object.values(views)) renderTools(v);
+  for (const v of Object.values(views)) { renderTools(v); placeDiffbar(v); }
 }
 
 function renderViews() {
@@ -2014,6 +2020,8 @@ export async function initScan(hooks) {
     if (e.key === "Enter") endDrawing(true);
     if (e.key === "Escape") endDrawing(false);
   });
+  // (Panes change size: the toolbars wrap differently.)
+  window.addEventListener("resize", () => { for (const v of Object.values(views)) placeDiffbar(v); });
   // (For looking into it from the console, and for tests that drive the page.)
   globalThis.__topoScan = { views, memberAt, toScan, toModel, members: () => members };
   service.onState(onState);

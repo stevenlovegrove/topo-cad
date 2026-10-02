@@ -202,7 +202,9 @@
   .glchip .row { margin-top: 5px; gap: 4px; }
   .glchip button, .diffbar button, .bpane button, .entry button { border: 1px solid var(--line); background: #fff; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; padding: 1px 7px; }
   .ev { font-weight: 600; } .ev.supported { color: var(--ok); } .ev.contradicted { color: var(--bad); } .ev.unseen { color: var(--muted); }
-  .diffbar { position: absolute; left: 50%; top: 42px; transform: translateX(-50%); display: flex; gap: 4px; align-items: center; background: rgba(255,255,255,.95); border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+  /* (Its top is set under the view's toolbar, however many rows that has wrapped to: see placeDiffbar.) */
+  .diffbar { position: absolute; left: 50%; top: 42px; transform: translateX(-50%); z-index: 2; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; align-items: center; max-width: calc(100% - 16px); box-sizing: border-box; background: rgba(255,255,255,.95); border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+  .diffbar span { white-space: nowrap; }
   .diffbar button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   /* An issue's pin: a dot at its place, its label up and to the right on a leader. */
   .pin { position: absolute; left: 0; top: 0; width: 0; height: 0; }
