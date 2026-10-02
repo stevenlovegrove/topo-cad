@@ -18,11 +18,15 @@ yet used by the model's generators: see "Not yet" below, and
 - **Anything outside refers to it through the frames**, never by a world
   coordinate.
 - **Scalars are separate unknowns**: how far along a member a point is, a
-  span, a spacing. A point is an expression over frames and scalars, not an
-  unknown itself.
+  span, a spacing. Each belongs to a frame (a parameter of what is made
+  there). A point is an expression, not an unknown: coordinates in a
+  frame, plus so much of each of some scalars along directions of that
+  frame. A number (a distance to hold, say) is likewise a constant plus so
+  much of some scalars. So a generator with a `span` puts its far heel at
+  `span` along x, and whatever it is fixed to sizes it.
 - **A constraint relates points and directions in whatever frames**:
   coincident, distance, offset along a direction, parallel, perpendicular,
-  a scalar's value.
+  two numbers equal.
 - **A sketch is not a special thing**: it is a frame whose contents are
   held to its plane (a planar joint, or `z = 0`).
 
@@ -107,7 +111,7 @@ A twist is a frame's small motion in its own axes, turn first. The
 unknowns are a block per frame (its joint's coordinates) and a number per
 scalar; a change of them is a `Step`, not a place.
 
-The derivative of a tier's residuals is never formed. It is the product
+The derivative of the residuals is an operator, the product
 
     J = on_frames · carry⁻¹ · joints + on_scalars
 
@@ -115,18 +119,40 @@ applied either way (`Linearised::apply`, `apply_transpose`): joint
 coordinates become twists, each frame's twist gathers its ancestors' by
 substitution through the topology, and each constraint reads the twists of
 the frames it touches. Each constraint's blocks are written out
-analytically. Two tests hold this up: the operator against central
-differences taken along the retraction, and `<y, J x> = <Jᵀ y, x>`.
+analytically. Tests hold this up: the rows against central differences
+taken along the retraction, `<y, J x> = <Jᵀ y, x>`, and the rows against
+the operator.
+
+## Scopes and components
 
 A constraint's **scope** is the nearest frame that holds every frame it
-touches (`System::scope`). That is what scoped solving will cut along.
+touches and every scalar it reads (`System::scope`). Nothing outside its
+scope bears on it: moving the scope, or anything above it, moves all it
+touches together. This is made exact, not approximate:
+
+- a residual that is a vector (coincident, parallel) is read in the
+  scope's axes, not the world's;
+- a constraint's row, written out (`Linearised::row`), has blocks only for
+  joints strictly inside its scope and for its scalars.
+
+So a sketch's constraints are rows over the sketch's own unknowns
+whatever the sketch is in, and the same sketch placed twice has the same
+rows.
+
+Unknowns that some constraint depends on together are tied; the parts
+that nothing ties are **components** (`System::components`), read off the
+rows' blocks. Each is solved on its own: forty trusses on fixed plates
+are forty problems of eight unknowns, not one of three hundred and
+twenty. A conflict is reported for its component: the hard constraints
+not met, the frames that move with them, and the scope they share. The
+rest of the system is solved all the same.
 
 ## How it solves
 
-Gauss-Newton on the joints' coordinates and the scalars, tier by tier,
-each tier's least-squares step taken within the space the tiers above
-leave free. The step itself is still small and dense: the operator is
-applied to each unknown in turn to write the matrix out, and the
+Gauss-Newton on the joints' coordinates and the scalars, component by
+component and, within one, tier by tier, each tier's least-squares step
+taken within the space the tiers above leave free. A component's rows
+are laid out as a small dense matrix for that step, and the
 rank-revealing solve (what is settled, what is left free) is by
 eigenvectors. Ideas are taken from articulated-body formulations; no
 outside solver is used.
@@ -136,15 +162,15 @@ outside solver is used.
 - **Generators do not use it.** Trusses, walls and assemblies are still
   placed by coordinates. The next step is seating a truss on its bearings
   with it, and making a missing connection an error.
-- **Scoped solving**: a scope solved on its own and then held rigid in its
-  parent. Today everything is one problem.
+- **Scoped solving**: a scope solved once, on its own, and then placed
+  (rigid, or with what it leaves open) wherever it is used. The rows are
+  already local to their scope; the solve does not yet reuse a scope.
 - **Bounds** on scalars (a point between a member's ends).
-- **Conflict feedback beyond the list**: the subgraph in conflict drawn,
-  one gap per suspect.
-- **A block-structured step.** The structure and the operator are sparse;
-  the tiered step still writes the matrix out. It should work on the
-  operator (and scope by scope), with `sparten` for the large
-  least-squares problems.
+- **Conflict feedback drawn**: the component in conflict shown in the
+  view, and one gap per suspect (each released in turn).
+- **A sparse step within a component.** One large component (walls that
+  can move under every truss) is still one dense matrix. That is where
+  `sparten` would come in.
 - **Sharing the blocks with `robot`.** `blocks.rs` repeats the traits and
   the parent-child matrix of `robot/src/block_matrix.rs`, which depends on
   nothing but the standard library. Split out as its own crate, both

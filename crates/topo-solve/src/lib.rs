@@ -5,7 +5,7 @@
 //!   frame's own coordinates (a generator's vertices are plain numbers there)
 //!   and is referred to from elsewhere only through the frames.
 //! - A **scalar** is an unknown number (how far along a member a point is, a
-//!   span): separate from the frames' poses.
+//!   span): separate from the frames' poses, and belonging to a frame.
 //! - A **point** or **direction** is an expression over those, in a frame.
 //! - A **constraint** relates points and directions, in whatever frames, and
 //!   has a **tier**: hard (it must hold: a connection, a rigid shape),
@@ -23,13 +23,15 @@
 //! ([`blocks`]): the frames' poses as the topology, joints as a block
 //! diagonal, each constraint as a row with a block for each frame and scalar
 //! it touches. The derivative ([`Linearised`]) is their product, applied
-//! either way and never formed; a step moves each frame along its joint, so
-//! a pose stays a pose.
+//! either way; a step moves each frame along its joint, so a pose stays a
+//! pose. A constraint's **scope** is the nearest frame holding all it
+//! touches: its row has blocks only for unknowns inside that. Unknowns that
+//! no constraint ties together are separate **components**, solved apart.
 
 pub mod blocks;
 pub mod linalg;
 
-use blocks::{BlockAct, BlockActTranspose, BlockCol, BlockVector, Diagonal, ParentChild, SparseRows};
+use blocks::{accumulate, BlockAct, BlockActTranspose, BlockCol, BlockVector, Diagonal, ParentChild, SparseRows};
 use linalg::{lsq_null, mul, mul_vec, tidy_basis, zeros, Mat};
 
 pub type V3 = [f64; 3];
@@ -151,13 +153,57 @@ impl Joint {
     }
 }
 
-/// A point, in a frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Point {
+/// A number: a constant, and so much of each of some scalars.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Num {
+    pub constant: f64,
+    pub terms: Vec<(ScalarId, f64)>,
+}
+
+impl Num {
+    /// And `k` of the scalar `s`.
+    pub fn plus(mut self, s: ScalarId, k: f64) -> Num {
+        self.terms.push((s, k));
+        self
+    }
+}
+
+impl From<f64> for Num {
+    fn from(constant: f64) -> Num {
+        Num { constant, terms: vec![] }
+    }
+}
+
+impl From<ScalarId> for Num {
+    fn from(s: ScalarId) -> Num {
+        Num { constant: 0.0, terms: vec![(s, 1.0)] }
+    }
+}
+
+/// A point, in a frame: at some coordinates of it, and so far along each of some directions of it as scalars say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Point {
+    pub frame: FrameId,
+    pub at: V3,
+    pub along: Vec<(ScalarId, V3)>,
+}
+
+impl Point {
     /// At these coordinates of the frame.
-    At(FrameId, V3),
-    /// On the line from `a` toward `b` of the frame, a distance `s` (an unknown, in the frame's unit) from `a`.
-    Along(FrameId, V3, V3, ScalarId),
+    pub fn at(frame: FrameId, at: V3) -> Point {
+        Point { frame, at, along: vec![] }
+    }
+
+    /// And `s` (in the frame's unit) times `dir`.
+    pub fn plus(mut self, s: ScalarId, dir: V3) -> Point {
+        self.along.push((s, dir));
+        self
+    }
+
+    /// On the line from `a` toward `b` of the frame, a distance `s` from `a`.
+    pub fn along(frame: FrameId, a: V3, b: V3, s: ScalarId) -> Point {
+        Point::at(frame, a).plus(s, unit(sub(b, a)))
+    }
 }
 
 /// A direction, in a frame.
@@ -169,15 +215,58 @@ pub enum Kind {
     /// The two points are the same place.
     Coincident(Point, Point),
     /// The two points are this far apart.
-    Distance(Point, Point, f64),
+    Distance(Point, Point, Num),
     /// From the first point to the second is this far along the direction (0: level with it, on its plane).
-    Offset(Point, Point, Dir, f64),
+    Offset(Point, Point, Dir, Num),
     /// The directions agree (or oppose).
     Parallel(Dir, Dir),
     /// The directions are at right angles.
     Perpendicular(Dir, Dir),
-    /// The scalar has this value.
-    Value(ScalarId, f64),
+    /// The two numbers are the same.
+    Equal(Num, Num),
+}
+
+impl Kind {
+    pub fn distance(a: Point, b: Point, d: impl Into<Num>) -> Kind {
+        Kind::Distance(a, b, d.into())
+    }
+    pub fn offset(a: Point, b: Point, along: Dir, d: impl Into<Num>) -> Kind {
+        Kind::Offset(a, b, along, d.into())
+    }
+    pub fn equal(a: impl Into<Num>, b: impl Into<Num>) -> Kind {
+        Kind::Equal(a.into(), b.into())
+    }
+
+    /// The frames and the scalars it reads.
+    fn touches(&self) -> (Vec<usize>, Vec<usize>) {
+        let (mut frames, mut scalars) = (vec![], vec![]);
+        let mut point = |p: &Point, frames: &mut Vec<usize>| {
+            frames.push(p.frame.0);
+            scalars.extend(p.along.iter().map(|(s, _)| s.0));
+        };
+        let mut nums: Vec<&Num> = vec![];
+        match self {
+            Kind::Coincident(a, b) => {
+                point(a, &mut frames);
+                point(b, &mut frames);
+            }
+            Kind::Distance(a, b, d) => {
+                point(a, &mut frames);
+                point(b, &mut frames);
+                nums.push(d);
+            }
+            Kind::Offset(a, b, along, d) => {
+                point(a, &mut frames);
+                point(b, &mut frames);
+                frames.push(along.0 .0);
+                nums.push(d);
+            }
+            Kind::Parallel(a, b) | Kind::Perpendicular(a, b) => frames.extend([a.0 .0, b.0 .0]),
+            Kind::Equal(a, b) => nums.extend([a, b]),
+        }
+        scalars.extend(nums.iter().flat_map(|n| n.terms.iter().map(|(s, _)| s.0)));
+        (frames, scalars)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -206,15 +295,29 @@ pub struct Gap {
     pub size: f64,
 }
 
+/// Hard constraints that cannot all hold, and the part of the system they are in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conflict {
+    /// The ones not met, the worst first, at the pose that comes nearest to meeting them all.
+    pub constraints: Vec<Gap>,
+    /// The frames that move together with them (and with nothing else).
+    pub frames: Vec<String>,
+    /// The nearest frame that all of them are within.
+    pub scope: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
-    /// The hard constraints cannot all hold: the system is as near to them as it gets, and is not to be used.
+    /// Some hard constraints cannot all hold: the system is as near to them as it gets, and is not to be used.
     pub refused: bool,
-    /// The hard constraints not met (when refused), the worst first.
-    pub conflict: Vec<Gap>,
+    /// Each part of the system whose hard constraints cannot all hold.
+    pub conflicts: Vec<Conflict>,
     /// Every constraint's gap.
     pub gaps: Vec<Gap>,
+    /// The most passes any part took.
     pub passes: usize,
+    /// The parts that were solved on their own (nothing ties one to another).
+    pub components: usize,
     /// The unknowns, and how many of them each tier settled.
     pub unknowns: usize,
     pub by_hard: usize,
@@ -303,6 +406,28 @@ impl BlockActTranspose<Vec<f64>> for Rows {
     }
 }
 
+/// The same operators take a constraint's whole block at once (each of its
+/// residuals' asks together), which is how its row of the derivative is written out.
+impl BlockVector for Rows {
+    fn block_add(&self, rhs: &Rows) -> Rows {
+        Rows(self.0.iter().zip(&rhs.0).map(|(a, b)| a.block_add(b)).collect())
+    }
+}
+
+impl BlockActTranspose<Rows> for Carry {
+    type Output = Rows;
+    fn act_transpose(&self, own: &Rows) -> Rows {
+        Rows(own.0.iter().map(|r| self.act_transpose(r)).collect())
+    }
+}
+
+impl BlockActTranspose<Rows> for Joint {
+    type Output = Option<Mat>;
+    fn act_transpose(&self, asked: &Rows) -> Option<Mat> {
+        asked.0.iter().map(|r| self.act_transpose(r)).collect()
+    }
+}
+
 /// A constraint's block for one scalar: for each of its residuals, how it changes with the scalar.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Col(pub Vec<f64>);
@@ -331,7 +456,7 @@ pub struct Step {
 
 /// Some constraints' residuals where the system is, and how they change with
 /// the unknowns: an operator, the product of a few sparse block operators,
-/// applied either way without ever being formed.
+/// applied either way without being formed.
 ///
 /// `J = on_frames · carry⁻¹ · joints + on_scalars`: a step's joint
 /// coordinates become twists (block diagonal), each frame's twist gathers
@@ -344,8 +469,22 @@ pub struct Linearised {
     on_frames: SparseRows<Rows>,
     on_scalars: SparseRows<Col>,
     scalars: usize,
+    scopes: Vec<usize>,
+    /// Which constraint each row is.
+    pub constraints: Vec<usize>,
     /// Each constraint's residual.
     pub residual: Vec<Vec<f64>>,
+}
+
+/// One constraint's row of the derivative, written out: a block for each unknown it depends on, and no others.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub constraint: usize,
+    pub residual: Vec<f64>,
+    /// For a frame: each residual against each of its joint's coordinates.
+    pub frames: Vec<(usize, Mat)>,
+    /// For a scalar: each residual against it.
+    pub scalars: Vec<(usize, Vec<f64>)>,
 }
 
 impl Linearised {
@@ -368,6 +507,42 @@ impl Linearised {
         let asked: BlockCol<Twist> = self.carry.solve_transpose(&self.on_frames.apply_transpose(y, self.joints.0.len()));
         Step { frames: self.joints.apply_transpose(&asked), scalars: self.on_scalars.apply_transpose(y, self.scalars) }
     }
+
+    /// Row `i`, written out: the same transposed operators, taking the constraint's blocks whole.
+    ///
+    /// Only frames inside the constraint's scope have a block. What it asks of the frames it
+    /// touches comes to nothing once gathered at its scope (moving everything it touches
+    /// together changes nothing), so the frames from there up are left out: exactly, not nearly.
+    pub fn row(&self, i: usize) -> Row {
+        let mut asked: BlockCol<Rows> = vec![None; self.joints.0.len()];
+        for (f, rows) in &self.on_frames.0[i] {
+            accumulate(&mut asked[*f], rows);
+        }
+        let blocks: BlockCol<Mat> = self.joints.apply_transpose(&self.carry.solve_transpose(&asked));
+        let frames = blocks.into_iter().enumerate().filter(|(f, _)| *f > self.scopes[i]).filter_map(|(f, b)| b.map(|b| (f, b))).collect();
+        let mut scalars: Vec<(usize, Vec<f64>)> = vec![];
+        for (s, Col(c)) in &self.on_scalars.0[i] {
+            match scalars.iter_mut().find(|(t, _)| t == s) {
+                Some((_, sum)) => *sum = sum.block_add(c),
+                None => scalars.push((*s, c.clone())),
+            }
+        }
+        Row { constraint: self.constraints[i], residual: self.residual[i].clone(), frames, scalars }
+    }
+
+    pub fn rows(&self) -> Vec<Row> {
+        (0..self.constraints.len()).map(|i| self.row(i)).collect()
+    }
+}
+
+/// A part of the system that nothing ties to the rest: unknowns, and the constraints that
+/// depend on them and on no others. It is solved on its own.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Component {
+    /// Frames whose joints are open.
+    pub frames: Vec<usize>,
+    pub scalars: Vec<usize>,
+    pub constraints: Vec<usize>,
 }
 
 /// What a constraint asks of the frames and scalars it touches.
@@ -378,12 +553,20 @@ struct Terms {
 }
 
 #[derive(Debug, Clone)]
+struct Scalar {
+    name: String,
+    /// The frame it belongs to: it is within that frame's scope.
+    owner: usize,
+    value: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct System {
     names: Vec<String>,
     /// The topology: each frame's pose in its parent.
     poses: ParentChild<Pose>,
     joints: Diagonal<Joint>,
-    scalars: Vec<(String, f64)>,
+    scalars: Vec<Scalar>,
     pub constraints: Vec<Constraint>,
 }
 
@@ -414,9 +597,9 @@ impl System {
         FrameId(self.poses.push(Some(parent.0), pose))
     }
 
-    /// An unknown number, starting at `value`.
-    pub fn scalar(&mut self, name: &str, value: f64) -> ScalarId {
-        self.scalars.push((name.into(), value));
+    /// An unknown number belonging to `owner` (a parameter of what is made there, or of a point in it), starting at `value`.
+    pub fn scalar(&mut self, owner: FrameId, name: &str, value: f64) -> ScalarId {
+        self.scalars.push(Scalar { name: name.into(), owner: owner.0, value });
         ScalarId(self.scalars.len() - 1)
     }
 
@@ -424,8 +607,16 @@ impl System {
         self.constraints.push(Constraint { name: name.into(), tier, kind });
     }
 
+    pub fn name(&self, f: FrameId) -> &str {
+        &self.names[f.0]
+    }
+
     pub fn value(&self, s: ScalarId) -> f64 {
-        self.scalars[s.0].1
+        self.scalars[s.0].value
+    }
+
+    pub fn num(&self, n: &Num) -> f64 {
+        n.constant + n.terms.iter().map(|(s, k)| k * self.value(*s)).sum::<f64>()
     }
 
     /// A frame's pose in its parent.
@@ -453,68 +644,65 @@ impl System {
         self.dir_in(&self.world(), d)
     }
 
-    /// The frame a point is in, and its coordinates there.
-    fn local(&self, p: &Point) -> (usize, V3) {
-        match *p {
-            Point::At(f, x) => (f.0, x),
-            Point::Along(f, a, b, s) => (f.0, add(a, scale(unit(sub(b, a)), self.value(s)))),
-        }
+    /// A point's coordinates in its frame.
+    fn local(&self, p: &Point) -> V3 {
+        p.along.iter().fold(p.at, |x, (s, u)| add(x, scale(*u, self.value(*s))))
     }
 
     fn point_in(&self, world: &[Pose], p: &Point) -> V3 {
-        let (f, x) = self.local(p);
-        world[f].apply(x)
+        world[p.frame.0].apply(self.local(p))
     }
 
     fn dir_in(&self, world: &[Pose], d: &Dir) -> V3 {
         unit(world[d.0 .0].rotate(d.1))
     }
 
-    /// The smallest scope a constraint is within: the nearest frame that all the frames it touches are in.
-    pub fn scope(&self, k: &Kind) -> FrameId {
-        let frames: Vec<usize> = match k {
-            Kind::Coincident(a, b) | Kind::Distance(a, b, _) => vec![self.local(a).0, self.local(b).0],
-            Kind::Offset(a, b, d, _) => vec![self.local(a).0, self.local(b).0, d.0 .0],
-            Kind::Parallel(a, b) | Kind::Perpendicular(a, b) => vec![a.0 .0, b.0 .0],
-            Kind::Value(..) => vec![],
-        };
+    /// The nearest frame that two frames are both in (or are).
+    fn meet(&self, mut a: usize, mut b: usize) -> usize {
+        // Parents are numbered first: step the later of the two up until they meet.
         let parents = self.poses.parents();
-        // Parents are numbered first: step the later of two up until they meet.
-        let meet = |mut a: usize, mut b: usize| {
-            while a != b {
-                if a > b {
-                    a = parents[a].unwrap_or(0);
-                } else {
-                    b = parents[b].unwrap_or(0);
-                }
+        while a != b {
+            if a > b {
+                a = parents[a].unwrap_or(0);
+            } else {
+                b = parents[b].unwrap_or(0);
             }
-            a
-        };
-        FrameId(frames.into_iter().reduce(meet).unwrap_or(0))
+        }
+        a
+    }
+
+    /// The smallest scope a constraint is within: the nearest frame that holds every frame
+    /// it touches and every scalar it reads. Nothing outside that frame bears on it.
+    pub fn scope(&self, k: &Kind) -> FrameId {
+        let (frames, scalars) = k.touches();
+        FrameId(frames.into_iter().chain(scalars.into_iter().map(|s| self.scalars[s].owner)).reduce(|a, b| self.meet(a, b)).unwrap_or(0))
     }
 
     /// How far a constraint is from holding, as numbers that are all zero when it does.
+    ///
+    /// A residual that is a vector is in the axes of the constraint's scope, not the world's:
+    /// so nothing outside the scope changes any of its numbers.
     fn residual(&self, world: &[Pose], k: &Kind) -> Vec<f64> {
         let (point, dir) = (|p: &Point| self.point_in(world, p), |d: &Dir| self.dir_in(world, d));
+        let own = |v: V3| world[self.scope(k).0].rotate_back(v).to_vec();
         match k {
-            Kind::Coincident(a, b) => sub(point(b), point(a)).to_vec(),
-            Kind::Distance(a, b, d) => vec![norm(sub(point(b), point(a))) - d],
-            Kind::Offset(a, b, along, d) => vec![dot(sub(point(b), point(a)), dir(along)) - d],
-            Kind::Parallel(a, b) => cross(dir(a), dir(b)).to_vec(),
+            Kind::Coincident(a, b) => own(sub(point(b), point(a))),
+            Kind::Distance(a, b, d) => vec![norm(sub(point(b), point(a))) - self.num(d)],
+            Kind::Offset(a, b, along, d) => vec![dot(sub(point(b), point(a)), dir(along)) - self.num(d)],
+            Kind::Parallel(a, b) => own(cross(dir(a), dir(b))),
             Kind::Perpendicular(a, b) => vec![dot(dir(a), dir(b))],
-            Kind::Value(s, v) => vec![self.value(*s) - v],
+            Kind::Equal(a, b) => vec![self.num(a) - self.num(b)],
         }
     }
 
     /// What moving a point asks: `grads` is, for each residual, how it changes with the point's place in the world.
     fn point_terms(&self, world: &[Pose], p: &Point, grads: &[V3], out: &mut Terms) {
-        let (f, x) = self.local(p);
+        let (f, x) = (p.frame.0, self.local(p));
         // The same, in the frame's own axes: a turn w and a shift v move the point by v + w × x.
         let own: Vec<V3> = grads.iter().map(|g| world[f].rotate_back(*g)).collect();
         out.frames.push((f, Rows(own.iter().map(|g| twist(cross(x, *g), *g)).collect())));
-        if let Point::Along(_, a, b, s) = *p {
-            let u = unit(sub(b, a));
-            out.scalars.push((s.0, Col(own.iter().map(|g| dot(*g, u)).collect())));
+        for (s, u) in &p.along {
+            out.scalars.push((s.0, Col(own.iter().map(|g| dot(*g, *u)).collect())));
         }
     }
 
@@ -526,43 +714,60 @@ impl System {
         out.frames.push((f, Rows(grads.iter().map(|g| twist(cross(own, world[f].rotate_back(*g)), [0.0; 3])).collect())));
     }
 
+    /// What changing a number asks, of a residual that changes `sign` with it.
+    fn num_terms(&self, n: &Num, sign: f64, out: &mut Terms) {
+        out.scalars.extend(n.terms.iter().map(|(s, k)| (s.0, Col(vec![sign * k]))));
+    }
+
     /// A constraint's blocks: how its residuals change with the twists of the frames it touches, and with its scalars.
     fn terms(&self, world: &[Pose], k: &Kind) -> Terms {
         let mut out = Terms::default();
         let neg = |g: &[V3]| g.iter().map(|g| scale(*g, -1.0)).collect::<Vec<V3>>();
+        // For a residual that is a vector: the scope's axes in the world, and what turning the
+        // scope asks (the vector, r, is read in its axes: a turn w changes it by r × w).
+        let scope = self.scope(k).0;
+        let axes = AXES.map(|e| world[scope].rotate(e));
+        let read_in_scope = |r: V3, out: &mut Terms| out.frames.push((scope, Rows(AXES.iter().map(|e| twist(cross(*e, r), [0.0; 3])).collect())));
         match k {
             Kind::Coincident(a, b) => {
-                self.point_terms(world, b, &AXES, &mut out);
-                self.point_terms(world, a, &neg(&AXES), &mut out);
+                self.point_terms(world, b, &axes, &mut out);
+                self.point_terms(world, a, &neg(&axes), &mut out);
+                read_in_scope(world[scope].rotate_back(sub(self.point_in(world, b), self.point_in(world, a))), &mut out);
             }
-            Kind::Distance(a, b, _) => {
+            Kind::Distance(a, b, d) => {
                 let n = [unit(sub(self.point_in(world, b), self.point_in(world, a)))];
                 self.point_terms(world, b, &n, &mut out);
                 self.point_terms(world, a, &neg(&n), &mut out);
+                self.num_terms(d, -1.0, &mut out);
             }
-            Kind::Offset(a, b, along, _) => {
+            Kind::Offset(a, b, along, d) => {
                 let u = [self.dir_in(world, along)];
                 self.point_terms(world, b, &u, &mut out);
                 self.point_terms(world, a, &neg(&u), &mut out);
                 self.dir_terms(world, along, &[sub(self.point_in(world, b), self.point_in(world, a))], &mut out);
+                self.num_terms(d, -1.0, &mut out);
             }
             Kind::Parallel(a, b) => {
                 let (da, db) = (self.dir_in(world, a), self.dir_in(world, b));
-                self.dir_terms(world, a, &AXES.map(|e| cross(db, e)), &mut out);
-                self.dir_terms(world, b, &AXES.map(|e| cross(e, da)), &mut out);
+                self.dir_terms(world, a, &axes.map(|e| cross(db, e)), &mut out);
+                self.dir_terms(world, b, &axes.map(|e| cross(e, da)), &mut out);
+                read_in_scope(world[scope].rotate_back(cross(da, db)), &mut out);
             }
             Kind::Perpendicular(a, b) => {
                 let (da, db) = (self.dir_in(world, a), self.dir_in(world, b));
                 self.dir_terms(world, a, &[db], &mut out);
                 self.dir_terms(world, b, &[da], &mut out);
             }
-            Kind::Value(s, _) => out.scalars.push((s.0, Col(vec![1.0]))),
+            Kind::Equal(a, b) => {
+                self.num_terms(a, 1.0, &mut out);
+                self.num_terms(b, -1.0, &mut out);
+            }
         }
         out
     }
 
-    /// One tier's constraints, linearised where the system is (measured ones in units of their tolerance).
-    pub fn linearised(&self, tier: usize) -> Linearised {
+    /// These constraints, linearised where the system is (measured ones in units of their tolerance).
+    pub fn linearised(&self, constraints: &[usize]) -> Linearised {
         let world = self.world();
         let mut l = Linearised {
             carry: self.poses.map(|p| Carry(*p)),
@@ -570,11 +775,14 @@ impl System {
             on_frames: SparseRows(vec![]),
             on_scalars: SparseRows(vec![]),
             scalars: self.scalars.len(),
+            scopes: vec![],
+            constraints: constraints.to_vec(),
             residual: vec![],
         };
-        for c in self.constraints.iter().filter(|c| tier_of(c.tier) == tier) {
+        for c in constraints.iter().map(|&i| &self.constraints[i]) {
             let w = weight(c.tier);
             let t = self.terms(&world, &c.kind);
+            l.scopes.push(self.scope(&c.kind).0);
             l.residual.push(self.residual(&world, &c.kind).iter().map(|r| r * w).collect());
             l.on_frames.0.push(t.frames.into_iter().map(|(f, Rows(r))| (f, Rows(r.iter().map(|r| r.map(|x| x * w)).collect()))).collect());
             l.on_scalars.0.push(t.scalars.into_iter().map(|(s, Col(c))| (s, Col(c.iter().map(|x| x * w).collect()))).collect());
@@ -582,23 +790,82 @@ impl System {
         l
     }
 
-    /// What to call each unknown, in the order they are laid out flat: each frame's freedoms, then the scalars.
-    fn unknowns(&self) -> Vec<String> {
-        let frames = self.joints.0.iter().zip(&self.names).flat_map(|(j, name)| j.freedoms().into_iter().map(move |(_, _, what)| format!("{name} can {what}")));
-        frames.chain(self.scalars.iter().map(|(name, _)| format!("{name} can change"))).collect()
+    /// Everything, as one part.
+    pub fn everything(&self) -> Component {
+        Component {
+            frames: (0..self.names.len()).filter(|&f| self.joints.0[f] != Joint::Fixed).collect(),
+            scalars: (0..self.scalars.len()).collect(),
+            constraints: (0..self.constraints.len()).collect(),
+        }
     }
 
-    /// A step, from its numbers laid out flat.
-    fn step_of(&self, flat: &[f64]) -> Step {
+    /// The parts nothing ties together: unknowns that some constraint depends on together are in one part.
+    /// (Read off the derivative's blocks: a constraint ties the unknowns its row has blocks for.)
+    pub fn components(&self) -> Vec<Component> {
+        let frames = self.names.len();
+        let mut group: Vec<usize> = (0..frames + self.scalars.len()).collect();
+        fn find(group: &mut [usize], mut a: usize) -> usize {
+            while group[a] != a {
+                group[a] = group[group[a]];
+                a = group[a];
+            }
+            a
+        }
+        let rows = self.linearised(&self.everything().constraints).rows();
+        let unknowns = |r: &Row| r.frames.iter().map(|(f, _)| *f).chain(r.scalars.iter().map(|(s, _)| frames + s)).collect::<Vec<usize>>();
+        for r in &rows {
+            let u = unknowns(r);
+            for pair in u.windows(2) {
+                let (a, b) = (find(&mut group, pair[0]), find(&mut group, pair[1]));
+                group[a.max(b)] = a.min(b);
+            }
+        }
+        let all = self.everything();
+        let mut parts: Vec<(usize, Component)> = vec![];
+        let part = |parts: &mut Vec<(usize, Component)>, key: usize| match parts.iter().position(|(k, _)| *k == key) {
+            Some(i) => i,
+            None => {
+                parts.push((key, Component::default()));
+                parts.len() - 1
+            }
+        };
+        for &f in &all.frames {
+            let i = part(&mut parts, find(&mut group, f));
+            parts[i].1.frames.push(f);
+        }
+        for &s in &all.scalars {
+            let i = part(&mut parts, find(&mut group, frames + s));
+            parts[i].1.scalars.push(s);
+        }
+        // Constraints between things that cannot move are a part with no unknowns.
+        for r in &rows {
+            let key = unknowns(r).first().map_or(usize::MAX, |&u| find(&mut group, u));
+            let i = part(&mut parts, key);
+            parts[i].1.constraints.push(r.constraint);
+        }
+        parts.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// What to call each of a part's unknowns, in the order they are laid out flat: each frame's freedoms, then the scalars.
+    fn unknowns(&self, part: &Component) -> Vec<String> {
+        let frames = part.frames.iter().flat_map(|&f| self.joints.0[f].freedoms().into_iter().map(move |(_, _, what)| format!("{} can {what}", self.names[f])));
+        frames.chain(part.scalars.iter().map(|&s| format!("{} can change", self.scalars[s].name))).collect()
+    }
+
+    /// A step of a part's unknowns, from its numbers laid out flat.
+    fn step_of(&self, part: &Component, flat: &[f64]) -> Step {
+        let mut step = Step { frames: vec![None; self.names.len()], scalars: vec![None; self.scalars.len()] };
         let mut at = 0;
-        let frames = (self.joints.0.iter())
-            .map(|j| {
-                let k = j.basis().len();
-                at += k;
-                (k > 0).then(|| flat[at - k..at].to_vec())
-            })
-            .collect();
-        Step { frames, scalars: flat[at..].iter().map(|x| Some(*x)).collect() }
+        for &f in &part.frames {
+            let k = self.joints.0[f].basis().len();
+            step.frames[f] = Some(flat[at..at + k].to_vec());
+            at += k;
+        }
+        for &s in &part.scalars {
+            step.scalars[s] = Some(flat[at]);
+            at += 1;
+        }
+        step
     }
 
     /// The system with its unknowns changed by a step: each frame moved along its joint (staying a pose), each scalar added to.
@@ -611,47 +878,54 @@ impl System {
             }
         }
         for (s, d) in s.scalars.iter_mut().zip(&step.scalars) {
-            s.1 += d.unwrap_or(0.0);
+            s.value += d.unwrap_or(0.0);
         }
         s
     }
 
-    /// The residuals of one tier's constraints (measured ones in units of their tolerance), stacked.
-    fn tier_residual(&self, tier: usize) -> Vec<f64> {
+    /// The residuals of one tier's constraints among these (measured ones in units of their tolerance), stacked.
+    fn tier_residual(&self, constraints: &[usize], tier: usize) -> Vec<f64> {
         let world = self.world();
-        (self.constraints.iter().filter(|c| tier_of(c.tier) == tier)).flat_map(|c| self.residual(&world, &c.kind).into_iter().map(move |r| r * weight(c.tier))).collect()
+        (constraints.iter().map(|&i| &self.constraints[i]).filter(|c| tier_of(c.tier) == tier)).flat_map(|c| self.residual(&world, &c.kind).into_iter().map(move |r| r * weight(c.tier))).collect()
     }
 
-    /// One tier's residual and, written out, how it changes with each unknown: the operator applied to
-    /// each unknown in turn. (Written out only for the small dense solve below.)
-    fn dense(&self, tier: usize, n: usize) -> (Vec<f64>, Mat) {
-        let l = self.linearised(tier);
-        let r: Vec<f64> = l.residual.iter().flatten().copied().collect();
-        let mut j = zeros(r.len(), n);
-        let mut one = vec![0.0; n];
-        for k in 0..n {
-            one[k] = 1.0;
-            let col = l.apply(&self.step_of(&one));
-            one[k] = 0.0;
-            let mut i = 0;
-            for (block, r) in col.iter().zip(&l.residual) {
-                if let Some(block) = block {
-                    for (d, x) in block.iter().enumerate() {
-                        j[i + d][k] = *x;
-                    }
+    /// One tier's rows over a part's unknowns laid out flat, as a small dense matrix, and its residual.
+    fn dense(&self, part: &Component, rows: &[Row], tier: usize) -> (Vec<f64>, Mat) {
+        let (mut frame_at, mut scalar_at, mut n) = (vec![usize::MAX; self.names.len()], vec![usize::MAX; self.scalars.len()], 0);
+        for &f in &part.frames {
+            frame_at[f] = n;
+            n += self.joints.0[f].basis().len();
+        }
+        for &s in &part.scalars {
+            scalar_at[s] = n;
+            n += 1;
+        }
+        let (mut r, mut j) = (vec![], vec![]);
+        for row in rows.iter().filter(|row| tier_of(self.constraints[row.constraint].tier) == tier) {
+            let mut lines = zeros(row.residual.len(), n);
+            for (f, block) in &row.frames {
+                for (line, b) in lines.iter_mut().zip(block) {
+                    line[frame_at[*f]..frame_at[*f] + b.len()].copy_from_slice(b);
                 }
-                i += r.len();
             }
+            for (s, block) in &row.scalars {
+                for (line, b) in lines.iter_mut().zip(block) {
+                    line[scalar_at[*s]] = *b;
+                }
+            }
+            r.extend(&row.residual);
+            j.extend(lines);
         }
         (r, j)
     }
 
-    /// The step the tiers ask for, tier by tier, each within what the ones before leave free:
+    /// The step the tiers ask of a part, tier by tier, each within what the ones before leave free:
     /// the step, how many freedoms each tier settled, and what is left free (a basis, as columns).
-    fn tiered_step(&self, n: usize) -> (Vec<f64>, [usize; 3], Mat) {
+    fn tiered_step(&self, part: &Component, n: usize) -> (Vec<f64>, [usize; 3], Mat) {
+        let rows = self.linearised(&part.constraints).rows();
         let (mut dx, mut free, mut ranks) = (vec![0.0; n], linalg::identity(n), [0; 3]);
         for tier in 0..3 {
-            let (r, j) = self.dense(tier, n);
+            let (r, j) = self.dense(part, &rows, tier);
             let k = free.first().map_or(0, Vec::len);
             if r.is_empty() || k == 0 {
                 continue;
@@ -669,38 +943,39 @@ impl System {
         (dx, ranks, free)
     }
 
-    fn hard_gap(&self) -> f64 {
-        self.tier_residual(0).iter().map(|x| x * x).sum::<f64>().sqrt()
+    fn hard_gap(&self, constraints: &[usize]) -> f64 {
+        self.tier_residual(constraints, 0).iter().map(|x| x * x).sum::<f64>().sqrt()
     }
 
     /// What the lower tiers cost: the measured, then (far behind) the hints.
-    fn soft_cost(&self) -> f64 {
-        let sq = |t: usize| self.tier_residual(t).iter().map(|x| x * x).sum::<f64>();
+    fn soft_cost(&self, constraints: &[usize]) -> f64 {
+        let sq = |t: usize| self.tier_residual(constraints, t).iter().map(|x| x * x).sum::<f64>();
         sq(1) + 1e-8 * sq(2)
     }
 
-    /// Whether going from `self` to `next` is no worse: judged on the hard constraints
-    /// while they are not met, and on the rest only once they are.
-    fn no_worse(&self, next: &System) -> bool {
+    /// Whether going from `self` to `next` is no worse for these constraints: judged on the hard
+    /// ones while they are not met, and on the rest only once they are.
+    fn no_worse(&self, next: &System, constraints: &[usize]) -> bool {
         const MET: f64 = 1e-9;
-        let (before, after) = (self.hard_gap(), next.hard_gap());
+        let (before, after) = (self.hard_gap(constraints), next.hard_gap(constraints));
         if before > MET {
             after < before
         } else {
-            after <= MET && next.soft_cost() <= self.soft_cost() * (1.0 + 1e-9) + 1e-20
+            after <= MET && next.soft_cost(constraints) <= self.soft_cost(constraints) * (1.0 + 1e-9) + 1e-20
         }
     }
 
-    /// Solves for the unknowns (the frames' poses and the scalars are left
-    /// at the answer, or, when refused, as near the hard constraints as they
-    /// get), and says what settled what.
-    pub fn solve(&mut self) -> Report {
-        let unknowns = self.unknowns();
+    /// Solves one part: how many passes it took, how many freedoms each tier settled, and what is open.
+    fn solve_part(&mut self, part: &Component) -> (usize, [usize; 3], Vec<String>) {
+        let unknowns = self.unknowns(part);
         let n = unknowns.len();
+        if n == 0 {
+            return (0, [0; 3], vec![]);
+        }
         let mut passes = 0;
         for _ in 0..60 {
             passes += 1;
-            let (dx, _, _) = self.tiered_step(n);
+            let (dx, _, _) = self.tiered_step(part, n);
             let size = dx.iter().map(|x| x * x).sum::<f64>().sqrt();
             if size < 1e-11 {
                 break;
@@ -709,8 +984,8 @@ impl System {
             let mut taken = false;
             for halving in 0..12 {
                 let f = 0.5f64.powi(halving);
-                let next = self.stepped(&self.step_of(&dx.iter().map(|x| x * f).collect::<Vec<_>>()));
-                if self.no_worse(&next) {
+                let next = self.stepped(&self.step_of(part, &dx.iter().map(|x| x * f).collect::<Vec<_>>()));
+                if self.no_worse(&next, &part.constraints) {
                     *self = next;
                     taken = true;
                     break;
@@ -720,13 +995,7 @@ impl System {
                 break;
             }
         }
-        let (_, ranks, free) = self.tiered_step(n);
-        let world = self.world();
-        let gaps: Vec<Gap> = self.constraints.iter().map(|c| Gap { constraint: c.name.clone(), tier: c.tier, size: self.residual(&world, &c.kind).iter().map(|x| x * x).sum::<f64>().sqrt() }).collect();
-        // (A tenth of a micron, or of a microradian.)
-        let refused = self.hard_gap() > 1e-7;
-        let mut conflict: Vec<Gap> = if refused { gaps.iter().filter(|g| g.tier == Tier::Hard && g.size > 1e-7).cloned().collect() } else { vec![] };
-        conflict.sort_by(|a, b| b.size.total_cmp(&a.size));
+        let (_, ranks, free) = self.tiered_step(part, n);
         // What is still open, each as the unknowns that move together in it.
         let tidy = tidy_basis(&free);
         let open = (0..tidy.first().map_or(0, Vec::len))
@@ -737,7 +1006,41 @@ impl System {
                 parts.join(", together with: ")
             })
             .collect();
-        Report { refused, conflict, gaps, passes, unknowns: n, by_hard: ranks[0], by_measured: ranks[1], by_default: ranks[2], open }
+        (passes, ranks, open)
+    }
+
+    /// Solves for the unknowns, each part on its own (the frames' poses and the scalars are
+    /// left at the answer, or, where refused, as near the hard constraints as they get),
+    /// and says what settled what.
+    pub fn solve(&mut self) -> Report {
+        let parts = self.components();
+        let mut report = Report { refused: false, conflicts: vec![], gaps: vec![], passes: 0, components: parts.len(), unknowns: 0, by_hard: 0, by_measured: 0, by_default: 0, open: vec![] };
+        for part in &parts {
+            let (passes, ranks, open) = self.solve_part(part);
+            report.passes = report.passes.max(passes);
+            report.unknowns += self.unknowns(part).len();
+            report.by_hard += ranks[0];
+            report.by_measured += ranks[1];
+            report.by_default += ranks[2];
+            report.open.extend(open);
+        }
+        let world = self.world();
+        let gap = |c: &Constraint| Gap { constraint: c.name.clone(), tier: c.tier, size: self.residual(&world, &c.kind).iter().map(|x| x * x).sum::<f64>().sqrt() };
+        report.gaps = self.constraints.iter().map(gap).collect();
+        for part in &parts {
+            // (A tenth of a micron, or of a microradian.)
+            const MET: f64 = 1e-7;
+            if self.hard_gap(&part.constraints) <= MET {
+                continue;
+            }
+            let unmet: Vec<usize> = part.constraints.iter().copied().filter(|&i| self.constraints[i].tier == Tier::Hard && report.gaps[i].size > MET).collect();
+            let scope = unmet.iter().map(|&i| self.scope(&self.constraints[i].kind).0).reduce(|a, b| self.meet(a, b)).unwrap_or(0);
+            let mut constraints: Vec<Gap> = unmet.iter().map(|&i| report.gaps[i].clone()).collect();
+            constraints.sort_by(|a, b| b.size.total_cmp(&a.size));
+            report.conflicts.push(Conflict { constraints, frames: part.frames.iter().map(|&f| self.names[f].clone()).collect(), scope: self.names[scope].clone() });
+        }
+        report.refused = !report.conflicts.is_empty();
+        report
     }
 }
 
@@ -761,18 +1064,26 @@ fn weight(t: Tier) -> f64 {
 mod tests {
     use super::*;
 
+    const WEST: V3 = [0.0, 3.0, 2.477];
+    const EAST: V3 = [6.0, 3.0, 2.439];
+
     /// A truss made in its own frame (x along its span, y up, in the plane z = 0), with absolute
-    /// values and nothing free inside it; two plates' bearing points in the world, at different heights.
+    /// values and nothing free inside it. The model that uses it adds two points on its bottom
+    /// chord, each on a plate's bearing point in the world (the plates at different heights).
+    fn a_truss(s: &mut System, name: &str, y: f64) -> (FrameId, ScalarId, ScalarId) {
+        // Its nominal place: somewhere near, and not square to anything.
+        let truss = s.frame(name, WORLD, Joint::Free, Pose::at([0.3, y - 2.8, 2.0]).moved([0.0; 3], [0.2, -0.1, 0.15]));
+        let (heel, far) = ([0.0, 0.0, 0.0], [7.0, 0.0, 0.0]);
+        let s1 = s.scalar(truss, &format!("where the {name} bears on the west plate"), 0.7);
+        let s2 = s.scalar(truss, &format!("where the {name} bears on the east plate"), 6.3);
+        s.constrain(&format!("{name} on the west plate"), Tier::Hard, Kind::Coincident(Point::along(truss, heel, far, s1), Point::at(WORLD, [WEST[0], y, WEST[2]])));
+        s.constrain(&format!("{name} on the east plate"), Tier::Hard, Kind::Coincident(Point::along(truss, heel, far, s2), Point::at(WORLD, [EAST[0], y, EAST[2]])));
+        (truss, s1, s2)
+    }
+
     fn truss_on_two_plates() -> (System, FrameId, ScalarId, ScalarId) {
         let mut s = System::new();
-        // Its nominal place: somewhere near, and not square to anything.
-        let truss = s.frame("truss", WORLD, Joint::Free, Pose::at([0.3, 0.2, 2.0]).moved([0.0; 3], [0.2, -0.1, 0.15]));
-        let (heel, far) = ([0.0, 0.0, 0.0], [7.0, 0.0, 0.0]);
-        let s1 = s.scalar("where the truss bears on the west plate", 0.7);
-        let s2 = s.scalar("where the truss bears on the east plate", 6.3);
-        // The model that uses the truss: two points on its bottom chord, each on a plate.
-        s.constrain("truss on the west plate", Tier::Hard, Kind::Coincident(Point::Along(truss, heel, far, s1), Point::At(WORLD, [0.0, 3.0, 2.477])));
-        s.constrain("truss on the east plate", Tier::Hard, Kind::Coincident(Point::Along(truss, heel, far, s2), Point::At(WORLD, [6.0, 3.0, 2.439])));
+        let (truss, s1, s2) = a_truss(&mut s, "truss", 3.0);
         (s, truss, s1, s2)
     }
 
@@ -782,14 +1093,19 @@ mod tests {
         let wall = s.frame("wall", WORLD, Joint::Hinge([0.0, 0.0, 1.0]), Pose::at([1.0, -2.0, 0.5]).moved([0.0; 3], [0.3, 0.2, -0.4]));
         let sketch = s.frame("sketch", wall, Joint::Slider([1.0, 2.0, 0.0]), Pose::at([0.2, 0.4, 1.0]).moved([0.0; 3], [-0.5, 0.1, 0.2]));
         let corner = s.frame("corner", sketch, Joint::Planar([0.0, 0.0, 1.0]), Pose::at([3.5, 2.5, 0.0]).moved([0.0; 3], [0.0, 0.0, 0.7]));
+        let peg = s.frame("peg", sketch, Joint::Free, Pose::at([0.5, -1.0, 0.3]).moved([0.0; 3], [0.4, -0.2, 0.1]));
         let rider = s.frame("rider", truss, Joint::Free, Pose::at([1.0, 0.3, 0.2]).moved([0.0; 3], [0.1, 0.5, -0.3]));
-        s.constrain("a", Tier::Hard, Kind::Distance(Point::At(corner, [0.1, 0.2, 0.3]), Point::Along(truss, [0.0; 3], [7.0, 1.0, 0.0], s1), 2.0));
-        s.constrain("b", Tier::Hard, Kind::Offset(Point::At(rider, [0.4, 0.0, 0.1]), Point::At(corner, [0.0, 1.0, 0.0]), Dir(sketch, [0.0, 1.0, 2.0]), 0.3));
+        let width = s.scalar(sketch, "width", 1.5);
+        s.constrain("a", Tier::Hard, Kind::distance(Point::at(corner, [0.1, 0.2, 0.3]), Point::at(truss, [0.0; 3]).plus(s1, [0.9, 0.1, 0.0]).plus(s2, [0.0, 0.2, 0.1]), 2.0));
+        s.constrain("b", Tier::Hard, Kind::offset(Point::at(rider, [0.4, 0.0, 0.1]), Point::at(corner, [0.0, 1.0, 0.0]), Dir(sketch, [0.0, 1.0, 2.0]), Num::from(0.3).plus(width, 0.5)));
         s.constrain("c", Tier::Measured { sigma: 0.01 }, Kind::Parallel(Dir(rider, [0.0, 1.0, 0.0]), Dir(corner, [1.0, 0.0, 1.0])));
-        s.constrain("d", Tier::Measured { sigma: 0.2 }, Kind::Coincident(Point::At(wall, [0.5, 0.5, 0.5]), Point::Along(rider, [0.0; 3], [0.0, 0.0, 1.0], s2)));
+        s.constrain("d", Tier::Measured { sigma: 0.2 }, Kind::Coincident(Point::at(wall, [0.5, 0.5, 0.5]), Point::along(rider, [0.0; 3], [0.0, 0.0, 1.0], s2)));
         s.constrain("e", Tier::Default, Kind::Perpendicular(Dir(wall, [1.0, 0.0, 0.0]), Dir(rider, [0.0, 0.0, 1.0])));
-        s.constrain("f", Tier::Default, Kind::Value(s2, 1.0));
-        s.constrain("g", Tier::Default, Kind::Distance(Point::At(corner, [0.0; 3]), Point::At(corner, [1.0, 0.0, 0.0]), 1.5));
+        s.constrain("f", Tier::Default, Kind::equal(s2, 1.0));
+        // Within the sketch: nothing above it bears on these.
+        s.constrain("g", Tier::Default, Kind::distance(Point::at(corner, [0.0; 3]), Point::at(peg, [1.0, 0.0, 0.0]), width));
+        s.constrain("h", Tier::Hard, Kind::offset(Point::at(sketch, [0.0; 3]), Point::at(peg, [0.0, 0.2, 0.0]), Dir(corner, [1.0, 0.0, 0.0]), 0.4));
+        s.constrain("i", Tier::Measured { sigma: 0.05 }, Kind::Parallel(Dir(peg, [0.0, 0.0, 1.0]), Dir(sketch, [0.0, 1.0, 1.0])));
         s
     }
 
@@ -805,59 +1121,80 @@ mod tests {
     }
 
     #[test]
-    fn the_derivative_is_the_change_of_the_residual_along_each_unknown() {
+    fn the_rows_are_the_change_of_the_residual_along_each_unknown() {
         let s = a_bit_of_everything();
-        let n = s.unknowns().len();
-        assert_eq!(n, 6 + 1 + 1 + 3 + 6 + 2);
+        let all = s.everything();
+        let n = s.unknowns(&all).len();
+        assert_eq!(n, 6 + 1 + 1 + 3 + 6 + 6 + 3);
+        let rows = s.linearised(&all.constraints).rows();
         const H: f64 = 1e-6;
         for tier in 0..3 {
-            let (r, j) = s.dense(tier, n);
-            assert_eq!(r, s.tier_residual(tier));
+            let (r, j) = s.dense(&all, &rows, tier);
+            assert_eq!(r, s.tier_residual(&all.constraints, tier));
             for k in 0..n {
                 let at = |h: f64| {
                     let mut dx = vec![0.0; n];
                     dx[k] = h;
-                    s.stepped(&s.step_of(&dx)).tier_residual(tier)
+                    s.stepped(&s.step_of(&all, &dx)).tier_residual(&all.constraints, tier)
                 };
                 let (hi, lo) = (at(H), at(-H));
                 for i in 0..r.len() {
                     let by_differences = (hi[i] - lo[i]) / (2.0 * H);
-                    assert!((j[i][k] - by_differences).abs() < 1e-6 * (1.0 + by_differences.abs()), "tier {tier}, residual {i}, unknown {k} ({}): {} against {by_differences}", s.unknowns()[k], j[i][k]);
+                    assert!((j[i][k] - by_differences).abs() < 1e-6 * (1.0 + by_differences.abs()), "tier {tier}, residual {i}, unknown {k} ({}): {} against {by_differences}", s.unknowns(&all)[k], j[i][k]);
                 }
             }
         }
     }
 
     #[test]
-    fn the_transpose_is_the_transpose() {
-        // <y, J x> = <Jᵀ y, x>, for any x and y.
+    fn a_row_has_blocks_only_for_what_is_inside_its_scope() {
         let s = a_bit_of_everything();
-        let n = s.unknowns().len();
-        for tier in 0..3 {
-            let l = s.linearised(tier);
-            let x = s.step_of(&noise(n, 7 + tier as u64));
-            let mut ys = noise(l.residual.iter().map(Vec::len).sum(), 99).into_iter();
-            let y: BlockCol<Vec<f64>> = l.residual.iter().map(|r| Some(r.iter().map(|_| ys.next().unwrap()).collect())).collect();
-            let rows = |a: &BlockCol<Vec<f64>>, b: &BlockCol<Vec<f64>>| -> f64 { a.iter().zip(b).map(|(a, b)| a.iter().flatten().zip(b.iter().flatten()).map(|(a, b)| a * b).sum::<f64>()).sum() };
-            let (jx, jty) = (l.apply(&x), l.apply_transpose(&y));
-            let unknowns = rows(&jty.frames, &x.frames) + jty.scalars.iter().zip(&x.scalars).map(|(a, b)| a.unwrap_or(0.0) * b.unwrap_or(0.0)).sum::<f64>();
-            assert!((rows(&y, &jx) - unknowns).abs() < 1e-9 * (1.0 + unknowns.abs()), "tier {tier}: {} against {unknowns}", rows(&y, &jx));
+        let rows = s.linearised(&s.everything().constraints).rows();
+        let blocks = |name: &str| -> Vec<&str> {
+            let i = s.constraints.iter().position(|c| c.name == name).unwrap();
+            rows[i].frames.iter().map(|(f, _)| s.names[*f].as_str()).collect()
+        };
+        // Between the sketch and things in it: the wall's hinge and the sketch's own slide move them all together.
+        assert_eq!(blocks("g"), ["corner", "peg"]);
+        assert_eq!(blocks("h"), ["corner", "peg"]);
+        assert_eq!(blocks("i"), ["peg"]);
+        // Across to the truss: everything from each end up to the world.
+        assert_eq!(blocks("a"), ["truss", "wall", "sketch", "corner"]);
+    }
+
+    #[test]
+    fn the_transpose_is_the_transpose_and_the_rows_are_the_operator() {
+        let s = a_bit_of_everything();
+        let all = s.everything();
+        let n = s.unknowns(&all).len();
+        let l = s.linearised(&all.constraints);
+        let x = s.step_of(&all, &noise(n, 7));
+        let mut ys = noise(l.residual.iter().map(Vec::len).sum(), 99).into_iter();
+        let y: BlockCol<Vec<f64>> = l.residual.iter().map(|r| Some(r.iter().map(|_| ys.next().unwrap()).collect())).collect();
+        let dots = |a: &BlockCol<Vec<f64>>, b: &BlockCol<Vec<f64>>| -> f64 { a.iter().zip(b).map(|(a, b)| a.iter().flatten().zip(b.iter().flatten()).map(|(a, b)| a * b).sum::<f64>()).sum() };
+        // <y, J x> = <Jᵀ y, x>, for any x and y.
+        let (jx, jty) = (l.apply(&x), l.apply_transpose(&y));
+        let unknowns = dots(&jty.frames, &x.frames) + jty.scalars.iter().zip(&x.scalars).map(|(a, b)| a.unwrap_or(0.0) * b.unwrap_or(0.0)).sum::<f64>();
+        assert!((dots(&y, &jx) - unknowns).abs() < 1e-9 * (1.0 + unknowns.abs()), "{} against {unknowns}", dots(&y, &jx));
+        // Each row, written out, times x, is what the operator gives.
+        for (row, by_operator) in l.rows().iter().zip(&jx) {
+            for (i, by_operator) in by_operator.as_ref().unwrap().iter().enumerate() {
+                let frames: f64 = row.frames.iter().map(|(f, b)| b[i].iter().zip(x.frames[*f].as_ref().unwrap()).map(|(a, b)| a * b).sum::<f64>()).sum();
+                let scalars: f64 = row.scalars.iter().map(|(s, b)| b[i] * x.scalars[*s].unwrap()).sum();
+                assert!((frames + scalars - by_operator).abs() < 1e-9, "{}: {} against {by_operator}", s.constraints[row.constraint].name, frames + scalars);
+            }
         }
     }
 
     #[test]
     fn a_constraint_is_within_the_nearest_frame_that_holds_all_it_touches() {
         let s = a_bit_of_everything();
-        let scope = |name: &str| s.names[s.scope(&s.constraints.iter().find(|c| c.name == name).unwrap().kind).0].clone();
+        let scope = |name: &str| s.name(s.scope(&s.constraints.iter().find(|c| c.name == name).unwrap().kind)).to_string();
         assert_eq!(scope("a"), "world"); // corner (in sketch, in wall) and truss
         assert_eq!(scope("e"), "world");
-        assert_eq!(scope("g"), "corner");
-        assert_eq!(scope("f"), "world"); // a scalar alone touches no frame
-        let mut t = System::new();
-        let a = t.frame("a", WORLD, Joint::Free, Pose::identity());
-        let (b, c) = (t.frame("b", a, Joint::Free, Pose::identity()), t.frame("c", a, Joint::Free, Pose::identity()));
-        assert_eq!(t.scope(&Kind::Parallel(Dir(b, [1.0, 0.0, 0.0]), Dir(c, [1.0, 0.0, 0.0]))), a);
-        assert_eq!(t.scope(&Kind::Parallel(Dir(b, [1.0, 0.0, 0.0]), Dir(a, [1.0, 0.0, 0.0]))), a);
+        assert_eq!(scope("g"), "sketch"); // corner, peg, and the sketch's width
+        assert_eq!(scope("i"), "sketch");
+        assert_eq!(scope("f"), "truss"); // a scalar of the truss, alone
     }
 
     #[test]
@@ -865,7 +1202,7 @@ mod tests {
         let (mut s, ..) = truss_on_two_plates();
         let r = s.solve();
         assert!(!r.refused, "{r:#?}");
-        assert_eq!((r.unknowns, r.by_hard, r.open.len()), (8, 6, 2), "{r:#?}");
+        assert_eq!((r.unknowns, r.by_hard, r.open.len(), r.components), (8, 6, 2, 1), "{r:#?}");
     }
 
     #[test]
@@ -873,7 +1210,7 @@ mod tests {
         let (mut s, truss, s1, _) = truss_on_two_plates();
         // The generator's hint: its y is up. A datum: its heel 0.1 m outside the west bearing.
         s.constrain("the truss stands up", Tier::Default, Kind::Parallel(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
-        s.constrain("heel overhang", Tier::Hard, Kind::Distance(Point::At(truss, [0.0; 3]), Point::At(WORLD, [0.0, 3.0, 2.477]), 0.1));
+        s.constrain("heel overhang", Tier::Hard, Kind::distance(Point::at(truss, [0.0; 3]), Point::at(WORLD, WEST), 0.1));
         let r = s.solve();
         assert!(!r.refused && r.open.is_empty(), "{r:#?}");
         assert_eq!((r.by_hard, r.by_default), (7, 1), "{r:#?}");
@@ -893,9 +1230,9 @@ mod tests {
     fn a_measurement_gives_way_to_a_hard_constraint_and_says_by_how_much() {
         let (mut s, truss, s1, _) = truss_on_two_plates();
         s.constrain("the truss stands up", Tier::Default, Kind::Parallel(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
-        s.constrain("heel overhang", Tier::Hard, Kind::Value(s1, 0.1));
+        s.constrain("heel overhang", Tier::Hard, Kind::equal(s1, 0.1));
         // A reading that the far end of the chord is at z = 2.40; the bearings put it lower.
-        s.constrain("far end, from the scan", Tier::Measured { sigma: 0.005 }, Kind::Offset(Point::At(WORLD, [0.0; 3]), Point::At(truss, [7.0, 0.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0]), 2.40));
+        s.constrain("far end, from the scan", Tier::Measured { sigma: 0.005 }, Kind::offset(Point::at(WORLD, [0.0; 3]), Point::at(truss, [7.0, 0.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0]), 2.40));
         let r = s.solve();
         assert!(!r.refused, "{r:#?}");
         let g = r.gaps.iter().find(|g| g.constraint == "far end, from the scan").unwrap();
@@ -906,17 +1243,60 @@ mod tests {
     fn hard_constraints_that_cannot_all_hold_are_refused_and_named() {
         let (mut s, _, s1, s2) = truss_on_two_plates();
         // The bearings are 6 m apart; these put them 7 m apart along the chord.
-        s.constrain("bears at its heel", Tier::Hard, Kind::Value(s1, 0.0));
-        s.constrain("bears at its far end", Tier::Hard, Kind::Value(s2, 7.0));
+        s.constrain("bears at its heel", Tier::Hard, Kind::equal(s1, 0.0));
+        s.constrain("bears at its far end", Tier::Hard, Kind::equal(s2, 7.0));
         let r = s.solve();
-        assert!(r.refused, "{r:#?}");
+        assert!(r.refused && r.conflicts.len() == 1, "{r:#?}");
         // All four are in it (any one released would let the rest hold), and between them they are a metre out.
-        let names: Vec<&str> = r.conflict.iter().map(|g| g.constraint.as_str()).collect();
+        let conflict = &r.conflicts[0];
+        let names: Vec<&str> = conflict.constraints.iter().map(|g| g.constraint.as_str()).collect();
         for n in ["truss on the west plate", "truss on the east plate", "bears at its heel", "bears at its far end"] {
             assert!(names.contains(&n), "{names:?}");
         }
-        let total: f64 = r.conflict.iter().map(|g| g.size).sum();
-        assert!((total - 1.0).abs() < 0.01, "a metre to share: {:#?}", r.conflict);
+        let total: f64 = conflict.constraints.iter().map(|g| g.size).sum();
+        assert!((total - 1.0).abs() < 0.01, "a metre to share: {conflict:#?}");
+        assert_eq!((conflict.frames.as_slice(), conflict.scope.as_str()), (&["truss".to_string()][..], "world"));
+    }
+
+    #[test]
+    fn what_nothing_ties_together_is_solved_apart_and_a_conflict_stays_where_it_is() {
+        // Three trusses on the same plates: nothing ties one to another.
+        let mut s = System::new();
+        let trusses: Vec<_> = (0..3).map(|i| a_truss(&mut s, &format!("truss {i}"), 3.0 + 0.6 * i as f64)).collect();
+        // A wall that nothing asks anything of, and a constraint between things that cannot move.
+        s.frame("wall", WORLD, Joint::Slider([1.0, 0.0, 0.0]), Pose::identity());
+        s.constrain("the plates are 6 m apart on plan", Tier::Hard, Kind::offset(Point::at(WORLD, WEST), Point::at(WORLD, EAST), Dir(WORLD, [1.0, 0.0, 0.0]), 6.0));
+        let parts = s.components();
+        assert_eq!(parts.len(), 5, "{parts:#?}");
+        assert_eq!(parts.iter().map(|p| (p.frames.len(), p.scalars.len(), p.constraints.len())).collect::<Vec<_>>(), [(1, 2, 2), (1, 2, 2), (1, 2, 2), (1, 0, 0), (0, 0, 1)]);
+        // The middle one is asked the impossible.
+        s.constrain("bears at its heel", Tier::Hard, Kind::equal(trusses[1].1, 0.0));
+        s.constrain("bears at its far end", Tier::Hard, Kind::equal(trusses[1].2, 7.0));
+        let r = s.solve();
+        assert!(r.refused && r.conflicts.len() == 1 && r.components == 5, "{r:#?}");
+        assert_eq!(r.conflicts[0].frames, ["truss 1"]);
+        assert!(r.conflicts[0].constraints.iter().all(|g| g.constraint.contains("truss 1") || g.constraint.starts_with("bears")), "{r:#?}");
+        // The others are on their bearings all the same.
+        for i in [0, 2] {
+            let on = s.point(&Point::along(trusses[i].0, [0.0; 3], [7.0, 0.0, 0.0], trusses[i].1));
+            assert!(norm(sub(on, [WEST[0], 3.0 + 0.6 * i as f64, WEST[2]])) < 1e-8, "{on:?}");
+        }
+        // And what is open is said for each: their slide and roll (the one in conflict, its roll), and the wall.
+        assert_eq!(r.open.len(), 2 + 1 + 2 + 1, "{r:#?}");
+    }
+
+    #[test]
+    fn a_generator_with_a_parameter_is_sized_by_what_it_is_fixed_to() {
+        // A truss whose span is a parameter: its far heel is at (span, 0, 0). Both heels on bearings.
+        let mut s = System::new();
+        let truss = s.frame("truss", WORLD, Joint::Free, Pose::at([0.2, 2.5, 2.0]));
+        let span = s.scalar(truss, "span", 5.0);
+        s.constrain("near heel on the west plate", Tier::Hard, Kind::Coincident(Point::at(truss, [0.0; 3]), Point::at(WORLD, WEST)));
+        s.constrain("far heel on the east plate", Tier::Hard, Kind::Coincident(Point::at(truss, [0.0; 3]).plus(span, [1.0, 0.0, 0.0]), Point::at(WORLD, EAST)));
+        s.constrain("the truss stands up", Tier::Default, Kind::Parallel(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
+        let r = s.solve();
+        assert!(!r.refused && r.open.is_empty(), "{r:#?}");
+        assert!((s.value(span) - (36.0f64 + 0.038 * 0.038).sqrt()).abs() < 1e-9, "{}", s.value(span));
     }
 
     #[test]
@@ -926,8 +1306,8 @@ mod tests {
         let mut s = System::new();
         let sketch = s.frame("sketch", WORLD, Joint::Fixed, Pose::at([1.0, 2.0, 3.0]).moved([0.0; 3], [0.4, 0.0, 0.0]));
         let p = s.frame("corner", sketch, Joint::Planar([0.0, 0.0, 1.0]), Pose::at([3.5, 2.5, 0.0]));
-        s.constrain("5 from the origin", Tier::Hard, Kind::Distance(Point::At(sketch, [0.0; 3]), Point::At(p, [0.0; 3]), 5.0));
-        s.constrain("3 up the sketch", Tier::Hard, Kind::Offset(Point::At(sketch, [0.0; 3]), Point::At(p, [0.0; 3]), Dir(sketch, [0.0, 1.0, 0.0]), 3.0));
+        s.constrain("5 from the origin", Tier::Hard, Kind::distance(Point::at(sketch, [0.0; 3]), Point::at(p, [0.0; 3]), 5.0));
+        s.constrain("3 up the sketch", Tier::Hard, Kind::offset(Point::at(sketch, [0.0; 3]), Point::at(p, [0.0; 3]), Dir(sketch, [0.0, 1.0, 0.0]), 3.0));
         let r = s.solve();
         // Its turning in the plane is nothing anyone asked about: it is reported as open.
         assert!(!r.refused && r.by_hard == 2 && r.open.len() == 1 && r.open[0].contains("turn"), "{r:#?}");

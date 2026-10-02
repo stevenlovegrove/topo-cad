@@ -40,7 +40,8 @@ pub trait BlockVector: Clone {
 /// A column of blocks, one to a frame.
 pub type BlockCol<X> = Vec<Option<X>>;
 
-fn add_assign<X: BlockVector>(block: &mut Option<X>, rhs: &X) {
+/// Adds to a block that may be absent.
+pub fn accumulate<X: BlockVector>(block: &mut Option<X>, rhs: &X) {
     *block = Some(match block {
         Some(b) => b.block_add(rhs),
         None => rhs.clone(),
@@ -122,7 +123,7 @@ impl<B> ParentChild<B> {
         for i in 0..self.blocks.len() {
             if let Some(p) = self.parents[i] {
                 if let Some(carried) = x[p].as_ref().map(|xp| self.blocks[i].act(xp)) {
-                    add_assign(&mut x[i], &carried);
+                    accumulate(&mut x[i], &carried);
                 }
             }
         }
@@ -139,7 +140,7 @@ impl<B> ParentChild<B> {
         for i in (0..self.blocks.len()).rev() {
             if let Some(p) = self.parents[i] {
                 if let Some(gathered) = x[i].as_ref().map(|xi| self.blocks[i].act_transpose(xi)) {
-                    add_assign(&mut x[p], &gathered);
+                    accumulate(&mut x[p], &gathered);
                 }
             }
         }
@@ -184,7 +185,7 @@ impl<B> SparseRows<B> {
                 let mut out = None;
                 for (f, b) in row {
                     if let Some(x) = &x[*f] {
-                        add_assign(&mut out, &b.act(x));
+                        accumulate(&mut out, &b.act(x));
                     }
                 }
                 out
@@ -201,7 +202,7 @@ impl<B> SparseRows<B> {
         for (row, y) in self.0.iter().zip(y) {
             if let Some(y) = y {
                 for (f, b) in row {
-                    add_assign(&mut out[*f], &b.act_transpose(y));
+                    accumulate(&mut out[*f], &b.act_transpose(y));
                 }
             }
         }
