@@ -530,9 +530,20 @@ function rebuildMarks() {
   for (const v of Object.values(views)) v.setLabels(pins);
 }
 
-/** The shown member a ray (scan frame) meets first, by its faces: for where the scan has no points to pick. Its path, or null. */
-function memberAt(ray) {
+/**
+ * The member under the cursor: the shown member a ray (scan frame) meets
+ * first, by its faces as they are drawn in the view (so not where the
+ * view's cuts hide them). { path, t (how far along the ray) }, or null.
+ */
+function memberAt(ray, v) {
   const o = toModel(ray.origin), d = unrot(ray.dir);
+  const s = v?.state, box = s?.box;
+  const cut = (p) => {
+    if (s && ((s.zMin != null && p[2] < s.zMin) || (s.zMax != null && p[2] > s.zMax))) return true;
+    if (!box) return false;
+    const q = vec.sub(toScan(p), box.c);
+    return [box.u, box.v, box.n].some((a, k) => Math.abs(vec.dot(a, q)) > box.h[k]);
+  };
   let best = null, bt = Infinity;
   for (const m of members || []) {
     if (!memberVisible(m.path)) continue;
@@ -546,11 +557,11 @@ function memberAt(ray) {
       // Inside the face: on the same side of every edge.
       let pos = 0, neg = 0;
       for (let i = 0; i < f.length; i++) { const s = vec.dot(vec.cross(vec.sub(f[(i + 1) % f.length], f[i]), vec.sub(p, f[i])), n); s >= 0 ? pos++ : neg++; }
-      if (pos && neg) continue;
+      if ((pos && neg) || cut(p)) continue;
       bt = t; best = m.path;
     }
   }
-  return best;
+  return best && { path: best, t: bt };
 }
 
 /** The slab, plane or polyline whose lines (as drawn: the shown ones) a click in a view is on, within a few pixels; the nearest. */
@@ -825,11 +836,14 @@ function makeGlPane(kind) {
     if (o) return choose(o.kind, o.id);
     const cuts = v.cuts();
     const r = await service.pick(ray.origin, ray.dir, cuts.z, cuts.slab);
-    // What is drawn there is what is selected: a shown selection's points, the member the
-    // point is on (or, where the scan has nothing, the member the click is over), else the
+    // What is drawn there is what is selected: a shown selection's points; the member under
+    // the cursor (the one the ray through it meets first, as it is drawn), unless the scan's
+    // surface there is well in front of it (the click is then on that surface); else the
     // point itself. With alt: always the point.
     const selId = !e?.altKey && (r.selections || []).find((id) => vis("selections", `sel:${id}`));
-    const onMember = !e?.altKey && v.state.layers.model && (r.hit ? (r.member && r.member.distance < 0.06 && memberVisible(r.member.path) ? r.member.path : null) : memberAt(ray));
+    const m = !e?.altKey && v.state.layers.model && memberAt(ray, v);
+    // (A lining stands a little in front of what it covers: that much is allowed.)
+    const onMember = m && (!r.hit || m.t <= r.range + 0.15) ? m.path : null;
     if (selId) choose("selection", selId);
     else if (onMember) { selectMember(onMember); if (r.hit) { sel.at = r; renderChips(); rebuildMarks(); } }
     else {
@@ -1189,7 +1203,7 @@ function renderChips() {
       body = p.member ? `${(p.member.distance * 1000).toFixed(0)} mm from ${esc(shortPath(p.member.path))} · ${evLine(p.member.path)}` : "no member within 0.5 m";
     } else if (c.kind === "member") {
       head = `<b>Member</b> ${esc(shortPath(c.id))}`;
-      body = evLine(c.id) + (sel.at ? `<br>clicked at ${f3(sel.at.model)}, ${(sel.at.member.distance * 1000).toFixed(0)} mm from its face <span title="Alt-click picks the point itself">(alt-click: the point)</span>` : "");
+      body = evLine(c.id) + (sel.at ? `<br>the scan point there: ${f3(sel.at.model)}${sel.at.member?.path === c.id ? `, ${(sel.at.member.distance * 1000).toFixed(0)} mm from its face` : ""} <span title="Alt-click picks the point itself">(alt-click: the point)</span>` : "");
     } else if (c.kind === "selection") {
       head = `<b>Selection</b> ${esc(s.id)} ${nameField(s.label)}`;
       body = `${s.count.toLocaleString()} points${vis("selections", `sel:${s.id}`) ? "" : " · hidden"}${s.ignored ? " · <b>ignored</b>: left out of the scan" : ""}`;
@@ -1866,6 +1880,8 @@ export async function initScan(hooks) {
     if (e.key === "Enter") endDrawing(true);
     if (e.key === "Escape") endDrawing(false);
   });
+  // (For looking into it from the console, and for tests that drive the page.)
+  globalThis.__topoScan = { views, memberAt, toScan, toModel, members: () => members };
   service.onState(onState);
   service.connect();
   // A first look: the scan beside what was open.

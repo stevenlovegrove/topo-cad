@@ -335,9 +335,10 @@ Details that were decided in the building:
   takes them all.)
 - **A click in a view selects what is drawn there**: a slab, plane or
   polyline by its lines (within a few pixels of its outline); a shown
-  selection by its points; a shown member by a scan point on its faces,
-  or, where the scan has nothing, by its faces themselves; else the scan
-  point. Alt-click always takes the point. A right-click on a slab's,
+  selection by its points; a shown member by its faces as drawn (the
+  one the ray through the cursor meets first), unless the scan's surface
+  there is more than 0.15 m in front of it, which hides it; else the
+  scan point. Alt-click always takes the point. A right-click on a slab's,
   plane's or polyline's lines opens its menu. What
   is hidden (its eye, or its group's) is not drawn, has no handles and
   cannot be picked, selected or not. The selected slab's faces and the
