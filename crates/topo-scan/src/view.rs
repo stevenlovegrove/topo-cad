@@ -76,6 +76,8 @@ impl Workspace {
             "rooms": self.items.rooms,
             "surfaces": self.items.surfaces,
             "selections": self.items.selections,
+            // (The latest: a chat's older messages are read with the tool.)
+            "chat": self.chat.messages[self.chat.messages.len().saturating_sub(400)..],
             "slabs": self.items.slabs,
             "polylines": self.items.polylines,
         })

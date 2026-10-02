@@ -51,12 +51,83 @@ const round = (p, k = 1000) => p.map((x) => Math.round(x * k) / k);
 function badge(id, small) {
   const p = service.participant(id);
   const initials = p.kind === "agent" ? (p.name.match(/[A-Za-z]/)?.[0] ?? "A").toUpperCase() + (p.name.match(/\d+/)?.[0] ?? "") : p.name.slice(0, 1).toUpperCase();
-  return `<span class="who${small ? " small" : ""}${p.kind === "agent" ? " agent" : ""}" style="--who:${esc(p.colour)}" title="${esc(p.name)}${p.kind === "agent" ? " (agent)" : ""}">${esc(initials)}</span>`;
+  // An agent's badge has a little robot's head in it, so it is not taken for a person.
+  return `<span class="who${small ? " small" : ""}${p.kind === "agent" ? " agent" : ""}" style="--who:${esc(p.colour)}" title="${esc(p.name)}${p.kind === "agent" ? " (agent)" : ""}">${p.kind === "agent" ? BOT : ""}${esc(initials)}</span>`;
+}
+const BOT = `<svg class="bot" viewBox="0 0 12 12" width="11" height="11"><path d="M6 .8v1.7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><rect x="1.5" y="2.8" width="9" height="7.4" rx="2" fill="currentColor"/><circle cx="4.2" cy="6.3" r="1.1" fill="var(--who)"/><circle cx="7.8" cy="6.3" r="1.1" fill="var(--who)"/></svg>`;
+const BELL = `<svg viewBox="0 0 12 12" width="11" height="11"><path d="M6 1.2c-2 0-3.2 1.5-3.2 3.4 0 2-.6 3-1.3 3.6h9c-.7-.6-1.3-1.600-1.300-3.600 0-1.900-1.200-3.400-3.200-3.400z M4.800 9.300a1.250 1.250 0 0 0 2.400 0" fill="currentColor"/></svg>`;
+
+// ----- chat: with one other participant, outside the issues -----------------------------------
+// Opened from their badge in the header. Messages are the service's; what
+// has been read is this browser's (a bell on a badge: something unread from them).
+
+const chatRead = stored0("topo.chat.read", {});
+function stored0(k, d) { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch (_) { return d; } }
+const chatWith = (peer) => (st?.chat || []).filter((m) => (m.from === peer && m.to === service.id) || (m.from === service.id && m.to === peer));
+const unreadFrom = (peer) => (st?.chat || []).filter((m) => m.from === peer && m.to === service.id && m.time > (chatRead[peer] ?? 0)).length;
+
+function openChat(peer) {
+  sel.chat = sel.chat === peer ? null : peer;
+  renderChat(true);
+  renderPeople();
+}
+
+function renderChat(focus) {
+  let box = $("chatPanel");
+  const peer = sel.chat && st?.participants.find((p) => p.id === sel.chat);
+  if (!peer) { box?.remove(); return; }
+  if (!box) {
+    box = el("div", { id: "chatPanel" }, `<div class="chead"><span class="cwho"></span><button class="cx" title="Close">×</button></div><div class="cnote muted"></div><div class="clist"></div><textarea rows="2"></textarea>`);
+    document.body.appendChild(box);
+    box.querySelector(".cx").onclick = () => { sel.chat = null; renderChat(); };
+    const ta = box.querySelector("textarea");
+    ta.onkeydown = async (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") { sel.chat = null; return renderChat(); }
+      if (e.key !== "Enter" || e.shiftKey) return;
+      e.preventDefault();
+      const text = ta.value.trim();
+      if (!text) return;
+      ta.value = "";
+      const r = await service.call("chat", { action: "send", to: sel.chat, text });
+      if (r.error) { alert(r.error); ta.value = text; }
+    };
+  }
+  const agent = peer.kind === "agent";
+  box.querySelector(".cwho").innerHTML = `${badge(peer.id)} <b>${esc(peer.name)}</b> <span class="muted">${agent ? "agent · " : ""}${PRESENCE[peer.presence]}</span>`;
+  box.querySelector(".cnote").textContent = agent && peer.presence === "away" ? `${peer.name} is not listening just now: it gets this when it next is.` : !agent && peer.presence === "away" ? `${peer.name} is away: they see this when they are back.` : "";
+  box.querySelector("textarea").placeholder = `Say something to ${peer.name}… (Enter sends)`;
+  const list = box.querySelector(".clist"), msgs = chatWith(peer.id), key = `${peer.id}:${msgs.length}`;
+  if (list.dataset.key !== key) {
+    list.dataset.key = key;
+    list.innerHTML = msgs.map((m) => `<div class="cmsg ${m.from === service.id ? "mine" : "theirs"}"><div class="text">${refs(m.text)}</div><span class="muted">${when(m.time)}</span></div>`).join("") ||
+      `<div class="muted" style="padding:6px 2px">Nothing said yet. ${agent ? "Ask it something, or what it is doing. For something about a place in the building, raise an issue: it will see that too." : ""}</div>`;
+    list.scrollTop = list.scrollHeight;
+    bindRefs(list);
+  }
+  // Seen, now that it is open.
+  const last = msgs.filter((m) => m.from === peer.id).reduce((a, m) => Math.max(a, m.time), 0);
+  if (last > (chatRead[peer.id] ?? 0)) { chatRead[peer.id] = last; try { localStorage.setItem("topo.chat.read", JSON.stringify(chatRead)); } catch (_) {} }
+  if (focus) box.querySelector("textarea").focus();
+}
+
+/** Makes what a text refers to (as `refs` marked it) go there when clicked. */
+function bindRefs(box) {
+  const on = (q, f) => { for (const a of box.querySelectorAll(q)) a.onclick = (e) => { e.preventDefault(); f(a.dataset); }; };
+  on("a[data-member]", (d) => { choose("member", d.member); gotoMembers(d.member); });
+  on("a[data-issue]", (d) => openIssue(Number(d.issue)));
+  on("a[data-selref]", (d) => gotoSelection(d.selref));
+  on("a[data-planeref]", (d) => gotoPlane(d.planeref));
+  on("a[data-objref]", (d) => gotoObject(...d.objref.split(":")));
 }
 const PRESENCE = { here: "here", working: "working", waiting: "listening", away: "away" };
 function renderPeople() {
   const box = $("people");
-  box.innerHTML = st.participants.map((p) => `<span class="person ${p.presence}${p.id === service.id ? " me" : ""}" data-id="${esc(p.id)}" title="${esc(p.name)} — ${p.kind === "agent" ? "agent, " : ""}${PRESENCE[p.presence]}${p.id === service.id ? " (you: click to change your name)" : ""}">${badge(p.id)}<i></i></span>`).join("");
+  box.innerHTML = st.participants.map((p) => {
+    const me = p.id === service.id, n = me ? 0 : unreadFrom(p.id);
+    return `<span class="person ${p.presence}${me ? " me" : ""}${sel.chat === p.id ? " chatting" : ""}" data-id="${esc(p.id)}" title="${esc(p.name)} — ${p.kind === "agent" ? "agent, " : ""}${PRESENCE[p.presence]}${me ? " (you: click to change your name)" : `. Click to chat${n ? ` (${n} unread)` : ""}`}">${badge(p.id)}<i></i>${n ? `<b class="bell" title="${n} unread">${BELL}</b>` : ""}</span>`;
+  }).join("");
+  for (const s of box.querySelectorAll(".person:not(.me)")) s.onclick = () => openChat(s.dataset.id);
   const me = box.querySelector(".me");
   if (me) me.onclick = async () => {
     const name = prompt("Your name, as others see it:", service.me()?.name ?? "");
@@ -1902,7 +1973,7 @@ function onState(s) {
   loadMembers();
   app.setStatus(s.loading ? `scan: ${s.loading}…` : !service.connected ? "the workspace service is not answering" : null);
   if (sel.issue != null && !s.issues.some((i) => i.id === sel.issue)) sel.issue = null;
-  renderPeople(); renderIssues(); renderBoard(); renderViews(); renderLayers(); rebuildMarks(); renderDiffBars(); renderHistory(); renderChips(); syncHighlights();
+  renderChat(); renderPeople(); renderIssues(); renderBoard(); renderViews(); renderLayers(); rebuildMarks(); renderDiffBars(); renderHistory(); renderChips(); syncHighlights();
 }
 
 export async function initScan(hooks) {

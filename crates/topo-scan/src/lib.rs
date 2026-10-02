@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 
 pub mod axes;
+pub mod chat;
 pub mod cloud;
 pub mod fit;
 pub mod git;

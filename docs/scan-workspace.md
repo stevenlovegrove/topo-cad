@@ -76,6 +76,26 @@ calls carry one.
   row of badges.
 - Several people take part as browsers on one running service.
 
+## Chat
+
+Beside the issues there is plain conversation: one participant with
+another (a person with an agent, people with each other).
+
+- Clicking someone's badge in the header opens a chat with them: what was
+  said, and a box to say more. A badge shows a bell when there is
+  something unread from them (what is read is each browser's own).
+- An agent's badge has a robot's head in it and a ring round it, there
+  and beside everything it says in a thread.
+- To an agent, a message arrives from `wait` ("chat from NAME: …") like
+  anything else that concerns it, and it answers with the `chat` tool. An
+  agent that is not listening gets it when it next is; the panel says so.
+- What a message names (members, selections, issues) is a link, as in a
+  thread.
+- Messages are kept beside the repository's history (in its git
+  directory), not in it: they survive a restart and are not commits.
+  What is about a place in the building, or needs deciding, belongs in
+  an issue.
+
 ## Issues
 
 An issue is a question or a fault pinned to a place, with a thread.

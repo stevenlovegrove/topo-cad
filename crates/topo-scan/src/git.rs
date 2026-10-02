@@ -70,6 +70,11 @@ impl Repo {
     }
 
     /// A path in the repository, relative to its root, with `/`.
+    /// The repository's own directory (`.git`, or a worktree's): for what is kept beside the history, not in it.
+    pub fn git_dir(&self) -> Result<PathBuf> {
+        Ok(PathBuf::from(self.run(&["rev-parse", "--absolute-git-dir"])?.trim()))
+    }
+
     pub fn rel(&self, p: &Path) -> Result<String> {
         let abs = if p.exists() { p.canonicalize()? } else { p.parent().context("path")?.canonicalize()?.join(p.file_name().context("path")?) };
         let r = abs.strip_prefix(&self.root).with_context(|| format!("{} is outside the repository {}", p.display(), self.root.display()))?;

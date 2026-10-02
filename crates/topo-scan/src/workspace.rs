@@ -205,6 +205,8 @@ pub struct Workspace {
     pub presence: HashMap<String, Presence>,
     /// Up to when each participant has had what the others did (`wait`).
     cursors: HashMap<String, f64>,
+    /// Messages between participants, outside the issues.
+    pub chat: crate::chat::Chat,
     /// Bumped on every change a viewer would show.
     pub rev: u64,
 }
@@ -268,7 +270,8 @@ impl Workspace {
             items.placement = None;
         }
         let placement = items.placement.map(Into::into);
-        let mut w = Workspace { repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
+        let chat = repo.git_dir().map(|d| crate::chat::Chat::open(d.join("topo-chat.json"))).unwrap_or_default();
+        let mut w = Workspace { chat, repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
         if changed {
             w.save_items("topo-cad")?;
         }
@@ -504,6 +507,7 @@ impl Workspace {
             "views" => self.views(who, args),
             "sections" => self.sections(who, args),
             "issues" => self.issues(who, args),
+            "chat" => self.chat_tool(who, args),
             "wait" => Ok(text(self.activity_for(who))),
             _ => bail!("unknown tool {name}"),
         }
@@ -973,10 +977,15 @@ impl Workspace {
         i.by == who || i.assignee.as_deref() == Some(who) || i.waiting_on.as_deref() == Some(who) || i.assignee.is_none() || i.entries.iter().any(|e| e.who == who)
     }
 
-    fn news(&self, who: &str) -> Vec<(&Issue, Vec<&crate::issues::Entry>, bool)> {
+    /// Up to when `who` has had what others did.
+    fn heard_to(&self, who: &str) -> f64 {
         // After a restart nothing is remembered of what they have had: they have at least seen everything up to the last thing they did.
-        let last_own = || self.store.issues.iter().flat_map(|i| &i.entries).filter(|e| e.who == who).map(|e| e.time).fold(0.0, f64::max);
-        let since = self.cursors.get(who).copied().unwrap_or_else(last_own);
+        let last_own = || self.store.issues.iter().flat_map(|i| &i.entries).filter(|e| e.who == who).map(|e| e.time).fold(self.chat.last_from(who), f64::max);
+        self.cursors.get(who).copied().unwrap_or_else(last_own)
+    }
+
+    fn news(&self, who: &str) -> Vec<(&Issue, Vec<&crate::issues::Entry>, bool)> {
+        let since = self.heard_to(who);
         let me = self.store.name_of(who);
         self.store.issues.iter().filter_map(|i| {
             let new: Vec<&crate::issues::Entry> = i.entries.iter().filter(|e| e.who != who && e.time > since && !matches!(e.body, Body::Tool { .. })).filter(|e| self.concerns(i, who) || matches!(&e.body, Body::Comment { text, .. } if text.contains(&format!("@{me}")))).collect();
@@ -987,13 +996,17 @@ impl Workspace {
 
     /// Whether others have done something `who` has not had from `wait`.
     pub fn has_activity(&self, who: &str) -> bool {
-        !self.news(who).is_empty()
+        !self.news(who).is_empty() || self.chat.to(who, self.heard_to(who)).next().is_some()
     }
 
     /// What others did since `who` last asked, in the issues that concern
     /// them (or that mention them by `@name`).
     pub fn activity_for(&mut self, who: &str) -> String {
         let mut s = String::new();
+        // Said to them directly, outside any issue (answered with `chat`).
+        for m in self.chat.to(who, self.heard_to(who)) {
+            s += &format!("chat from {}: {}\n", self.store.name_of(&m.from), m.text);
+        }
         for (i, new, raised) in self.news(who) {
             s += &format!("{}{}\n", self.issue_line(i), if raised { " (new)" } else { "" });
             for e in new {
