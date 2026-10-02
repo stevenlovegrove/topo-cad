@@ -220,8 +220,8 @@ pub enum Kind {
     Offset(Point, Point, Dir, Num),
     /// The directions are the same.
     Aligned(Dir, Dir),
-    /// The directions agree or oppose: the lines along them are parallel. (Exactly at right angles
-    /// this pulls neither way; where the sense is known, say `Aligned`.)
+    /// The directions agree or oppose: the lines along them are parallel. It is held as `Aligned`
+    /// in whichever sense is nearer where the system is, so it pulls toward that one from anywhere.
     Parallel(Dir, Dir),
     /// The directions are at right angles.
     Perpendicular(Dir, Dir),
@@ -693,7 +693,7 @@ impl System {
             Kind::Distance(a, b, d) => vec![norm(sub(point(b), point(a))) - self.num(d)],
             Kind::Offset(a, b, along, d) => vec![dot(sub(point(b), point(a)), dir(along)) - self.num(d)],
             Kind::Aligned(a, b) => own(sub(dir(b), dir(a))),
-            Kind::Parallel(a, b) => own(cross(dir(a), dir(b))),
+            Kind::Parallel(a, b) => own(sub(dir(b), scale(dir(a), sense(dir(a), dir(b))))),
             Kind::Perpendicular(a, b) => vec![dot(dir(a), dir(b))],
             Kind::Equal(a, b) => vec![self.num(a) - self.num(b)],
         }
@@ -758,9 +758,10 @@ impl System {
             }
             Kind::Parallel(a, b) => {
                 let (da, db) = (self.dir_in(world, a), self.dir_in(world, b));
-                self.dir_terms(world, a, &axes.map(|e| cross(db, e)), &mut out);
-                self.dir_terms(world, b, &axes.map(|e| cross(e, da)), &mut out);
-                read_in_scope(world[scope].rotate_back(cross(da, db)), &mut out);
+                let sense = sense(da, db);
+                self.dir_terms(world, b, &axes, &mut out);
+                self.dir_terms(world, a, &axes.map(|e| scale(e, -sense)), &mut out);
+                read_in_scope(world[scope].rotate_back(sub(db, scale(da, sense))), &mut out);
             }
             Kind::Perpendicular(a, b) => {
                 let (da, db) = (self.dir_in(world, a), self.dir_in(world, b));
@@ -1207,6 +1208,15 @@ impl Instance {
     }
 }
 
+/// Which sense of `a` is nearer `b`: 1 as it is, -1 turned about.
+fn sense(a: V3, b: V3) -> f64 {
+    if dot(a, b) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
 fn tier_of(t: Tier) -> usize {
     match t {
         Tier::Hard => 0,
@@ -1537,6 +1547,20 @@ mod tests {
         assert_eq!(uses[0].scalar(rise), None);
         let at = s.point(&uses[0].point(&top));
         assert!(norm(sub(at, [3.5, 0.0, 3.6])) < 1e-7, "{at:?}");
+    }
+
+    #[test]
+    fn parallel_pulls_to_the_nearer_sense_from_anywhere() {
+        // A frame on a hinge about x, its y to be parallel to the world's z: from exactly square to
+        // it (where the angle between them is 90°), from just past, and from nearly there.
+        for (start, y_dot_z) in [(0.0, 1.0), (-0.2, -1.0), (1.4, 1.0), (3.0, 1.0), (-3.0, -1.0)] {
+            let mut s = System::new();
+            let f = s.frame("leaf", WORLD, Joint::Hinge([1.0, 0.0, 0.0]), Pose::identity().moved([0.0; 3], [start, 0.0, 0.0]));
+            s.constrain("parallel", Tier::Hard, Kind::Parallel(Dir(f, [0.0, 1.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
+            let r = s.solve();
+            assert!(!r.refused && r.open.is_empty(), "from {start}: {r:#?}");
+            assert!((s.dir(&Dir(f, [0.0, 1.0, 0.0]))[2] - y_dot_z).abs() < 1e-9, "from {start}");
+        }
     }
 
     #[test]

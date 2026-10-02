@@ -26,7 +26,8 @@ yet used by the model's generators: see "Not yet" below, and
   `span` along x, and whatever it is fixed to sizes it.
 - **A constraint relates points and directions in whatever frames**:
   coincident, distance, offset along a direction, aligned (the same
-  direction), parallel (either sense), perpendicular, two numbers equal.
+  direction), parallel (either sense: held as aligned in whichever sense
+  is nearer), perpendicular, two numbers equal.
 - **A sketch is not a special thing**: it is a frame whose contents are
   held to its plane (a planar joint, or `z = 0`).
 
@@ -194,9 +195,6 @@ outside solver is used.
   with it, and making a missing connection an error.
 - **Instances of instances** are not tried: a definition that uses
   another should work (it is a system like any other), with no test yet.
-- **Parallel at exactly a right angle pulls neither way** (its residual
-  is at its largest there). Where the sense is known, `Aligned` is the
-  constraint to use; a generator's "my y is up" is one.
 - **Bounds** on scalars (a point between a member's ends).
 - **Conflict feedback drawn**: the component in conflict shown in the
   view, and one gap per suspect (each released in turn).
