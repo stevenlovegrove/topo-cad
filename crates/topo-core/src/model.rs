@@ -242,6 +242,53 @@ pub struct Bond {
     pub connection: ConnectionId,
 }
 
+/// A face of a member: the side of its section toward `+u`, `-u`, `+v` or `-v`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Face {
+    PlusU,
+    MinusU,
+    PlusV,
+    MinusV,
+}
+
+/// A node on a member, off its axis: on one of its faces.
+///
+/// Where on the face is two numbers, free within the face: `along` the member
+/// from its first node, and `across` the face from its middle. The face's
+/// plane is not stored: it follows from the member (its axes, section and
+/// anchor), so the node's position is a function of these two and of the
+/// member. A node on a member's axis is in its path instead (the case of no
+/// offset); a node may be in one member's path and on the faces of others,
+/// which is how things that touch at faces are joined at a node.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub node: NodeId,
+    pub member: MemberId,
+    pub face: Face,
+    pub along: f64,
+    pub across: f64,
+}
+
+/// A face of a member, as geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FacePlane {
+    /// The middle of the face's width, beside the member's first node.
+    pub origin: Vec3,
+    /// Along the member, across the face, and out of it (unit).
+    pub along: Vec3,
+    pub across: Vec3,
+    pub normal: Vec3,
+    pub length: f64,
+    pub half_width: f64,
+}
+
+impl FacePlane {
+    pub fn point(&self, along: f64, across: f64) -> Vec3 {
+        self.origin + self.along * along + self.across * across
+    }
+}
+
 /// Named alternatives a script offers (e.g. "current code" vs "as built"),
 /// each evaluated as its own model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -307,6 +354,8 @@ pub enum ModelError {
     OutsideMember { member: MemberId, t: f64 },
     NoIntersection { a: MemberId, b: MemberId, gap: f64 },
     Parallel { a: MemberId, b: MemberId },
+    NotOnFace { member: MemberId, face: Face, distance: f64 },
+    OutsideFace { member: MemberId, face: Face, along: f64, across: f64 },
 }
 
 impl fmt::Display for ModelError {
@@ -322,6 +371,8 @@ impl fmt::Display for ModelError {
                 write!(f, "axes of {a} and {b} do not meet (gap {gap:.4} m)")
             }
             ModelError::Parallel { a, b } => write!(f, "{a} and {b} are parallel"),
+            ModelError::NotOnFace { member, face, distance } => write!(f, "point is {distance:.4} m off the {face:?} face of {member}"),
+            ModelError::OutsideFace { member, face, along, across } => write!(f, "point lies outside the {face:?} face of {member} ({along:.4} m along, {across:.4} m across)"),
         }
     }
 }
@@ -359,6 +410,9 @@ pub struct Model {
     pub connections: Vec<Connection>,
     pub joints: Vec<JointSpec>,
     pub bonds: Vec<Bond>,
+    /// Nodes on members' faces (off their axes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     pub supports: Vec<Support>,
     pub load_cases: Vec<LoadCase>,
     pub loads: Vec<Load>,
@@ -687,6 +741,66 @@ impl Model {
         self.bonds.push(Bond { a, b, connection });
     }
 
+    /// A face of a member: where it is, from the member's axes, section and anchor.
+    pub fn face(&self, member: MemberId, face: Face) -> FacePlane {
+        let (m, axes) = (self.member(member), self.member_axes(member));
+        let bb = self.section(m.section).bbox();
+        // The point of the section that is on the axis; the section's other points are placed from it.
+        let on_axis = (bb.min.x + (m.anchor.u + 0.5) * bb.width() + m.anchor.offset.x, bb.min.y + (m.anchor.v + 0.5) * bb.height() + m.anchor.offset.y);
+        let (mid_u, mid_v) = (bb.min.x + bb.width() / 2.0 - on_axis.0, bb.min.y + bb.height() / 2.0 - on_axis.1);
+        let (offset, across, normal, half_width) = match face {
+            Face::PlusV => (axes.u * mid_u + axes.v * (mid_v + bb.height() / 2.0), axes.u, axes.v, bb.width() / 2.0),
+            Face::MinusV => (axes.u * mid_u + axes.v * (mid_v - bb.height() / 2.0), axes.u, -axes.v, bb.width() / 2.0),
+            Face::PlusU => (axes.u * (mid_u + bb.width() / 2.0) + axes.v * mid_v, axes.v, axes.u, bb.height() / 2.0),
+            Face::MinusU => (axes.u * (mid_u - bb.width() / 2.0) + axes.v * mid_v, axes.v, -axes.u, bb.height() / 2.0),
+        };
+        FacePlane { origin: axes.origin + offset, along: axes.x, across, normal, length: axes.length, half_width }
+    }
+
+    /// The face of a member that faces most nearly `toward`.
+    pub fn face_toward(&self, member: MemberId, toward: Vec3) -> Face {
+        [Face::PlusU, Face::MinusU, Face::PlusV, Face::MinusV].into_iter().max_by(|&a, &b| self.face(member, a).normal.dot(toward).total_cmp(&self.face(member, b).normal.dot(toward))).unwrap()
+    }
+
+    /// Joins an existing node to a member at one of its faces: the node has to be on that
+    /// face. Where the node is on the member's axis (the axis being in that face), it goes
+    /// into the member's path instead, as any node on an axis does, and `None` is returned.
+    pub fn attach(&mut self, node: NodeId, member: MemberId, face: Face) -> Result<Option<Attachment>, ModelError> {
+        if self.member(member).path.contains(&node) {
+            return Ok(None);
+        }
+        if let Some(a) = self.attachments.iter().find(|a| a.node == node && a.member == member) {
+            return Ok(Some(*a));
+        }
+        let (f, p) = (self.face(member, face), self.pos(node));
+        let d = p - f.origin;
+        let (along, across, off) = (d.dot(f.along), d.dot(f.across), d.dot(f.normal));
+        if off.abs() > LEN_TOL {
+            return Err(ModelError::NotOnFace { member, face, distance: off.abs() });
+        }
+        if along < -LEN_TOL || along > f.length + LEN_TOL || across.abs() > f.half_width + LEN_TOL {
+            return Err(ModelError::OutsideFace { member, face, along, across });
+        }
+        if self.insert_node_on(member, node).is_ok() {
+            return Ok(None);
+        }
+        let a = Attachment { node, member, face, along, across };
+        self.attachments.push(a);
+        Ok(Some(a))
+    }
+
+    /// A node on a member's face, `along` it from its first node and `across` it from its middle.
+    pub fn node_on_face(&mut self, member: MemberId, face: Face, along: f64, across: f64) -> Result<NodeId, ModelError> {
+        let n = self.node_at(self.face(member, face).point(along, across));
+        self.attach(n, member, face)?;
+        Ok(n)
+    }
+
+    /// The members a node is on the face of.
+    pub fn attached_at(&self, node: NodeId) -> impl Iterator<Item = &Attachment> {
+        self.attachments.iter().filter(move |a| a.node == node)
+    }
+
     /// Connects every member in `a` with every member in `b` where their axes
     /// meet: crossing axes get a shared node; collinear overlapping axes share
     /// each other's path nodes. Returns the nodes that became shared.
@@ -853,6 +967,37 @@ mod tests {
         assert!(m.member(a).path.contains(&n) && m.member(b).path.contains(&n));
         let c = m.add_member_between(v3(0., 0., 1.), v3(4., 0., 1.), &spec);
         assert!(matches!(m.intersect(a, c), Err(ModelError::Parallel { .. })));
+    }
+
+    #[test]
+    fn a_node_on_a_face_is_two_numbers_and_the_member() {
+        // A beam along x with its axis through its middle; its depth is up.
+        let (mut m, spec) = simple_model();
+        let beam = m.add_member_between(v3(0., 0., 0.), v3(4., 0., 0.), &spec);
+        let bb = m.section(m.member(beam).section).bbox();
+        let (w, d) = (bb.width(), bb.height());
+        let top = m.face_toward(beam, Vec3::Z);
+        let f = m.face(beam, top);
+        assert!((f.origin - v3(0., 0., d / 2.0)).norm() < 1e-12 && (f.half_width - w / 2.0).abs() < 1e-12 && f.normal.dot(Vec3::Z) > 0.999);
+        // A node on it: 1 m along and a little to one side. It is not on the axis, so not in the path.
+        let n = m.node_on_face(beam, top, 1.0, 0.01).unwrap();
+        assert!((m.pos(n) - f.point(1.0, 0.01)).norm() < 1e-12 && !m.member(beam).path.contains(&n));
+        assert_eq!(m.attached_at(n).map(|a| (a.member, a.along, a.across)).collect::<Vec<_>>(), [(beam, 1.0, 0.01)]);
+        // The numbers are free only within the face.
+        assert!(matches!(m.node_on_face(beam, top, 1.0, w), Err(ModelError::OutsideFace { .. })));
+        assert!(matches!(m.node_on_face(beam, top, 4.5, 0.0), Err(ModelError::OutsideFace { .. })));
+        let off = m.node_at(v3(2.0, 0.0, d));
+        assert!(matches!(m.attach(off, beam, top), Err(ModelError::NotOnFace { .. })));
+        // The plane follows the member: sat on its own bottom, its top is a depth up, and the node is no longer on it.
+        assert!(crate::validate(&m, &crate::Topology::build(&m)).iter().all(|i| !i.code.starts_with("attachment")));
+        m.members[beam.idx()].anchor = Anchor::body_toward(&m.member_axes(beam), None, Some(Vec3::Z));
+        assert!((m.face(beam, top).origin - v3(0., 0., d)).norm() < 1e-12);
+        assert!(crate::validate(&m, &crate::Topology::build(&m)).iter().any(|i| i.code == "attachment-off-face"));
+
+        // Where the axis is in the face, a node on the axis there is simply in the path.
+        let plate = m.add_member_between(v3(0., 1., 0.), v3(4., 1., 0.), &spec.clone().anchor(Anchor { u: 0.0, v: 0.5, offset: Vec2::ZERO }));
+        let n = m.node_on_face(plate, m.face_toward(plate, Vec3::Z), 2.0, 0.0).unwrap();
+        assert!(m.member(plate).path.contains(&n) && m.attached_at(n).next().is_none());
     }
 
     #[test]

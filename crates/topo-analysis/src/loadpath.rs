@@ -57,6 +57,27 @@ pub fn support_graph(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<Sup
             }
         }
     }
+    // A node on a member's face joins that member to those the node is on the axis of (and to
+    // others it is on the face of). The face says which rests on which: what is at a node on a
+    // member's upward face rests on the member there, and the member rests on what is at a node
+    // on its downward face.
+    for at in &model.attachments {
+        let up = model.face(at.member, at.face).normal.z;
+        let others = topo.junction(at.node).members.iter().map(|m| m.member).chain(model.attached_at(at.node).map(|o| o.member)).filter(|&o| o != at.member);
+        for other in others {
+            let (member, by) = if up > 0.5 {
+                (other, at.member)
+            } else if up < -0.5 {
+                (at.member, other)
+            } else {
+                continue;
+            };
+            let edge = SupportEdge { member, by, node: Some(at.node), transfer: Transfer::Bearing };
+            if !out.contains(&edge) {
+                out.push(edge);
+            }
+        }
+    }
     for bond in &model.bonds {
         for (a, b) in [(bond.a, bond.b), (bond.b, bond.a)] {
             if rests_on(a, b) {

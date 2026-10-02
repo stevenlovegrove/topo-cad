@@ -214,12 +214,16 @@ Nothing ties one truss to another, so each is a component of its own.
 On level plates no step is taken and the trusses are exactly where the
 plates' height puts them.
 
-**It is fastened to what it sits on, and to nothing else.** Every
-bearing the chord touches once it is placed is one it sits on: at a
-shared node where the chord's axis meets the bearing's (a cap plate,
-whose axis is on its top face), and otherwise face to face (a bond: a
-beam whose axis is through its middle, a wall along a gable truss).
-There is no other connecting of trusses to things they happen to cross.
+**It is fastened to what it sits on, and to nothing else**, at a node:
+the bearing point. Where the chord's axis meets the bearing's axis (a
+cap plate, whose axis is on its top face), that is a node on both axes.
+Where it does not (a beam whose axis is through its middle), it is a
+node on the chord's axis that is on the beam's top face (see "Nodes on
+faces"). Along a bearing (a wall under a gable truss) there is one at
+each end of where they touch. Only where the chord's axis is beside the
+other's top, with its lumber over it, are the two fastened face to face
+without a node. There is no other connecting of trusses to things they
+happen to cross.
 
 What cannot be done is said, as an error on the model:
 
@@ -233,6 +237,37 @@ What cannot be done is said, as an error on the model:
 Nothing here is particular to buildings or to a code. A rule such as
 "a truss bears at its heels" or "at a panel point" is a check for a
 script to ask for; none is built in, and there is not yet a way to ask.
+
+## Nodes on faces
+
+Positions are nodes, and things are joined at nodes. A member's path is
+the nodes on its axis; but things touch at faces, and a face is not
+where the axis is. So a node may also be **on a member's face**
+(`Model::attachments`, in `topo-core`):
+
+- which face (`+u`, `-u`, `+v`, `-v` of the section);
+- two numbers, free within the face: how far **along** the member, and
+  how far **across** the face from its middle.
+
+The face's plane is not stored. It follows from the member: its axes,
+its section, its anchor (`Model::face`). So the node's position is a
+function of the two numbers and the member, and the two numbers are
+bounded by the face (a box). Validation says so if a node is no longer
+where its member puts that point of its face, or is outside the face.
+
+A node on the axis is the case of no offset: asked to put a node on a
+face at a point that is on the axis, the model puts it in the path. One
+node may be in one member's path and on the faces of others: that is a
+bearing point, made by whatever joins the two (the glue), not by either
+of them.
+
+Downstream, an attachment is a rigid arm from the member's axis to the
+node (`AnalysisModel::links`), and a point of support in the load path:
+what is at a node on a member's upward face rests on the member there.
+
+In the solver's terms this is a point with two scalars in the member's
+frame, held to another member's point. The solver does not yet bound
+scalars, so the box is checked by the model, not held by the solve.
 
 ## How it solves
 

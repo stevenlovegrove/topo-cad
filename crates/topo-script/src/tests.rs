@@ -11,10 +11,10 @@ fn typescript_garage_matches_rust_example() {
     assert_eq!(ts.units, UnitSystem::Imperial);
     assert_eq!(ts.members.len(), rs.members.len());
     assert_eq!(ts.nodes.len(), rs.nodes.len());
-    // The script's roof sits on what it bears on, as modelled: its two gable trusses lie along the end
-    // walls' cap plates and are fastened to them face to face, which the Rust example (connecting only
-    // where axes cross) does not do.
-    assert_eq!(ts.bonds.len(), rs.bonds.len() + 2);
+    // (Every truss's chord has its axis on the axes of the cap plates it sits on, across them or along
+    // them: all the bearing points are nodes on both axes, none on a face.)
+    assert!(ts.attachments.is_empty());
+    assert_eq!(ts.bonds.len(), rs.bonds.len());
     assert_eq!(ts.loads.len(), rs.loads.len());
     let roles = |m: &topo_core::Model| {
         let mut v: Vec<String> = m.members.iter().map(|x| x.role.clone()).collect();
@@ -178,8 +178,18 @@ fn trusses_sit_on_the_top_of_a_beam_and_are_fastened_to_it() {
         let at = |y: f64| a.z + (b.z - a.z) * (y - a.y) / (b.y - a.y);
         let (near, far) = (at(inch(2.0 + 1.75)), at(ft(20.0) - inch(2.0 - 1.75)));
         assert!((near - top).abs() < 1e-6 && (far - (top - 0.038)).abs() < 1e-6, "{}: {near} {far}", m.member_path(c.id));
-        // The axes do not meet, so it is fastened face to face, to each.
-        assert_eq!(m.bonds.iter().filter(|x| x.a == c.id && beams.contains(&x.b)).count(), 2, "{}", m.member_path(c.id));
+    }
+    // The model is sound with them, and the load goes down through them: each truss rests on both beams.
+    let topo = Topology::build(&m);
+    assert!(topo_core::validate(&m, &topo).iter().all(|i| i.severity < topo_core::Severity::Error));
+    let g = Geometry::build(&m, &topo);
+    let edges = topo_analysis::support_graph(&m, &topo, &g);
+    for c in m.members.iter().filter(|mm| mm.role == "bottom_chord") {
+        assert_eq!(edges.iter().filter(|e| e.member == c.id && beams.contains(&e.by) && e.node.is_some()).count(), 2, "{}", m.member_path(c.id));
+        // The axes do not meet, so each bearing point is a node of the chord that is on a beam's top face.
+        let on: Vec<_> = m.attachments.iter().filter(|a| c.path.contains(&a.node) && beams.contains(&a.member)).collect();
+        assert_eq!(on.len(), 2, "{}", m.member_path(c.id));
+        assert!(on.iter().all(|a| a.across.abs() <= topo_core::units::inch(1.75) + 1e-9 && m.joint(a.node).is_some_and(|j| j.connections.iter().any(|u| u.member == c.id && u.to == Some(a.member)))));
     }
 }
 

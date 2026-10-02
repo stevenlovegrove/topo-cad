@@ -261,6 +261,9 @@ impl Model {
         for b in other.bonds {
             self.bonds.push(crate::model::Bond { a: m(b.a), b: m(b.b), connection: c(b.connection) });
         }
+        for a in other.attachments {
+            self.attachments.push(crate::model::Attachment { node: n(a.node), member: m(a.member), ..a });
+        }
         for mut s in other.supports {
             s.node = n(s.node);
             self.supports.push(s);

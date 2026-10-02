@@ -541,10 +541,40 @@ impl Builder {
             on.dedup();
             for k in on {
                 let plate = plates[k];
-                let node = t.bottom_chords.iter().find_map(|&bc| self.m.intersect(bc, plate).ok().map(|n| (bc, n)));
-                match node {
-                    Some((bc, n)) => self.m.connect(n, bc, Some(plate), c),
-                    None => self.m.bond(t.bottom_chords[0], plate, c),
+                if let Some((bc, n)) = t.bottom_chords.iter().find_map(|&bc| self.m.intersect(bc, plate).ok().map(|n| (bc, n))) {
+                    self.m.connect(n, bc, Some(plate), c);
+                    continue;
+                }
+                // The axes do not meet: a bearing point is a node on the chord (its axis is its
+                // underside) that is on the other's top face. Across the other, there is one, in
+                // the middle of where they touch; along it, one at each end of where they touch.
+                let top = self.m.face_toward(plate, Vec3::Z);
+                let touching: Vec<Vec3> = roof.seats[i].iter().filter(|(j, _)| *j == k).map(|(_, p)| *p).collect();
+                let (first, last) = (touching[0], touching[touching.len() - 1]);
+                let along = self.m.face(plate, top).along;
+                let points = if (last - first).dot(along).abs() > 2.0 * LEN_TOL { vec![first, last] } else { vec![touching.iter().fold(Vec3::ZERO, |a, p| a + *p) / touching.len() as f64] };
+                for at in points {
+                let joined = t.bottom_chords.iter().find_map(|&bc| {
+                    let (along, off) = self.m.project_on_member(bc, at);
+                    let on_chord = off <= LEN_TOL && along > -LEN_TOL && along < self.m.member_length(bc) + LEN_TOL;
+                    let face = self.m.face(plate, top);
+                    let d = at - face.origin;
+                    let on_face = d.dot(face.normal).abs() <= LEN_TOL && d.dot(face.along) > -LEN_TOL && d.dot(face.along) < face.length + LEN_TOL && d.dot(face.across).abs() <= face.half_width + LEN_TOL;
+                    (on_chord && on_face).then_some(bc)
+                });
+                match joined {
+                    Some(bc) => {
+                        let n = self.m.node_on(bc, at).map_err(|e| format!("roof {}: {e}", r.name))?;
+                        self.m.attach(n, plate, top).map_err(|e| format!("roof {}: {e}", r.name))?;
+                        self.m.connect(n, bc, Some(plate), c);
+                    }
+                    // (Its axis is beside the other's top, its lumber over it: face to face.)
+                    None => {
+                        if !self.m.bonds.iter().any(|b| (b.a, b.b) == (t.bottom_chords[0], plate)) {
+                            self.m.bond(t.bottom_chords[0], plate, c);
+                        }
+                    }
+                }
                 }
             }
         }

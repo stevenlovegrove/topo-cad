@@ -124,6 +124,8 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
             }
         }
         for c in &j.connections {
+            // (A member is at a node that is on its axis or on one of its faces.)
+            let at = |m: MemberId| at(m) || model.attached_at(j.node).any(|a| a.member == m);
             if !at(c.member) || c.to.is_some_and(|t| !at(t)) {
                 out.push(
                     Issue::new(Severity::Error, "connection-not-incident", format!("connection at {} names a member that does not meet there", j.node))
@@ -131,6 +133,17 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
                         .members([c.member]),
                 );
             }
+        }
+    }
+
+    // A node on a member's face is where the member (as it now is) puts that point of its face.
+    for a in &model.attachments {
+        let f = model.face(a.member, a.face);
+        let off = model.pos(a.node).distance(f.point(a.along, a.across));
+        if off > LEN_TOL {
+            out.push(Issue::new(Severity::Error, "attachment-off-face", format!("{} is {off:.4} m from where it is on the {:?} face of {}", a.node, a.face, a.member)).nodes([a.node]).members([a.member]));
+        } else if a.along < -LEN_TOL || a.along > f.length + LEN_TOL || a.across.abs() > f.half_width + LEN_TOL {
+            out.push(Issue::new(Severity::Error, "attachment-outside-face", format!("{} is outside the {:?} face of {}", a.node, a.face, a.member)).nodes([a.node]).members([a.member]));
         }
     }
 
