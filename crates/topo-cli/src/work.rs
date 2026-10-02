@@ -197,6 +197,28 @@ impl Work {
                     Err(e) => respond_json(req, 404, &json!({"error": format!("{e:#}")})),
                 }
             }
+            // Free space in a box (as /api/slab takes it), over its first two axes: where the rays pass.
+            // w, h (u32), the greatest count (u32), then w × h bytes: the count of rays over each cell,
+            // on a logarithmic scale to 255; row 0 at the low side of the second axis.
+            (Method::Get, "/api/free") => {
+                let scan = self.ws.lock().unwrap().scan.clone();
+                let Some(scan) = scan else { return respond_json(req, 503, &json!({"error": "the scan is still loading"})) };
+                let Some(sensor) = scan.sensor.as_deref() else { return respond_json(req, 404, &json!({"error": "this scan has no trajectory: where each point was seen from is not known"})) };
+                let (Some(c), Some(u), Some(vv), Some(n), Some(h)) = (v3(q.get("c")), v3(q.get("u")), v3(q.get("v")), v3(q.get("n")), v3(q.get("h"))) else { return respond_json(req, 400, &json!({"error": "c, u, v, n and h: x,y,z each"})) };
+                // Cells of 2 cm, or as many as fit 1024 along the longer side.
+                let cell = (2.0 * h[0].max(h[1]) / 1024.0).max(0.02);
+                let (w, ht) = (((2.0 * h[0] / cell).ceil() as usize).clamp(1, 1024), ((2.0 * h[1] / cell).ceil() as usize).clamp(1, 1024));
+                let stride = q.get("stride").and_then(|x| x.parse().ok()).unwrap_or(1usize);
+                let grid = topo_scan::rays::free_space(&scan.xyz, sensor, &scan.used, stride, c, &[u, vv, n], h, w, ht);
+                let max = grid.iter().copied().max().unwrap_or(0);
+                let k = 255.0 / ((1 + max) as f32).ln().max(1e-6);
+                let mut out = Vec::with_capacity(12 + grid.len());
+                for x in [w as u32, ht as u32, max] {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+                out.extend(grid.iter().map(|&c| if c == 0 { 0 } else { (((1 + c) as f32).ln() * k).round().clamp(1.0, 255.0) as u8 }));
+                respond_bytes(req, out)
+            }
             (Method::Get, "/api/slab") => {
                 let (ix, scan) = (self.index.lock().unwrap().clone(), self.ws.lock().unwrap().scan.clone());
                 let (Some(ix), Some(scan)) = (ix, scan) else { return respond_json(req, 503, &json!({"error": "the scan is still loading"})) };

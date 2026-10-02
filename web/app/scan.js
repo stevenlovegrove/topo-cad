@@ -317,17 +317,20 @@ async function askMinRange() {
 
 /** Every scan point in the box a view is clipped to (a moment after it stops changing). */
 function requestSlab(v) {
-  const box = v.state.box, key = box ? JSON.stringify(box) : "";
+  const box = v.state.box, free = !!(box && v.state.free), key = box ? JSON.stringify([box, free]) : "";
   if (key === (v.slabWant ?? "") || !st?.scan.loaded) return;
   v.slabWant = key;
   clearTimeout(v.slabTimer);
   v.slabTimer = setTimeout(async () => {
-    if (!box) { v.setCloud("slab", null); return setInfo(v.name, ""); }
-    const c = await service.slab(box);
+    if (!box) { v.setCloud("slab", null); v.setImage(null); return setInfo(v.name, ""); }
+    // With free space: where the rays pass in the slab, as a picture over its middle plane.
+    const [c, f] = await Promise.all([service.slab(box), free ? service.free(box) : null]);
     if (v.slabWant !== key) return;
     v.setCloud("slab", c);
+    const at = (a, b) => vec.add(box.c, vec.add(vec.scale(box.u, a * box.h[0]), vec.scale(box.v, b * box.h[1])));
+    v.setImage(f && f.max ? { ...f, corners: [at(-1, -1), at(1, -1), at(-1, 1), at(1, 1)] } : null);
     const s = slabOf(v.slab);
-    setInfo(v.name, c ? `${s ? `slab ${slabName(s)} · ` : ""}${c.count.toLocaleString()} points` : "");
+    setInfo(v.name, c ? `${s ? `slab ${slabName(s)} · ` : ""}${c.count.toLocaleString()} points${f ? ` · free space: up to ${f.max.toLocaleString()} rays over a cell` : ""}` : "");
   }, 200);
 }
 
@@ -1382,6 +1385,7 @@ const ICON = {
   square: svg("M3 3h10v10H3z M8 5.5v5 M5.5 8h5"),
   lock: svg("M4.5 7.5h7v5.5h-7z M6 7.5V5.5a2 2 0 0 1 4 0v2"),
   line: svg("M2.5 12.5l4-7 4 4 3-6", `<circle cx="2.5" cy="12.5" r="1.1" fill="currentColor"/><circle cx="6.5" cy="5.5" r="1.1" fill="currentColor"/><circle cx="10.5" cy="9.5" r="1.1" fill="currentColor"/><circle cx="13.5" cy="3.5" r="1.1" fill="currentColor"/>`),
+  free: svg("M2.5 13.5L8 3.5 M2.5 13.5L12 5.5 M2.5 13.5L13.5 9.5", `<circle cx="2.5" cy="13.5" r="1.3" fill="currentColor"/>`),
   cut: svg("M2 13L14 3", `<path d="M5 14.5l-3-1.5 1.5-3 M12.5 1.5l1.5 1.5-3 1.5" stroke-width="1"/>`),
 };
 
@@ -1396,7 +1400,7 @@ function renderTools(v) {
     `<select data-k="slab" title="What of the scan this view shows: all of it, or what is in a slab (a section)"><option value="">Whole scan</option>${slabs().map((x) => `<option value="${esc(x.id)}" ${x.id === v.slab ? "selected" : ""}>Slab ${esc(slabName(x))}</option>`).join("")}<option value="+plan">New slab: plan…</option><option value="+x">New slab: across x…</option><option value="+y">New slab: across y…</option></select>` +
     `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}</span>` +
     (sb
-      ? `<span class="grp">${btn("square", ICON.square, "Look square on at the slab, fitted in the view")}${btn("flat", ICON.lock, "Held square on: a drag slides the view. Off: a drag turns it", s.flat)}</span>` +
+      ? `<span class="grp">${btn("square", ICON.square, "Look square on at the slab, fitted in the view")}${btn("flat", ICON.lock, "Held square on: a drag slides the view. Off: a drag turns it", s.flat)}${st?.scan.rays ? btn("free", ICON.free, "Free space: where the scanner's rays pass in the slab, under the points. Brighter: more rays. Where it is dark, something was in the way, or nothing looked", s.free) : ""}</span>` +
         `<span class="grp" title="The slab: its thickness (m), and stepping it back and forward by half of that">${btn("back", ICON.back, "Slab back (away from the viewer)")}<input type="number" step="0.05" min="0.01" value="${(2 * sb.half[2]).toFixed(2)}" data-a="thick">${btn("fwd", ICON.fwd, "Slab forward (toward the viewer)")}</span>`
       : "") +
     `<span class="grp">${btn("line", ICON.line, "Draw a polyline: click its points (on the scan, or in the slab seen square on)", drawing?.view === v.name)}${btn("cut", ICON.cut, "Cut a slab: drag a line across the building, seen from above, to look at what it cuts through", v.tool === "line")}</span>` +
@@ -1409,6 +1413,7 @@ function renderTools(v) {
     ortho: () => v.set({ ortho: !s.ortho }),
     square: () => v.squareOn(boxOf(sb)),
     flat: () => (s.flat ? v.set({ flat: false }) : v.squareOn(boxOf(sb))),
+    free: () => { v.set({ free: !s.free }); requestSlab(v); },
     line: () => (drawing ? endDrawing(true) : startDrawing(v)),
     cut: () => { v.tool = v.tool === "line" ? null : "line"; },
     top: () => v.animate({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true }),

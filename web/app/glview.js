@@ -81,6 +81,21 @@ void main() {
   if (u_box > 0. && any(greaterThan(abs((v_pos - u_bc) * u_bax), u_bh))) discard;
   o = v_col;
 }`;
+// A picture laid in the scene (free space over a slab): one value per cell, shown as a tint.
+const IMAGE_VS = `#version 300 es
+in vec3 a_pos; in vec2 a_uv;
+uniform mat4 u_vp;
+out vec2 v_uv;
+void main() { gl_Position = u_vp * vec4(a_pos, 1.); v_uv = a_uv; }`;
+const IMAGE_FS = `#version 300 es
+precision mediump float;
+in vec2 v_uv; out vec4 o;
+uniform sampler2D u_tex;
+void main() {
+  float a = texture(u_tex, v_uv).r;
+  // Few rays: a dim blue; many: a bright cyan.
+  o = vec4(mix(vec3(.08, .22, .6), vec3(.35, .85, 1.), a), a > 0. ? .25 + .6 * a : 0.);
+}`;
 
 function program(gl, vs, fs) {
   const p = gl.createProgram();
@@ -108,6 +123,8 @@ export function defaultState() {
     // The box the view is clipped to (a slab: { c, u, v, n, h }, scan frame), and
     // whether a drag slides the view (seen square on) rather than turning it.
     box: null, flat: false,
+    // Whether free space (where the rays pass in the box) is shown under the points.
+    free: false,
     colour: "intensity",
     // Height cuts, in the model's frame (null: none).
     zMin: null, zMax: null,
@@ -128,6 +145,8 @@ export class GLView {
     if (!gl) throw new Error("this browser has no WebGL2");
     this.points = program(gl, POINT_VS, POINT_FS);
     this.flat = program(gl, FLAT_VS, FLAT_FS);
+    this.pic = program(gl, IMAGE_VS, IMAGE_FS);
+    this.image = null;
     this.state = defaultState();
     this.handles = [];
     this.handleEls = new Map();
@@ -229,6 +248,37 @@ export class GLView {
   /** Marks: line segments (boxes, a section's plane, picks, surfaces). */
   setMarks(pos, col) {
     this.marks = pos.length ? this.flatBuffers(pos, col) : null;
+    this.redraw();
+  }
+  /**
+   * A picture laid in the scene, under the points: { corners, w, h, data }
+   * (corners: where its low-low, high-low, low-high and high-high corners
+   * are; a byte per cell, row 0 at the low side). Null drops it.
+   */
+  setImage(img) {
+    const gl = this.gl;
+    if (this.image) { gl.deleteTexture(this.image.tex); gl.deleteVertexArray(this.image.vao); }
+    this.image = null;
+    if (img) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, img.w, img.h, 0, gl.RED, gl.UNSIGNED_BYTE, img.data);
+      for (const [k, x] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, x);
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const attr = (name, data, size) => {
+        const loc = gl.getAttribLocation(this.pic.p, name);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(loc);
+        gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+      };
+      attr("a_pos", img.corners.flat(), 3);
+      attr("a_uv", [0, 0, 1, 0, 0, 1, 1, 1], 2);
+      gl.bindVertexArray(null);
+      this.image = { tex, vao };
+    }
     this.redraw();
   }
   /** Faint surfaces (a selected slab's faces, a plane's patch): triangles, each vertex with an RGBA colour. Points in front of one hide it; those behind are tinted. */
@@ -495,6 +545,21 @@ export class GLView {
         gl.uniform3f(u.u_bh, ...box.h);
       }
     };
+    // A picture under everything (free space): no depth, so the points are drawn over it.
+    if (this.image && s.layers.scan) {
+      gl.useProgram(this.pic.p);
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.uniformMatrix4fv(this.pic.u.u_vp, false, cam.vp);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.image.tex);
+      gl.uniform1i(this.pic.u.u_tex, 0);
+      gl.bindVertexArray(this.image.vao);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.disable(gl.BLEND);
+      gl.enable(gl.DEPTH_TEST);
+    }
     // Clipped to a box, every point of the scan in it is drawn (once they have come).
     const cloud = box ? this.clouds.slab || this.clouds.thin : this.clouds.thin;
     if (s.layers.scan && cloud) {
