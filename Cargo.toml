@@ -12,6 +12,7 @@ members = [
     "crates/topo-data",
     "crates/topo-app",
     "crates/topo-scan",
+    "crates/topo-solve",
 ]
 
 [workspace.package]
