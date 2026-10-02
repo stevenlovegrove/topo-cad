@@ -231,14 +231,18 @@ async function updateSlab(id, patch) {
 
 /** Makes every view's clipping box what its slab is now, and asks for the points in it. */
 function syncSlabs() {
+  let changed = false;
   for (const v of Object.values(views)) {
     const s = slabOf(v.slab);
     if (v.slab && !s) v.slab = null;
     const box = s ? boxOf(s) : null;
     // (Without a slab there is no depth in it to colour by.)
+    if (JSON.stringify(box) !== JSON.stringify(v.state.box)) changed = true;
     if (JSON.stringify(box) !== JSON.stringify(v.state.box)) v.set(box ? { box } : { box: null, flat: false, colour: v.state.colour === "depth" ? "intensity" : v.state.colour }, true);
     requestSlab(v);
   }
+  // (The members are drawn as the slab cuts them.)
+  if (changed) rebuildModel();
 }
 
 /**
@@ -465,7 +469,20 @@ async function loadMembers() {
     }
   }
   if (sel.proposal) await loadDiff();
+  freshPlaces();
   rebuildModel(); rebuildMarks();
+}
+
+/// An issue pinned to a member is where the member is now: its box was taken when it was raised,
+/// and the member may have moved since (a proposal applied), which would leave the box behind.
+function freshPlaces() {
+  for (const i of st?.issues || []) {
+    const m = i.place?.member && members?.find((x) => x.path === i.place.member);
+    if (!m) continue;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const f of m.faces) for (const p of f) { const q = toScan(p); for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], q[k] - 0.02); hi[k] = Math.max(hi[k], q[k] + 0.02); } }
+    if (lo[0] !== Infinity) { i.place.min = lo; i.place.max = hi; }
+  }
 }
 
 async function loadDiff() {
@@ -483,19 +500,16 @@ function drawList() {
   const plain = (m) => ({ m, rgb: hl(m) ? [255, 60, 220] : m.colour.map((c) => Math.round(c * 255)), fill: hl(m) ? 90 : 34, line: 235, change: hl(m) });
   if (!diff || !sel.proposal) return (members || []).map(plain);
   const mode = sel.proposal.mode, ch = diff.changes;
-  if (mode === "before") return diff.before.map(plain);
-  if (mode === "after") return diff.after.map(plain);
+  // What changes is filled strongly in its colour (as it was: red; as it would be: green), in every mode,
+  // so switching between before and after shows what moves.
+  const was = (m) => ({ m, rgb: CHANGE.from, fill: 130, line: 255, change: true }), will = (m) => ({ m, rgb: CHANGE.added, fill: 130, line: 255, change: true });
+  const goes = (m) => ch[m.path] === "removed" || ch[m.path] === "moved", comes = (m) => ch[m.path] === "added" || ch[m.path] === "moved";
+  if (mode === "before") return diff.before.map((m) => (goes(m) ? was(m) : plain(m)));
+  if (mode === "after") return diff.after.map((m) => (comes(m) ? will(m) : plain(m)));
   const out = [];
   const faint = (m) => ({ m, rgb: [150, 155, 165], fill: 0, line: 60 });
-  for (const m of diff.before) {
-    const c = ch[m.path];
-    if (c === "removed" || c === "moved") out.push({ m, rgb: CHANGE.from, fill: 70, line: 255, change: true });
-    else out.push(mode === "both" ? plain(m) : faint(m));
-  }
-  for (const m of diff.after) {
-    const c = ch[m.path];
-    if (c === "added" || c === "moved") out.push({ m, rgb: CHANGE.added, fill: 70, line: 255, change: true });
-  }
+  for (const m of diff.before) out.push(goes(m) ? was(m) : mode === "both" ? plain(m) : faint(m));
+  for (const m of diff.after) if (comes(m)) out.push(will(m));
   return out;
 }
 
@@ -508,27 +522,49 @@ function rebuildModel() {
   const list = drawList().filter(({ m }) => memberVisible(m.path));
   let nt = 0, nl = 0;
   for (const { m } of list) for (const f of m.faces) { nt += (f.length - 2) * 3; nl += f.length * 2; }
-  const build = (neutral) => {
-    const tris = new Float32Array(nt * 3), tcol = new Uint8Array(nt * 4), lines = new Float32Array(nl * 3), lcol = new Uint8Array(nl * 4);
+  const build = (neutral, box) => {
+    // (Clipped to a slab: room too for each member's cut by the slab's middle plane, at most a hexagon.)
+    const extra = box ? list.length * 6 : 0;
+    const tris = new Float32Array((nt + extra * 3) * 3), tcol = new Uint8Array((nt + extra * 3) * 4), lines = new Float32Array((nl + extra * 2) * 3), lcol = new Uint8Array((nl + extra * 2) * 4);
     let ti = 0, li = 0;
     const put = (arr, col, k, p, rgb, a) => { arr.set(p, k * 3); col.set([rgb[0], rgb[1], rgb[2], a], k * 4); };
+    // Where the slab's middle plane cuts a member: its outline there, filled. Seen square on, a member's own
+    // faces are edge-on or outside the slab, so this is what shows it (a stud in a plan, a plate in a section).
+    const cut = (faces, c, a, lineA) => {
+      const pts = [];
+      for (const q of faces) for (let i = 0; i < q.length; i++) {
+        const p0 = q[i], p1 = q[(i + 1) % q.length], d0 = vec.dot(box.n, vec.sub(p0, box.c)), d1 = vec.dot(box.n, vec.sub(p1, box.c));
+        if ((d0 < 0) !== (d1 < 0)) pts.push(vec.add(p0, vec.scale(vec.sub(p1, p0), d0 / (d0 - d1))));
+      }
+      if (pts.length < 3) return;
+      // In order round their middle (the cut of a box is convex); each corner comes from two faces: once is enough.
+      const mid = vec.scale(pts.reduce((s, p) => vec.add(s, p), [0, 0, 0]), 1 / pts.length);
+      const ang = (p) => { const r = vec.sub(p, mid); return Math.atan2(vec.dot(r, box.v), vec.dot(r, box.u)); };
+      const ring = pts.map((p) => [ang(p), p]).sort((x, y) => x[0] - y[0]).map((x) => x[1]).filter((p, i, all) => !i || Math.hypot(...vec.sub(p, all[i - 1])) > 1e-4).slice(0, 6);
+      if (ring.length < 3) return;
+      for (let i = 1; i + 1 < ring.length; i++) for (const p of [ring[0], ring[i], ring[i + 1]]) put(tris, tcol, ti++, p, c, Math.max(a, 60));
+      for (let i = 0; i < ring.length; i++) { put(lines, lcol, li++, ring[i], c, lineA); put(lines, lcol, li++, ring[(i + 1) % ring.length], c, lineA); }
+    };
     for (const { m, rgb, fill, line, change } of list) {
       // A proposal's changes and highlights keep their colours.
       const plain = neutral && !change;
       const [c, a] = plain ? [[255, 255, 255], 0] : [rgb, fill];
-      for (const f of m.faces) {
-        const q = f.map(toScan);
+      const qs = m.faces.map((f) => f.map(toScan));
+      for (const q of qs) {
         if (a) for (let i = 1; i + 1 < q.length; i++) for (const p of [q[0], q[i], q[i + 1]]) put(tris, tcol, ti++, p, c, a);
         for (let i = 0; i < q.length; i++) { put(lines, lcol, li++, q[i], c, plain ? Math.min(line, 200) : line); put(lines, lcol, li++, q[(i + 1) % q.length], c, plain ? Math.min(line, 200) : line); }
       }
+      if (box) cut(qs, c, plain ? 0 : a, 255);
     }
-    return [tris.subarray(0, ti * 3), tcol.subarray(0, ti * 4), lines, lcol];
+    return [tris.subarray(0, ti * 3), tcol.subarray(0, ti * 4), lines.subarray(0, li * 3), lcol.subarray(0, li * 4)];
   };
   const made = {};
   for (const v of Object.values(views)) {
-    const k = neutralModel(v);
+    const k = neutralModel(v), box = v.state.box;
     v.modelNeutral = k;
-    v.setModel(...(made[k] ??= build(k)));
+    v.modelBox = box ? JSON.stringify(box) : "";
+    // (A view clipped to a slab has its own: the members as the slab cuts them.)
+    v.setModel(...(box ? build(k, box) : (made[k] ??= build(k))));
   }
 }
 
@@ -1977,6 +2013,7 @@ function onState(s) {
   const cloudKey = `${s.scan.min_range}|${s.cloud}|${(s.selections || []).filter((x) => x.ignored).map((x) => x.id).join()}`;
   if (s.cloud && cloudLoaded !== cloudKey) loadCloud(cloudKey);
   loadMembers();
+  freshPlaces();
   app.setStatus(s.loading ? `scan: ${s.loading}…` : !service.connected ? "the workspace service is not answering" : null);
   if (sel.issue != null && !s.issues.some((i) => i.id === sel.issue)) sel.issue = null;
   renderChat(); renderPeople(); renderIssues(); renderBoard(); renderViews(); renderLayers(); rebuildMarks(); renderDiffBars(); renderHistory(); renderChips(); syncHighlights();

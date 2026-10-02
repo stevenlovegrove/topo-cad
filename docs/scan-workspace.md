@@ -307,6 +307,15 @@ Details that were decided in the building:
   slides the view; the lock in its toolbar lets it turn), drawing every
   scan point in the box. Up to three panes: a view already on the slab
   is used, else a second view not open, else the second view that is.
+- **In a view clipped to a slab the members are drawn as the slab cuts
+  them**: where its middle plane crosses a member, that cross-section is
+  outlined and filled (a stud in a plan, a plate in a section). Seen
+  square on, a member's own faces are edge-on or outside the slab, so
+  without this nothing of it shows. With a proposal shown, what it
+  changes is filled red as it was and green as it would be, in every
+  mode, so Before and After show what moves. An issue pinned to a member
+  keeps its box and pin on the member as it is now, not where it was
+  when the issue was raised.
 - **Making a slab is pointing at what to see.** Right-click a point:
   along the surface there, cut through that surface, a plan at that
   height, a cut across x or y. On a selection: around it. On a plane: on
