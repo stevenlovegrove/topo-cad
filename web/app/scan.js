@@ -1663,7 +1663,68 @@ function renderIssues() {
 }
 
 /// Text with what it refers to made live: a selection by its id (s3) shows that selection; an issue (#4) opens it.
-function refs(text) {
+function refs(text, issue) {
+  // Members first: the text between them is then looked at for the rest.
+  const found = memberRefs(text, issue);
+  if (!found.length) return objectRefs(text);
+  let out = "", at = 0;
+  for (const m of found) {
+    out += objectRefs(text.slice(at, m.start)) + `<a href="#" class="ref" data-member="${esc(m.path)}" title="${esc(m.path)}: select it and go to it">${esc(text.slice(m.start, m.end))}</a>`;
+    at = m.end;
+  }
+  return out + objectRefs(text.slice(at));
+}
+
+/**
+ * Where a text names members: [{ start, end, path }], in order, not overlapping.
+ * A member is named by its group and name ("West wall/stud#3", "T7/web.T1-Cl"),
+ * or by its name alone where that says which ("stud#6", "top_chord.X1-P"): the
+ * only one of that name, else the one in the group named nearest before it in
+ * the text (or after), else in the group of the member the issue is on,
+ * else the one nearest the issue's place.
+ */
+function memberRefs(text, issue) {
+  if (!members?.length) return [];
+  const short = new Map(), byName = new Map(), groups = new Set();
+  for (const m of members) {
+    const p = m.path.split("/"), name = p[p.length - 1], group = p[p.length - 2] ?? "";
+    short.set(`${group}/${name}`, m.path);
+    groups.add(group);
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push({ group, path: m.path });
+  }
+  const out = [], taken = (s, e) => out.some((r) => s < r.end && e > r.start);
+  const edge = (i) => i < 0 || i >= text.length || !/[\w#]/.test(text[i]);
+  const each = (needle, f) => { for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + 1)) if (edge(i - 1) && edge(i + needle.length) && !taken(i, i + needle.length)) f(i); };
+  // Group and name together: the longest first, so "stud#12" is not taken as "stud#1".
+  for (const s of [...short.keys()].sort((a, b) => b.length - a.length)) if (text.includes(s)) each(s, (i) => out.push({ start: i, end: i + s.length, path: short.get(s) }));
+  // Where groups are mentioned, for names alone.
+  const mentions = [];
+  for (const g of groups) if (g && text.includes(g)) for (let i = text.indexOf(g); i >= 0; i = text.indexOf(g, i + 1)) mentions.push({ at: i, group: g });
+  const own = (issue?.place?.member ?? "").split("/").slice(-2)[0];
+  for (const [name, list] of [...byName].sort((a, b) => b[0].length - a[0].length)) {
+    // (Only names that could not be ordinary words.)
+    if (!/[#.]/.test(name) || !text.includes(name)) continue;
+    each(name, (i) => {
+      let pick = list.length === 1 ? list[0] : null;
+      if (!pick) {
+        const has = mentions.filter((m) => list.some((l) => l.group === m.group));
+        const near = has.filter((m) => m.at < i).sort((a, b) => b.at - a.at)[0] ?? has.sort((a, b) => a.at - b.at)[0];
+        pick = list.find((l) => l.group === (near?.group ?? own));
+        // Else the one of that name nearest the issue's place.
+        if (!pick && issue?.place) {
+          const c = toModel(issue.place.min.map((x, k) => 0.5 * (x + issue.place.max[k])));
+          const far = (l) => { let s = [0, 0, 0], n = 0; for (const f of members.find((x) => x.path === l.path).faces) for (const p of f) { s = vec.add(s, p); n++; } return n ? Math.hypot(...vec.sub(vec.scale(s, 1 / n), c)) : Infinity; };
+          pick = list.map((l) => [far(l), l]).sort((a, b) => a[0] - b[0])[0]?.[1];
+        }
+      }
+      if (pick) out.push({ start: i, end: i + name.length, path: pick.path });
+    });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+
+function objectRefs(text) {
   return esc(text).replace(/(^|[^\w#])(s\d+|p\d+|b\d+|l\d+|#\d+)\b/g, (all, pre, id) => {
     if (id[0] === "b") { const s = st.slabs?.find((x) => x.id === id); return s ? `${pre}<a href="#" class="ref sel" data-objref="slab:${id}" title="Look through this slab">${esc(slabName(s))}</a>` : all; }
     if (id[0] === "l") { const l = st.polylines?.find((x) => x.id === id); return l ? `${pre}<a href="#" class="ref sel" data-objref="polyline:${id}" title="Show this polyline (${lineLength(l).toFixed(2)} m)">${esc(lineName(l))}</a>` : all; }
@@ -1676,10 +1737,10 @@ function refs(text) {
 
 function entryHtml(issue, e, k) {
   const who = `${badge(e.who, true)} <b>${esc(service.participant(e.who).name)}</b> <span class="muted">${when(e.time)}</span>`;
-  if (e.kind === "comment") return `<div class="entry comment">${who}<div class="text">${refs(e.text)}</div>${e.view ? `<button class="viewlink" data-view="${k}" title="Show this in a pane (Back returns to your view)">Show: ${esc(e.view_label || "view")}</button>` : ""}</div>`;
+  if (e.kind === "comment") return `<div class="entry comment">${who}<div class="text">${refs(e.text, issue)}</div>${e.view ? `<button class="viewlink" data-view="${k}" title="Show this in a pane (Back returns to your view)">Show: ${esc(e.view_label || "view")}</button>` : ""}</div>`;
   if (e.kind === "tool") return `<div class="entry tool">${badge(e.who, true)} ran <code>${esc(e.name)}</code> <span class="muted">${esc(e.summary)}</span></div>`;
   if (e.kind === "change") return `<div class="entry tool">${badge(e.who, true)} <span class="muted">${esc(e.what)} · ${when(e.time)}</span></div>`;
-  if (e.kind === "evidence") return `<div class="entry card">${who}<div class="k">Evidence</div><b>${esc(e.title)}</b><div class="text">${refs(e.text)}</div></div>`;
+  if (e.kind === "evidence") return `<div class="entry card">${who}<div class="k">Evidence</div><b>${esc(e.title)}</b><div class="text">${refs(e.text, issue)}</div></div>`;
   if (e.kind === "proposal") {
     const on = sel.proposal?.commit === e.commit;
     const d = (a, b) => (a === b ? `${a}` : `${a} → <b>${b}</b>`);
@@ -1753,6 +1814,8 @@ function renderThread(box, i) {
   for (const a of box.querySelectorAll("a[data-selref]")) a.onclick = (e) => { e.preventDefault(); gotoSelection(a.dataset.selref); };
   for (const a of box.querySelectorAll("a[data-planeref]")) a.onclick = (e) => { e.preventDefault(); gotoPlane(a.dataset.planeref); };
   for (const b of box.querySelectorAll("button[data-ref]")) b.onclick = () => { const at = reply.selectionStart ?? reply.value.length; reply.setRangeText(`${at && !/\s$/.test(reply.value.slice(0, at)) ? " " : ""}${b.dataset.ref} `, at, reply.selectionEnd ?? at, "end"); reply.focus(); };
+  // A member named in the thread: selected (it is highlighted, and the Member tab is its) and gone to.
+  for (const a of box.querySelectorAll("a[data-member]")) a.onclick = (e) => { e.preventDefault(); choose("member", a.dataset.member); gotoMembers(a.dataset.member); };
   for (const a of box.querySelectorAll("a[data-issue]")) a.onclick = (e) => { e.preventDefault(); openIssue(Number(a.dataset.issue)); };
   for (const b of box.querySelectorAll("button[data-p]")) b.onclick = async () => {
     const p = i.entries.find((e) => e.kind === "proposal" && e.n === Number(b.dataset.p)), a = b.dataset.a;

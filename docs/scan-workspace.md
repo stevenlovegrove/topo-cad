@@ -269,7 +269,12 @@ Details that were decided in the building:
 - **Selections, planes, slabs and polylines are things with ids** (`s3`,
   `p2`, `b1`, `l4`): shown, named in place, deleted, and referred to. An id written in a reply
   becomes a link that shows the thing and goes to it; an issue's number
-  (`#4`) likewise.
+  (`#4`) likewise. A member named in a reply is a link too, which
+  selects it and goes to it: by its group and name (`West wall/stud#3`),
+  or by its name alone (`stud#3`), which is taken as the only member of
+  that name, else the one in the group named nearest before it in the
+  text, else in the group of the member the issue is on, else the one
+  nearest the issue's place.
 - **A plane** is a fit kept: to a selection's points, or about a picked
   point ("Fit a plane" in the menu; `fit_surface` with `keep` for
   agents).

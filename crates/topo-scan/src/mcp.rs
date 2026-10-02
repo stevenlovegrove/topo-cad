@@ -72,7 +72,7 @@ pub fn tools() -> Value {
             "all": {"type": "boolean", "description": "list: include done."},
             "category": {"type": "string", "enum": ["scan", "note", "check"]},
             "title": {"type": "string", "description": "create, update, evidence: a line."},
-            "text": {"type": "string", "description": "comment, evidence, create: a line or two."},
+            "text": {"type": "string", "description": "comment, evidence, create: a line or two. What it names becomes a link for people: a member by its group and name as in its path (\"West wall/stud#3\", \"T7/web.T1-Cl\"; a name alone, \"stud#3\", is guessed at), a selection, plane, slab or polyline by its id (s3, p2, b1, l4), an issue by #N."},
             "view": view, "view_label": {"type": "string", "description": "What the link shows, in a few words."},
             "status": {"type": "string", "enum": ["open", "doing", "waiting", "done"]},
             "priority": {"type": "string", "enum": ["high", "normal", "low"]},
