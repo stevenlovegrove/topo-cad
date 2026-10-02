@@ -234,6 +234,34 @@ fn the_primitives_examples_show_what_they_say() {
     assert_eq!(p.end(), m.member(cap).start(), "the post's top is the plate's start node");
     assert!(m.pos(p.start()).distance(m.pos(p.end()) - topo_core::Vec3::Z * ft(8.0)) < 1e-9, "upright under it");
 
+    // Placed by a corner: the free walls go where the datum says, all of them; the roof is set out from the
+    // same corner and sits on the plates where they now are; the post's top is a node of the plate, 1.2 m along.
+    let src = include_str!("../../../examples/primitives/06-placed-by-a-corner.ts");
+    let m = run(src, "06-placed-by-a-corner.ts").unwrap();
+    sound(&m);
+    let v3 = topo_core::v3;
+    let front = m.find_member("Walls/Front/cap_plate").unwrap();
+    let corner = m.pos(m.member(front).start());
+    assert!(corner.distance(v3(5.0, 3.0, ft(8.0))) < 1e-9, "{corner:?}");
+    // Not turned: the front wall still runs along x.
+    assert!((m.member_axes(front).x - topo_core::Vec3::X).norm() < 1e-9);
+    // Its bottom plates moved too (they bear on the foundation where they now are).
+    let bottom = m.find_member("Walls/Front/bottom_plate").unwrap();
+    assert!((m.pos(m.member(bottom).start()).z).abs() < 1e-9 && m.pos(m.member(bottom).start()).y > 2.9);
+    // The roof: the first truss's heel is at the corner on plan, and every truss sits on the plates.
+    let t1 = m.find_member("T1/bottom_chord.H0-H1").unwrap_or_else(|_| m.members.iter().find(|x| x.role == "bottom_chord").unwrap().id);
+    let heel = m.pos(m.member(t1).start());
+    assert!((heel.x - corner.x).abs() < 1e-6 && (heel.y - corner.y).abs() < 1.0, "{heel:?} {corner:?}");
+    assert!(m.issues.iter().all(|i| i.code != "truss-not-seated"));
+    // The post's top is a node of the front cap plate, 1.2 m along it.
+    let p = m.members.iter().find(|x| x.role == "post").unwrap();
+    assert!(m.member(front).path.contains(&p.end()));
+    assert!(m.pos(p.end()).distance(corner + topo_core::Vec3::X * 1.2) < 1e-9);
+    // Moving the datum moves it all.
+    let m2 = run(&src.replace("datum(corner, [5, 3, ft(8)])", "datum(corner, [7, 3, ft(8)])"), "moved.ts").unwrap();
+    let front2 = m2.find_member("Walls/Front/cap_plate").unwrap();
+    assert!((m2.pos(m2.member(front2).start()) - corner - v3(2.0, 0.0, 0.0)).norm() < 1e-9);
+
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
     sound(&m);

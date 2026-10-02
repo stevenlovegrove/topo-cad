@@ -319,6 +319,15 @@ its pose, a model node per node (one for nodes made one), the members,
 and the nodes on faces as attachments (their numbers are the solve's).
 The solve is kept in the model to be shown.
 
+A **body can be what a generator already wrote**: a perimeter is written
+by its generator where it is drawn, and is a body of the scene with that
+content. Fixed, it stays; free, the relations to its nodes place it and
+the scene moves all of it (nodes, groups, members' directions) to where
+the solve puts it before anything else is written. A point of any member
+a generator made is a node by name: `Walls/Front/cap_plate:start` (or
+`:end`), or `Walls/Front/cap_plate@1.2` (so far along it: written as a
+node in the member's path).
+
 Writing makes a model node for each node, and joins none to another
 because of where it is: only `coincide` (or a generator, inside what it
 makes) does that. What a generator already wrote can be brought in: a
@@ -331,7 +340,10 @@ nodes named `Assembly name/point`, and `Assembly.free()`,
 them. The end of any member a generator made is a node too:
 `walls.node("Front/cap_plate", "start")`. `Assembly.bearingOn(walls)` is
 a utility: each of the assembly's members that crosses a cap plate rests
-on it (`examples/primitives/05-joists-on-walls.ts`). `examples/primitives/04-placed-by-nodes.ts` places a free beam on
+on it (`examples/primitives/05-joists-on-walls.ts`). `Perimeter.free()`
+and `TrussRoof.of(shape, { at: node, ... })` let a building be placed by
+a datum on a corner, with the roof going where the walls go
+(`examples/primitives/06-placed-by-a-corner.ts`). `examples/primitives/04-placed-by-nodes.ts` places a free beam on
 two posts by its end nodes alone.
 
 ## Seeing it

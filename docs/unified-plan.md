@@ -63,8 +63,8 @@ positions because the solve found them.
 | --- | --- |
 | Constraints are between anonymous points; bearing points are made after the solve, by geometry | Nodes are first class in the solve, named; a model's nodes are the solve's nodes |
 | `TrussRoof.bearingOn` finds what is under each truss inside the roof generator | An explicit utility the script calls, returning nodes; the roof rests on nodes |
-| Walls, perimeters, floors, roofs: placed by coordinates in the world, written straight into the model | Bodies with published nodes in the scene, placed by datums and relations |
-| `TrussRoof` has a plan `origin` | Its stations are nodes along the plates it bears on |
+| Walls inside a perimeter, floors, roofs: written straight into the model by their generators | Bodies with published nodes in the scene, placed by datums and relations |
+| `TrussRoof` can still be given a plan `origin` (the garage's script does) | Set out from a node (`at`), which it can be now |
 | `shifted`, `studsAt`, surveyed walls: as-built numbers written over the layout rule | Readings: measured constraints on the same unknowns the layout rule hints |
 | The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
@@ -99,15 +99,18 @@ Each step leaves everything working and removes one row above.
    bays are now joined by `coincide`). `Assembly.bearingOn` is a utility
    that makes a `rest` for each member crossing a cap plate, and says so
    where one does not touch.
-5. **Walls and perimeters publish nodes** (plate ends, corners, points
-   along plates) and are placed by datums; roofs take their stations
-   from nodes along the plates they bear on. `TrussRoof.origin` goes.
-   *Begun:* the ends of any member a generator made are nodes a script
-   can name (`walls.node("Front/cap_plate", "start")`), brought into the
-   scene when a relation names them; the scene can also bring in a
-   generator's member for something to rest on. Still to go: perimeters
-   and walls as bodies of the scene (placed by datums, not coordinates),
-   points along their plates as nodes, and the roof on them.
+5. **Walls and perimeters publish nodes.** *Largely done.* A perimeter is
+   a body of the scene: its generator writes it where it is drawn, and if
+   it is `free()`, relations to its nodes place it and everything it made
+   moves with it. Any point of a member a generator made is a node a
+   script can name: an end (`walls.node("Front/cap_plate", "start")`) or
+   a distance along it (`walls.node("Front/cap_plate", 1.2)`, which
+   becomes a node in the member's path). A roof can be set out from a
+   node (`at`) instead of a point, so it goes where the walls go. Still
+   to go: the walls inside a perimeter as bodies of their own (today the
+   perimeter is one rigid body); `TrussRoof.origin` removed once the
+   garage's script uses `at`; the roof's stations as nodes along the
+   plates (today: a node for the first, the spacing for the rest).
 6. **Readings as measured constraints.** `shifted`, `studsAt`, surveyed
    walls and the truss-shape fit move onto the measured tier; the layout
    rules become hints.

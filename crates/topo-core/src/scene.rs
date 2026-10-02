@@ -40,6 +40,17 @@ struct Body {
     /// Where it was put (for a fixed body, where it is).
     start: Frame,
     parent: Option<GroupId>,
+    /// What a generator already wrote into the model for it, where it was put; moved with it.
+    content: Option<Content>,
+}
+
+/// What a generator wrote into the model for a body: its group (and those in it), nodes and members.
+#[derive(Debug, Clone, Default)]
+pub struct Content {
+    pub group: GroupId,
+    pub groups: Vec<GroupId>,
+    pub nodes: Vec<NodeId>,
+    pub members: Vec<MemberId>,
 }
 
 struct Node {
@@ -52,6 +63,8 @@ struct Node {
     fixed: Option<(usize, Vec3)>,
     /// The members it is on the face of.
     faces: Vec<(usize, Face)>,
+    /// A point of a member of the model, this far along it: written as a node in its path.
+    along: Option<(MemberId, f64)>,
 }
 
 struct Member {
@@ -74,6 +87,8 @@ struct Member {
 pub struct Written {
     pub groups: Vec<GroupId>,
     pub nodes: Vec<NodeId>,
+    /// The nodes' names, as `nodes`.
+    pub names: Vec<String>,
     pub members: Vec<MemberId>,
     pub open: Vec<String>,
 }
@@ -120,8 +135,47 @@ impl Scene {
             self.sys.constrain(&format!("{name} upright"), ts::Tier::Default, ts::Kind::Aligned(ts::Dir(f, [0.0, 0.0, 1.0]), ts::Dir(ts::WORLD, [0.0, 0.0, 1.0])));
             self.sys.constrain(&format!("{name} turned as it was put"), ts::Tier::Default, ts::Kind::Aligned(ts::Dir(f, [1.0, 0.0, 0.0]), ts::Dir(ts::WORLD, arr(start.x))));
         }
-        self.bodies.push(Body { name: name.into(), kind: kind.into(), frame: f, start, parent });
+        self.bodies.push(Body { name: name.into(), kind: kind.into(), frame: f, start, parent, content: None });
         BodyRef(self.bodies.len() - 1)
+    }
+
+    /// A body for what a generator has already written into the model, where it put it
+    /// (`start`): fixed there, or free, and then moved, all of it, to where the solve puts it.
+    pub fn body_written(&mut self, name: &str, start: Frame, free: bool, content: Content) -> BodyRef {
+        let b = self.body(name, "", start, free, None);
+        self.bodies[b.0].content = Some(content);
+        b
+    }
+
+    /// The body whose written content has this member of the model.
+    pub fn body_with(&self, m: MemberId) -> Option<BodyRef> {
+        self.bodies.iter().position(|b| b.content.as_ref().is_some_and(|c| c.members.contains(&m))).map(BodyRef)
+    }
+
+    /// Where a point of the world (as things were put) is in a body: none for the world.
+    fn local(&self, body: Option<BodyRef>, p: Vec3) -> (ts::FrameId, Vec3) {
+        match body {
+            Some(b) => (self.bodies[b.0].frame, self.bodies[b.0].start.to_local(p)),
+            None => (ts::WORLD, p),
+        }
+    }
+
+    /// A point of a member of the model, `at` along it from its start, as a node (fixed in the
+    /// member's body, if it is in one): written as a node in the member's path.
+    pub fn node_along(&mut self, name: &str, model: &Model, m: MemberId, at: f64) -> Result<NodeRef, String> {
+        if self.node_named(name).is_some() {
+            return Err(format!("two nodes named {name}"));
+        }
+        let axes = model.member_axes(m);
+        if at < -1e-9 || at > axes.length + 1e-9 {
+            return Err(format!("{name}: {at} m is not along {} ({:.3} m long)", model.member_path(m), axes.length));
+        }
+        let body = self.body_with(m);
+        let (frame, local) = self.local(body, axes.origin + axes.x * at);
+        let id = self.sys.node(name, ts::Point::at(frame, arr(local)));
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: body.map(|b| (b.0, local)), faces: vec![], along: Some((m, at)) });
+        self.same.push(self.nodes.len() - 1);
+        Ok(NodeRef(self.nodes.len() - 1))
     }
 
     /// A node fixed in a body, at `at` in its coordinates.
@@ -130,31 +184,44 @@ impl Scene {
             return Err(format!("two nodes named {name}"));
         }
         let id = self.sys.node(name, ts::Point::at(self.bodies[body.0].frame, arr(at)));
-        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: Some((body.0, at)), faces: vec![] });
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: Some((body.0, at)), faces: vec![], along: None });
         self.same.push(self.nodes.len() - 1);
         Ok(NodeRef(self.nodes.len() - 1))
     }
 
-    /// A node of the model (written by a generator), brought in under a name: fixed where it is.
+    /// A node of the model (written by a generator), brought in under a name: fixed in the body
+    /// whose content it is (moving with it), or else in the world.
     pub fn import_node(&mut self, name: &str, model: &Model, n: NodeId) -> Result<NodeRef, String> {
         if self.node_named(name).is_some() {
             return Err(format!("two nodes named {name}"));
         }
-        let id = self.sys.node(name, ts::Point::at(ts::WORLD, arr(model.pos(n))));
-        self.nodes.push(Node { name: name.into(), of: vec![id], model: Some(n), fixed: None, faces: vec![] });
+        let body = self.bodies.iter().position(|b| b.content.as_ref().is_some_and(|c| c.nodes.contains(&n))).map(BodyRef);
+        let (frame, local) = self.local(body, model.pos(n));
+        let id = self.sys.node(name, ts::Point::at(frame, arr(local)));
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: Some(n), fixed: body.map(|b| (b.0, local)), faces: vec![], along: None });
         self.same.push(self.nodes.len() - 1);
         Ok(NodeRef(self.nodes.len() - 1))
     }
 
-    /// A member of the model (written by a generator), brought in: fixed where it is, for
-    /// relations to it (something resting on it).
+    /// A member of the model (written by a generator), brought in, for relations to it
+    /// (something resting on it): in the body whose content it is (moving with it), or else
+    /// fixed in the world.
     pub fn import_member(&mut self, model: &Model, m: MemberId, label: &str) -> MemberRef {
         if let Some(i) = self.members.iter().position(|x| x.model == Some(m)) {
             return MemberRef(i);
         }
         let mm = model.member(m);
         let spec = MemberSpec { name: mm.name.clone(), ..MemberSpec::new(&mm.role, mm.section, mm.material).anchor(mm.anchor) };
-        self.members.push(Member { body: None, model: Some(m), path: vec![], spec, axes: model.member_axes(m), label: label.into() });
+        let body = self.body_with(m);
+        let a = model.member_axes(m);
+        let axes = match body {
+            Some(b) => {
+                let f = &self.bodies[b.0].start;
+                MemberAxes { origin: f.to_local(a.origin), x: f.dir_to_local(a.x), u: f.dir_to_local(a.u), v: f.dir_to_local(a.v), length: a.length }
+            }
+            None => a,
+        };
+        self.members.push(Member { body: body.map(|b| b.0), model: Some(m), path: vec![], spec, axes, label: label.into() });
         MemberRef(self.members.len() - 1)
     }
 
@@ -247,7 +314,7 @@ impl Scene {
         let b = on(self, lower.0, &pl, tl, &lower_name);
         let (pa, pb) = (self.sys.at(a), self.sys.at(b));
         self.sys.constrain(&format!("{name}: on both"), ts::Tier::Hard, ts::Kind::Coincident(pa, pb));
-        self.nodes.push(Node { name: name.into(), of: vec![a, b], model: None, fixed: None, faces: vec![(upper.0, fu), (lower.0, fl)] });
+        self.nodes.push(Node { name: name.into(), of: vec![a, b], model: None, fixed: None, faces: vec![(upper.0, fu), (lower.0, fl)], along: None });
         self.same.push(self.nodes.len() - 1);
         let n = self.nodes.len() - 1;
         self.rests.push((upper.0, lower.0, n, name.into()));
@@ -276,13 +343,47 @@ impl Scene {
             }
             return Err(said.join(". "));
         }
-        let groups: Vec<GroupId> = self.bodies.iter().map(|b| model.add_group(&b.name, &b.kind, frame(&self.sys.in_world(b.frame)), b.parent)).collect();
+        // What generators wrote for bodies is moved to where the solve put them; other bodies get their groups.
+        let mut groups = vec![];
+        for b in &self.bodies {
+            let at = frame(&self.sys.in_world(b.frame));
+            match &b.content {
+                Some(c) => {
+                    let moved = |p: Vec3| at.to_world(b.start.to_local(p));
+                    let turned = |d: Vec3| at.dir_to_world(b.start.dir_to_local(d));
+                    if (moved(Vec3::ZERO) - Vec3::ZERO).norm() > 1e-12 || (turned(Vec3::X) - Vec3::X).norm() > 1e-12 || (turned(Vec3::Y) - Vec3::Y).norm() > 1e-12 {
+                        for &n in &c.nodes {
+                            model.nodes[n.idx()].pos = moved(model.nodes[n.idx()].pos);
+                        }
+                        for &g in &c.groups {
+                            let f = model.groups[g.idx()].frame;
+                            model.groups[g.idx()].frame = Frame { origin: moved(f.origin), x: turned(f.x), y: turned(f.y), z: turned(f.z) };
+                        }
+                        for &m in &c.members {
+                            model.members[m.idx()].depth_dir = model.members[m.idx()].depth_dir.map(turned);
+                        }
+                        model.reset_index();
+                    }
+                    groups.push(c.group);
+                }
+                None => groups.push(model.add_group(&b.name, &b.kind, at, b.parent)),
+            }
+        }
         // A model node for each node, one for nodes made one (a node brought in is itself; nodes
         // made one with it are it). None is joined to another because of where it is.
         let mut written: Vec<Option<NodeId>> = vec![None; self.nodes.len()];
         for i in 0..self.nodes.len() {
             if let Some(n) = self.nodes[i].model {
                 let root = self.root(i);
+                written[root] = Some(n);
+            }
+        }
+        // (So is a point along a member: nodes made one with it are that node of the member.)
+        for i in 0..self.nodes.len() {
+            let root = self.root(i);
+            if let (None, Some((m, at))) = (written[root], self.nodes[i].along) {
+                let n = model.node_along(m, at).map_err(|e| format!("{}: {e}", self.nodes[i].name))?;
+                model.nodes[n.idx()].name.get_or_insert(self.nodes[i].name.clone());
                 written[root] = Some(n);
             }
         }
@@ -302,10 +403,12 @@ impl Scene {
         }
         let mut members = vec![];
         for m in &self.members {
-            let Some(body) = m.body else {
-                members.push(m.model.expect("a member is of a body, or brought in"));
+            // (A member a generator wrote is itself; it has been moved with its body.)
+            if let Some(id) = m.model {
+                members.push(id);
                 continue;
-            };
+            }
+            let body = m.body.expect("a member is of a body, or brought in");
             let pose = self.sys.in_world(self.bodies[body].frame);
             let r = frame(&pose);
             let mut spec = m.spec.clone();
@@ -322,7 +425,8 @@ impl Scene {
         if !self.bodies.is_empty() && report.unknowns > 0 {
             model.solves.push(solved(&self.name, &self.sys.explain(&report)));
         }
-        Ok(Written { groups, nodes, members, open: report.open })
+        let names = self.nodes.iter().map(|n| n.name.clone()).collect();
+        Ok(Written { groups, nodes, names, members, open: report.open })
     }
 }
 

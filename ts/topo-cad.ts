@@ -590,18 +590,21 @@ export class Perimeter {
     readonly z: Length,
     readonly segments: readonly Segment[],
     readonly closed: boolean,
+    readonly free_: boolean = false,
   ) {}
 
   static start(name: string, at: Point, opts: { z?: Length } = {}): Perimeter {
     return new Perimeter(name, at, opts.z ?? 0, [], false);
   }
   /**
-   * An end of one of its members, as a node to relate others to:
-   * `walls.node("Front/cap_plate", "start")` (the member's path within the
-   * perimeter; `cap_plate#2` where a wall's cap is in pieces).
+   * A point of one of its members, as a node to relate others to: an end
+   * (`walls.node("Front/cap_plate", "start")`), or a distance along it from
+   * its start (`walls.node("Front/cap_plate", 1.2)`). The member is named by
+   * its path within the perimeter (`cap_plate#2` where a wall's cap is in
+   * pieces).
    */
-  node(member: string, end: "start" | "end"): NodeHandle {
-    return new NodeHandle(`${this.name}/${member}:${end}`);
+  node(member: string, at: "start" | "end" | Length): NodeHandle {
+    return new NodeHandle(typeof at === "number" ? `${this.name}/${member}@${at}` : `${this.name}/${member}:${at}`);
   }
   /** Current end point of the path. */
   get end(): Point {
@@ -610,7 +613,7 @@ export class Perimeter {
   private push(to: Point, side: Side): Perimeter {
     if (this.closed) throw new Error(`perimeter ${this.name} is already closed`);
     const spec = side === "open" ? null : side.spec;
-    return new Perimeter(this.name, this.start, this.z, [...this.segments, { to, side: spec }], false);
+    return new Perimeter(this.name, this.start, this.z, [...this.segments, { to, side: spec }], false, this.free_);
   }
   /** Straight segment to an absolute point. */
   to(p: Point, side: Side): Perimeter {
@@ -629,7 +632,7 @@ export class Perimeter {
   /** Final segment back to the start. */
   close(side: Side): Perimeter {
     const p = this.push(this.start, side);
-    return new Perimeter(p.name, p.start, p.z, p.segments, true);
+    return new Perimeter(p.name, p.start, p.z, p.segments, true, p.free_);
   }
   /** One of this perimeter's walls as a drawing target, e.g. `elevation(p.wall("Wall A"))`. */
   wall(name: string): string {
@@ -643,13 +646,21 @@ export class Perimeter {
   moved(d: Point | Point3): Perimeter {
     const mv = (p: Point): Point => [p[0] + d[0], p[1] + d[1]];
     const dz = (d as readonly number[])[2] ?? 0;
-    return new Perimeter(this.name, mv(this.start), this.z + dz, this.segments.map((g) => ({ ...g, to: mv(g.to) })), this.closed);
+    return new Perimeter(this.name, mv(this.start), this.z + dz, this.segments.map((g) => ({ ...g, to: mv(g.to) })), this.closed, this.free_);
   }
   named(name: string): Perimeter {
-    return new Perimeter(name, this.start, this.z, this.segments, this.closed);
+    return new Perimeter(name, this.start, this.z, this.segments, this.closed, this.free_);
+  }
+  /**
+   * Free: where it is drawn is only where the solve starts; relations to its
+   * nodes (`datum`, `coincide`) place it, all of it, and it keeps upright and
+   * turned as drawn where they leave it free.
+   */
+  free(): Perimeter {
+    return new Perimeter(this.name, this.start, this.z, this.segments, this.closed, true);
   }
   toJSON() {
-    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed };
+    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed, free: this.free_ };
   }
 }
 
@@ -894,7 +905,8 @@ interface AreaLoad {
 export class TrussRoof {
   private constructor(readonly spec: {
     readonly name: string;
-    readonly origin: Point;
+    readonly origin?: Point;
+    readonly at?: string;
     readonly span_dir: Point;
     readonly shape: TrussShape;
     readonly length: Length;
@@ -909,17 +921,21 @@ export class TrussRoof {
   }) {}
 
   /**
-   * `origin`: where the first truss's left heel is on plan; `spanDir`:
-   * direction the trusses span; `length`: along the ridge. Their height is
-   * not given: they sit on what they bear on (`bearingOn`).
+   * Where the first truss's left heel is on plan: `at` a node (a corner of
+   * the walls: `walls.node("Left/cap_plate", "start")`), so the roof goes
+   * where the walls do; or `origin`, a point. `spanDir`: the direction the
+   * trusses span; `length`: along the ridge. Their height is not given:
+   * they sit on what they bear on (`bearingOn`).
    */
   static of(
     shape: TrussShape,
-    o: { name?: string; origin: Point; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal },
+    o: { name?: string; origin?: Point; at?: NodeHandle; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal },
   ): TrussRoof {
+    if ((o.origin === undefined) === (o.at === undefined)) throw new Error("a truss roof needs one of origin or at");
     return new TrussRoof({
       name: o.name ?? "Roof trusses",
       origin: o.origin,
+      at: o.at?.name,
       span_dir: o.spanDir,
       shape,
       length: o.length,
@@ -951,7 +967,8 @@ export class TrussRoof {
   /** Fink trusses (shorthand for `TrussRoof.of(TrussShape.fink(...), ...)`). */
   static fink(o: {
     name?: string;
-    origin: Point;
+    origin?: Point;
+    at?: NodeHandle;
     spanDir: Point;
     span: Length;
     length: Length;

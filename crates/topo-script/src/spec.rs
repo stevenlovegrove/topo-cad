@@ -295,6 +295,9 @@ pub struct PerimeterSpec {
     pub z: f64,
     pub segments: Vec<SegmentSpec>,
     pub closed: bool,
+    /// Free: placed by relations to its nodes, not where it is drawn.
+    #[serde(default)]
+    pub free: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -342,7 +345,11 @@ pub struct AssemblyLoadSpec {
 #[derive(Debug, Deserialize)]
 pub struct TrussRoofSpec {
     pub name: String,
-    pub origin: (f64, f64),
+    /// Where the first heel is on plan: a point, or a node (`at`).
+    #[serde(default)]
+    pub origin: Option<(f64, f64)>,
+    #[serde(default)]
+    pub at: Option<String>,
     pub span_dir: (f64, f64),
     pub shape: TrussShape,
     pub length: f64,
@@ -455,7 +462,10 @@ impl Builder {
         Ok(wall)
     }
 
-    fn perimeter(&mut self, p: &PerimeterSpec) -> Result<(), String> {
+    /// A perimeter: written by its generator where it is drawn, and a body of the scene (fixed
+    /// there, or free and moved to where the relations to its nodes put it).
+    fn perimeter(&mut self, p: &PerimeterSpec, sc: &mut scene::Scene) -> Result<(), String> {
+        let before = (self.m.nodes.len(), self.m.members.len(), self.m.groups.len());
         let mut per = Perimeter::start(&p.name, Vec2::new(p.start.0, p.start.1));
         per.z = p.z;
         let n = p.segments.len();
@@ -483,6 +493,13 @@ impl Builder {
         for node in nodes {
             self.m.supports.push(Support { node, restraint: Restraint::PINNED, description: Some("Bottom plate on foundation".into()) });
         }
+        let content = scene::Content {
+            group: parts.group,
+            groups: (before.2..self.m.groups.len()).map(|g| GroupId(g as u32)).collect(),
+            nodes: (before.0..self.m.nodes.len()).map(|n| NodeId(n as u32)).collect(),
+            members: (before.1..self.m.members.len()).map(|m| MemberId(m as u32)).collect(),
+        };
+        sc.body_written(&p.name, Frame { origin: v3(p.start.0, p.start.1, p.z), ..Frame::WORLD }, p.free, content);
         self.perimeters.insert(p.name.clone(), (parts, top));
         Ok(())
     }
@@ -501,7 +518,16 @@ impl Builder {
         topo_timber::truss::Bearing { name: self.m.member_path(id), a: self.m.pos(mm.start()) + middle, b: self.m.pos(mm.end()) + middle, half_width }
     }
 
-    fn truss_roof(&mut self, r: &TrussRoofSpec) -> Result<(), String> {
+    fn truss_roof(&mut self, r: &TrussRoofSpec, w: &scene::Written) -> Result<(), String> {
+        let origin = match (&r.at, r.origin) {
+            (Some(at), _) => {
+                let i = w.names.iter().position(|n| n == at).ok_or_else(|| format!("roof {}: no node {at}", r.name))?;
+                let p = self.m.pos(w.nodes[i]);
+                (p.x, p.y)
+            }
+            (None, Some(o)) => o,
+            (None, None) => return Err(format!("roof {}: give origin or at", r.name)),
+        };
         let mat = self.material(&r.grade)?;
         r.shape.validate()?;
         for o in &r.overrides {
@@ -529,7 +555,7 @@ impl Builder {
         // Where the trusses start from before they are sat on what is under them: the highest top.
         let start = bearings.iter().map(|b| b.a.z.max(b.b.z)).fold(f64::MIN, f64::max);
         let span = Vec3::new(r.span_dir.0, r.span_dir.1, 0.0).try_normalized().ok_or("roof span direction is zero")?;
-        let mut roof = TrussRoof::new(&r.name, v3(r.origin.0, r.origin.1, start), span, r.shape.clone(), r.length, r.spacing, mat);
+        let mut roof = TrussRoof::new(&r.name, v3(origin.0, origin.1, start), span, r.shape.clone(), r.length, r.spacing, mat);
         roof.chord = r.chord;
         roof.web = r.web;
         for o in &r.overrides {
@@ -891,26 +917,29 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
         m.name_direction(root, name, d);
     }
     let mut b = Builder { m, grades: HashMap::new(), perimeters: HashMap::new(), assemblies: HashMap::new(), root };
-    // Perimeters first so roofs can bear on them regardless of order.
+    // One scene: perimeters (written by their generator, as bodies of it), assemblies, and the
+    // relations between their nodes; solved, then written into the model. Then roofs, on what it placed.
+    let mut sc = scene::Scene::new("The building's parts and the relations between them");
     for item in &spec.items {
         if let ItemSpec::Perimeter(p) = item {
-            b.perimeter(p)?;
+            b.perimeter(p, &mut sc)?;
         }
     }
-    // Then assemblies (roofs may bear on them), placed together with the relations between
-    // their nodes: one scene, solved, then written into the model. Then roofs.
-    let mut sc = scene::Scene::new("Assemblies and the relations between them");
     let mut declared = vec![];
     for item in &spec.items {
         if let ItemSpec::Assembly(a) = item {
             declared.push((a, b.declare(&mut sc, a)?));
         }
     }
-    // A node by name: one of the scene's, or an end of a member a generator wrote
-    // (`Walls/Front/cap_plate:start`), brought in.
+    // A node by name: one of the scene's; or a point of a member a generator wrote, brought
+    // in: an end (`Walls/Front/cap_plate:start`) or so far along it (`Walls/Front/cap_plate@1.2`).
     let node = |sc: &mut scene::Scene, m: &Model, name: &str| -> Result<scene::NodeRef, String> {
         if let Some(n) = sc.node_named(name) {
             return Ok(n);
+        }
+        if let Some((path, at)) = name.rsplit_once('@') {
+            let at: f64 = at.parse().map_err(|_| format!("{name}: not a distance along {path}"))?;
+            return sc.node_along(name, m, m.find_member(path)?, at);
         }
         let end = name.rsplit_once(':').and_then(|(path, end)| {
             let id = m.find_member(path).ok()?;
@@ -922,9 +951,15 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
         });
         match end {
             Some(n) => sc.import_node(name, m, n),
-            None => Err(format!("no node named {name} (an assembly's point, as `Assembly/point`, or an end of a member, as `Perimeter/Wall/cap_plate:start` or `:end`)")),
+            None => Err(format!("no node named {name} (an assembly's point, as `Assembly/point`; or a point of a member, as `Perimeter/Wall/cap_plate:start`, `:end` or `@1.2`)")),
         }
     };
+    // (Nodes a roof is set out from are brought in too.)
+    for item in &spec.items {
+        if let ItemSpec::TrussRoof(TrussRoofSpec { at: Some(at), .. }) = item {
+            node(&mut sc, &b.m, at)?;
+        }
+    }
     for item in &spec.items {
         match item {
             ItemSpec::Coincide { a, b: other } => {
@@ -947,7 +982,7 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
     }
     for item in &spec.items {
         if let ItemSpec::TrussRoof(r) = item {
-            b.truss_roof(r)?;
+            b.truss_roof(r, &written)?;
         }
     }
     Ok(b.m)
