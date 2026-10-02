@@ -372,6 +372,7 @@
         <div id="structBody">
           <label title="Nodes on members' axes: where members meet, and their ends"><input type="checkbox" data-k="axis"><span class="key" style="color:#555">●</span>Nodes on axes <span class="muted" id="skelAxisN"></span></label>
           <label title="Nodes on a member's face: bearing points. Hover one for the face and the two numbers that place it there"><input type="checkbox" data-k="face"><span class="key" style="color:#ea580c">◆</span>Bearing points, on faces <span class="muted" id="skelFaceN"></span></label>
+          <label title="The solve's nodes: named points, fixed in something or free on a line or a face of it. Hover one for what it is a point of and its numbers, with their bounds"><input type="checkbox" data-k="snodes"><span class="key" style="color:#0f766e">○</span>Solve nodes <span class="muted" id="skelSolveN"></span></label>
           <label title="What a solve had to find: rigid things free to move, and numbers. Hover one for its freedoms and what settled each"><input type="checkbox" data-k="vars"><span class="key">▣</span>Free variables <span class="muted" id="skelVarN"></span></label>
           <label title="What the solve was asked to hold. Hover one for what it holds together and how far off it is"><input type="checkbox" data-k="cons"><span class="key">◯</span>Constraints <span class="muted" id="skelConN"></span></label>
           <div class="muted" style="margin-top:3px">Settled by / tier:</div>
@@ -824,7 +825,7 @@ let drag3dActive = false;
 // is coloured by what settled it.
 const SKEL_KEY = "topo.skeleton";
 const TIER_COLOUR = { hard: "#1d4ed8", weight: "#b45309", measured: "#7c3aed", hint: "#15803d", open: "#dc2626" };
-let skel = { on: true, axis: true, face: true, vars: true, cons: true, hard: true, weight: true, measured: true, hint: true, open: true };
+let skel = { on: true, axis: true, face: true, snodes: true, vars: true, cons: true, hard: true, weight: true, measured: true, hint: true, open: true };
 try { Object.assign(skel, JSON.parse(localStorage.getItem(SKEL_KEY) || "{}")); } catch (_) {}
 let skelItems = [], hoverSkel = null;
 const worstOf = (v) => ["open", "hint", "measured", "weight", "hard"].find((k) => v.freedoms.some((f) => f.settled === k)) || "hard";
@@ -835,9 +836,10 @@ function renderSkeletonPanel() {
   $("struct3d").hidden = !S;
   if (!S) return;
   for (const c of $("struct3d").querySelectorAll("input[data-k]")) c.checked = !!skel[c.dataset.k];
-  const vars = S.solves.reduce((n, x) => n + x.variables.length, 0), cons = S.solves.reduce((n, x) => n + x.constraints.length, 0);
+  const vars = S.solves.reduce((n, x) => n + x.variables.filter((v) => !v.node).length, 0), cons = S.solves.reduce((n, x) => n + x.constraints.length, 0);
   $("skelAxisN").textContent = `(${S.nodes.filter((n) => !n.on_face.length).length})`;
   $("skelFaceN").textContent = `(${S.nodes.filter((n) => n.on_face.length).length})`;
+  $("skelSolveN").textContent = `(${S.solves.reduce((n, x) => n + x.nodes.length, 0)})`;
   $("skelVarN").textContent = `(${vars})`;
   $("skelConN").textContent = `(${cons})`;
 }
@@ -862,9 +864,20 @@ function variableTip(v, solve) {
   lines.push(`in: ${solve.name}`);
   return lines.join("\n");
 }
+function solveNodeTip(n, solve) {
+  const what = { "fixed": "fixed in", "on a line": "on a line of", "on a face": "on a face of", "free": "free in" }[n.kind] || n.kind;
+  const lines = [`${n.name}`, `a node, ${what} ${n.of}${n.numbers.length ? ` (${n.numbers.length} number${n.numbers.length === 1 ? "" : "s"})` : " (no numbers of its own)"}`];
+  for (const x of n.numbers) {
+    lines.push(`   ${x.name}`, `   = ${x.value.toFixed(4)} m${x.bounds ? `, kept between ${x.bounds[0].toFixed(3)} and ${x.bounds[1].toFixed(3)}` : ", unbounded"} · ${x.settled === "open" ? "open" : `settled by ${x.settled}`}`);
+  }
+  const held = solve.constraints.filter((c) => (c.nodes || []).includes(n.name));
+  if (held.length) lines.push("constraints on it:", ...held.map((c) => `   ${c.tier.padEnd(7)} ${c.name}`));
+  lines.push(`in: ${solve.name}`);
+  return lines.join("\n");
+}
 function constraintTip(c, solve) {
   const how = c.gap > 1e-7 ? `off by ${c.points.length ? mm(c.gap) : c.gap.toFixed(4)}` : c.room == null ? "holds" : c.room > 1e-7 ? `clear by ${mm(c.room)} (one-sided: not touching)` : "touching (one-sided)";
-  return [`${c.name}`, `${c.tier} · ${c.kind} · ${how}`, "depends on:", ...c.touches.map((t) => `   ${t}`), `in: ${solve.name}`].join("\n");
+  return [`${c.name}`, `${c.tier} · ${c.kind} · ${how}`, ...((c.nodes || []).length ? ["between the nodes:", ...c.nodes.map((t) => `   ${t}`)] : []), "depends on:", ...c.touches.map((t) => `   ${t}`), `in: ${solve.name}`].join("\n");
 }
 
 function drawSkeleton(g, P, r, u) {
@@ -934,7 +947,27 @@ function drawSkeleton(g, P, r, u) {
       if (hotVar && hot) { const q = P(hotVar.at); g.globalAlpha = 0.5; g.beginPath(); g.moveTo(q[0], q[1]); g.lineTo(mid[0], mid[1]); g.stroke(); g.globalAlpha = 1; }
       skelItems.push({ x: mid[0], y: mid[1], key, tip: () => constraintTip(c, solve), rank: 2, ring: 8 });
     });
+    if (skel.snodes) solve.nodes.forEach((n, ni) => {
+      const settled = n.numbers.length ? (["open", "hint", "measured", "weight", "hard"].find((k) => n.numbers.some((x) => x.settled === k)) || "hard") : null;
+      if (settled && !skel[settled]) return;
+      const key = `s:${si}:${ni}`, hot = hoverSkel === key, p = P(n.at), col = "#0f766e";
+      if (hot) for (const x of n.numbers) {
+        // Its number: the range it is kept in, as a bar along its direction through the node, and the direction.
+        if (x.bounds) {
+          const a = P(n.at.map((v, k) => v + x.dir[k] * (x.bounds[0] - x.value))), b = P(n.at.map((v, k) => v + x.dir[k] * (x.bounds[1] - x.value)));
+          g.strokeStyle = "rgba(15,118,110,.45)"; g.lineWidth = 5; g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+          for (const q of [a, b]) { g.fillStyle = col; g.fillRect(q[0] - 1.5, q[1] - 5, 3, 10); }
+        }
+        arrow(p, x.dir, 30, TIER_COLOUR[x.settled], x.settled, { both: true });
+      }
+      g.beginPath(); g.arc(p[0], p[1], hot ? 5.5 : 3.6, 0, 7);
+      g.fillStyle = n.numbers.length ? "#fff" : col; g.fill();
+      g.strokeStyle = n.numbers.length ? TIER_COLOUR[settled] : col; g.lineWidth = hot ? 2.4 : 1.6; g.stroke();
+      skelItems.push({ x: p[0], y: p[1], key, tip: () => solveNodeTip(n, solve), rank: 1 });
+    });
     if (skel.vars) solve.variables.forEach((v, vi) => {
+      // (A number that is one of a node's is shown with its node.)
+      if (v.node && skel.snodes) return;
       const w = worstOf(v);
       if (!v.freedoms.some((f) => skel[f.settled])) return;
       const key = `v:${si}:${vi}`, hot = hoverSkel === key, p = P(v.at), col = TIER_COLOUR[w];

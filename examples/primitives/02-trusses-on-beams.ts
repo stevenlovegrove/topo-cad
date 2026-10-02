@@ -1,25 +1,31 @@
 // Free variables: trusses sat on what is under them.
 //
 // Three trusses on two beams, the far beam 2 inches lower. The roof is given
-// no height. Each truss is a rigid thing, free to move (6 freedoms), with
-// weight. It is asked, all hard:
+// no height: `bearingOn` is a utility that finds what is under each truss
+// and makes nodes there.
 //
-// - its chord's underside is no lower than each edge of each beam's top (a
-//   one-sided contact: it may sit on it, or be clear of it);
-// - its heel is where the layout puts it on plan (datums);
-// - it is plumb and square to the ridge (it is braced).
+// - Support nodes, fixed on the beams: under each truss, an edge, the middle
+//   and the other edge of each beam's top.
+// - Which two carry each truss: sloping down to the lower beam, the far edge
+//   of each top.
+// - Chord nodes: the point of the truss's chord that is over each of those
+//   two. Each is on a line of the truss: one number, bounded by the chord.
 //
-// Its weight then brings it down onto whatever holds it up. The solve finds
-// which contacts those are: sloping down to the lower beam, one edge of each
-// top; it is clear of the other two by a fraction of a millimetre.
+// Each truss is a rigid thing, free to move (6 freedoms). It is asked:
 //
-// In the 3D view, turn on Skeleton. Squares are the trusses (at their heels),
-// short bars are numbers (where along the chord it is over each edge), rings
-// are constraints (faint and dotted: a contact that is not touching), and
-// orange diamonds are the bearing points the trusses were then joined to the
-// beams at (on the beams' top faces: their axes are through their middles).
-// Hover a square for its six freedoms, each coloured by what settled it:
-// hard, or its weight.
+// - hard: each chord node is on its support node (level with it, over it);
+// - hard (datums): its heel is where the layout puts it on plan;
+// - hints: its plane is plumb and square to the ridge, and it is level.
+//
+// The supports decide its height and its tilt; the level hint gives way to
+// them (and says by how much); the other hint settles its roll and its turn
+// on plan.
+//
+// In the 3D view, turn on Skeleton. Squares are the trusses (at their heels);
+// small circles are the solve's nodes (hover one for what it is a point of,
+// and its number with its bounds); rings are constraints; orange diamonds
+// are the model's bearing points, which are the support nodes the trusses
+// sit on (on the beams' top faces: their axes are through their middles).
 import { Assembly, Building, DFL, ft, inch, TrussRoof, TrussShape } from "topo-cad";
 
 const grade = DFL.No2;

@@ -25,6 +25,12 @@ is wanted, and "Not yet" what is left.
   frame. A number (a distance to hold, say) is likewise a constant plus so
   much of some scalars. So a generator with a `span` puts its far heel at
   `span` along x, and whatever it is fixed to sizes it.
+- **Nodes are the interface.** A node is a named point of the system
+  (`System::node`): fixed in its frame, or with numbers of its own (one:
+  it is somewhere on a line; two: on a face), which may be bounded.
+  Constraints are stated between nodes, and the report lists each node
+  with what it is a point of, its kind, its numbers with their bounds,
+  and what settled each.
 - **A constraint relates points and directions in whatever frames**:
   coincident, distance, offset along a direction, aligned (the same
   direction), parallel (either sense: held as aligned in whichever sense
@@ -43,7 +49,9 @@ within what the ones above leave free:
 2. **Weight**: frames given weight settle as low as the hard constraints
    let them, onto whatever holds them up. Which one-sided constraints end
    up touching is found here, not chosen beforehand. Weight moves frames,
-   never a scalar.
+   never a scalar. *The solver has this; the model does not use it yet*
+   (one-sided contact and weight wait for loads: see
+   [unified-plan.md](unified-plan.md)).
 3. **Measured**: it should hold, to a stated tolerance. A reading from a
    scan or a tape.
 4. **Default**: a generator's hint ("my y is up"), or a layout rule. It
@@ -204,24 +212,35 @@ the chord's lumber, at either edge of the top) or along it (a wall under
 a gable truss, for as far as the two overlap). Not only at the heels: a
 beam under the middle is under it too.
 
-**It rests on them as a rigid thing does**, and the solve finds how.
-Each truss is a rigid frame, free in the world, with weight, in one
-system for the roof (`TrussRoof::seats`). All hard:
+`bearingOn` is a utility that finds these by geometry, and what it makes
+is nodes (`TrussRoof::seats`):
 
-- **contacts, one-sided**: the chord's underside, where it is over each
-  of those tops, is no lower than it. It may sit on it or be clear of it;
-- **datums**: its heel is where the layout puts it on plan, along the
-  ridge and along the span;
-- **bracing**: it is plumb and square to the ridge (a truss does not lie
-  down under its own weight).
+- **support nodes**, fixed on the bearings: at each edge and the middle
+  of a top the truss crosses, and at each end of where it lies along one;
+- which two of them **carry** the truss: those of the upper hull of the
+  supports (their heights, less the chord's own height there) that its
+  middle is between. It is clear of any that are lower; a chord that
+  rises (scissors) is carried where it meets an edge first;
+- **chord nodes**: for each carrying support, the point of the chord's
+  underside over it. Each is on a line of the truss: one number, bounded
+  by the chord.
 
-Its weight then brings it down onto what holds it up: the two contacts
-either side of its middle that it reaches first, level or tilted as they
-say, clear of any that are lower. A chord that rises (scissors) sits
-where it is over the bearing, on the edge it meets first. Nothing ties
-one truss to another, so each is a component of its own. On level plates
-no step is taken and the trusses are exactly where the plates' height
-puts them.
+Each truss is a rigid frame, free in the world, in one system for the
+roof:
+
+- **hard**: each chord node is on its support node (level with it, and
+  over it);
+- **hard, datums**: its heel (a node) is where the layout puts it on
+  plan, along the ridge and along the span;
+- **hints**: its plane is plumb and square to the ridge, and it is
+  level. These settle what the supports leave open and give way where
+  they do not.
+
+Nothing ties one truss to another, so each is a component of its own.
+On level plates no step is taken and the trusses are exactly where the
+plates' height puts them. Afterward, every support node the chord
+touches is one it sits on, and the model's bearing point there is that
+node, by name.
 
 **It is fastened to what it sits on, and to nothing else**, at a node:
 the bearing point. Where the chord's axis meets the bearing's axis (a
@@ -238,9 +257,8 @@ What cannot be done is said, as an error on the model:
 
 - `truss-not-seated`: none of what the roof bears on is under any part
   of the truss;
-- `truss-not-held`: what is under it does not hold it up (one bearing
-  only, or all to one side of its middle): in the solve it falls. It is
-  left where it started;
+- `truss-not-held`: it is on one support only, or all that is under it
+  is to one side of its middle (it is placed level there);
 - a truss whose hard constraints cannot all hold stops the model
   building, naming the truss and the gaps.
 
@@ -303,6 +321,13 @@ or hide each kind:
 - **bearing points, on faces** (orange diamonds). Hovering one draws the
   face it is on (the box its two numbers are free in), the two ways it
   may move there, and says the numbers and their bounds;
+- **solve nodes** (small circles): the solve's named points. A filled
+  one is fixed in what it is a point of; a hollow one has numbers of its
+  own, and is ringed in the colour of what settled them. Hovering one
+  says what it is a point of, draws the range each number is kept in
+  (a bar through the node, with ticks at its bounds) and the way it
+  moves, and lists the constraints on it. A number that is a node's is
+  shown with the node, not on its own;
 - **free variables**: what a solve had to find. A square is a rigid thing
   free to move, at its origin; a short bar is a number, at the point it
   moves and along the way it moves it. Each is coloured by what settled

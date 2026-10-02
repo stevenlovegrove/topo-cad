@@ -165,6 +165,10 @@ impl Model {
             m.depth_dir = m.depth_dir.map(|d| f.dir_to_world(d));
         }
         for s in &mut self.solves {
+            for n in &mut s.nodes {
+                n.at = f.to_world(n.at);
+                n.numbers.iter_mut().for_each(|x| x.dir = f.dir_to_world(x.dir));
+            }
             for v in &mut s.variables {
                 v.at = f.to_world(v.at);
                 v.freedoms.iter_mut().for_each(|x| x.dir = f.dir_to_world(x.dir));

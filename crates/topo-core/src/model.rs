@@ -275,8 +275,33 @@ pub struct Attachment {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Solved {
     pub name: String,
+    #[serde(default)]
+    pub nodes: Vec<SolvedNode>,
     pub variables: Vec<SolvedVariable>,
     pub constraints: Vec<SolvedConstraint>,
+}
+
+/// A node of a solve: a named point, fixed in something or with numbers of its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedNode {
+    pub name: String,
+    /// What it is a point of.
+    pub of: String,
+    /// `fixed`, `on a line` (one number), `on a face` (two), or `free`.
+    pub kind: String,
+    pub at: Vec3,
+    pub numbers: Vec<SolvedNumber>,
+}
+
+/// One of a node's numbers: how far it is along a direction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedNumber {
+    pub name: String,
+    pub value: f64,
+    pub dir: Vec3,
+    /// What it is kept between, if it is bounded.
+    pub bounds: Option<(f64, f64)>,
+    pub settled: String,
 }
 
 /// An unknown of a solve: a rigid thing free to move (a frame and its joint), or a number.
@@ -287,6 +312,9 @@ pub struct SolvedVariable {
     pub kind: String,
     pub at: Vec3,
     pub value: Option<f64>,
+    /// For a number that is one of a node's: the node (it is shown with it).
+    #[serde(default)]
+    pub node: Option<String>,
     pub freedoms: Vec<SolvedFreedom>,
 }
 
@@ -312,6 +340,9 @@ pub struct SolvedConstraint {
     #[serde(default)]
     pub room: Option<f64>,
     pub points: Vec<Vec3>,
+    /// The nodes it is between, by name.
+    #[serde(default)]
+    pub nodes: Vec<String>,
     /// The variables it depends on, by name.
     pub touches: Vec<String>,
 }

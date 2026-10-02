@@ -482,7 +482,7 @@ impl Builder {
         let top: Vec<Vec3> = corners.into_iter().filter(|c| c.z > lift - 1e-9).collect();
         let middle = top.iter().fold(Vec3::ZERO, |a, c| a + *c) / top.len() as f64;
         let half_width = top.iter().map(|c| (*c - middle).norm()).fold(0.0, f64::max);
-        topo_timber::truss::Bearing { a: self.m.pos(mm.start()) + middle, b: self.m.pos(mm.end()) + middle, half_width }
+        topo_timber::truss::Bearing { name: self.m.member_path(id), a: self.m.pos(mm.start()) + middle, b: self.m.pos(mm.end()) + middle, half_width }
     }
 
     fn truss_roof(&mut self, r: &TrussRoofSpec) -> Result<(), String> {
@@ -537,22 +537,27 @@ impl Builder {
                 self.m.issues.push(Issue::new(Severity::Error, "truss-not-seated", message).members(t.bottom_chords.clone()));
             }
             if roof.unsteady.contains(&(i + 1)) {
-                let message = format!("roof {}: truss T{} is not held up by what is under it (one bearing, or all to one side of its middle)", r.name, i + 1);
+                let message = format!("roof {}: truss T{} is not held: what is under it is one bearing, or all to one side of its middle", r.name, i + 1);
                 self.m.issues.push(Issue::new(Severity::Error, "truss-not-held", message).members(t.bottom_chords.clone()));
             }
-            let mut on: Vec<usize> = roof.seats[i].iter().map(|(k, _)| *k).collect();
+            let mut on: Vec<usize> = roof.seats[i].iter().map(|(k, ..)| *k).collect();
             on.dedup();
             for k in on {
                 let plate = plates[k];
+                // The bearing point is the support node the chord is on: the middle one, where it is
+                // on that; else the first it is on (an edge, an end). The model's node has its name.
+                let here: Vec<&(usize, Vec3, String)> = roof.seats[i].iter().filter(|(j, ..)| *j == k).collect();
+                let named = here.iter().find(|(_, _, name)| name.contains(": middle of ") || name.contains(": top ")).unwrap_or(&here[0]).2.clone();
                 if let Some((bc, n)) = t.bottom_chords.iter().find_map(|&bc| self.m.intersect(bc, plate).ok().map(|n| (bc, n))) {
                     self.m.connect(n, bc, Some(plate), c);
+                    self.m.nodes[n.idx()].name.get_or_insert(named);
                     continue;
                 }
                 // The axes do not meet: a bearing point is a node on the chord (its axis is its
                 // underside) that is on the other's top face. Across the other, there is one, in
                 // the middle of where they touch; along it, one at each end of where they touch.
                 let top = self.m.face_toward(plate, Vec3::Z);
-                let touching: Vec<Vec3> = roof.seats[i].iter().filter(|(j, _)| *j == k).map(|(_, p)| *p).collect();
+                let touching: Vec<Vec3> = here.iter().map(|(_, p, _)| *p).collect();
                 let (first, last) = (touching[0], touching[touching.len() - 1]);
                 let along = self.m.face(plate, top).along;
                 let points = if (last - first).dot(along).abs() > 2.0 * LEN_TOL { vec![first, last] } else { vec![touching.iter().fold(Vec3::ZERO, |a, p| a + *p) / touching.len() as f64] };
@@ -570,6 +575,7 @@ impl Builder {
                         let n = self.m.node_on(bc, at).map_err(|e| format!("roof {}: {e}", r.name))?;
                         self.m.attach(n, plate, top).map_err(|e| format!("roof {}: {e}", r.name))?;
                         self.m.connect(n, bc, Some(plate), c);
+                        self.m.nodes[n.idx()].name.get_or_insert(named.clone());
                     }
                     // (Its axis is beside the other's top, its lumber over it: face to face.)
                     None => {

@@ -583,8 +583,10 @@ pub struct TrussRoof {
 }
 
 /// The top of something a truss may sit on: the line along the middle of its top face, and half that face's width.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Bearing {
+    /// What it is the top of (for the names of the nodes on it).
+    pub name: String,
     pub a: Vec3,
     pub b: Vec3,
     pub half_width: f64,
@@ -594,13 +596,13 @@ pub struct Bearing {
 pub struct RoofParts {
     pub group: GroupId,
     pub trusses: Vec<TrussParts>,
-    /// For each truss: the bearings it sits on (their places in `TrussRoof::bearings`), and
-    /// the point of its bottom chord's underside that is on each.
-    pub seats: Vec<Vec<(usize, Vec3)>>,
+    /// For each truss: the support nodes its bottom chord's underside is on: which bearing each
+    /// is on (its place in `TrussRoof::bearings`), the point of the chord's axis that is on it, and its name.
+    pub seats: Vec<Vec<(usize, Vec3, String)>>,
     /// Trusses (1-based numbers) with nothing under any part of them, among the bearings given: built at the height they started from.
     pub unseated: Vec<usize>,
-    /// Trusses (1-based numbers) that what is under them does not hold up (one bearing only, or
-    /// all to one side of their middle): left where they started.
+    /// Trusses (1-based numbers) on one support only, or with all that is under them to one side
+    /// of their middle: placed level on it, but nothing holds them so.
     pub unsteady: Vec<usize>,
     /// The solve that sat them, to be shown (it is moved into the model's `solves`).
     pub solved: Option<topo_core::Solved>,
@@ -674,21 +676,31 @@ impl TrussRoof {
     /// Where each truss sits (its heel, span direction and up), given where the layout puts
     /// its heel on plan (and which side of its plane its lumber is on).
     ///
-    /// What may hold a truss up: every bearing whose top is under some part of a bottom chord,
-    /// across it (at each edge of the top) or along it (at each end of where they overlap).
+    /// This is a utility that finds things by geometry, and what it makes is nodes:
     ///
-    /// Each truss is a rigid frame, free in the world, with weight, in one system for the roof.
-    /// Hard: its chord's underside is no lower than each of those tops (a one-sided contact: it
-    /// may be clear of one); its heel is where the layout puts it on plan (datums); it is plumb
-    /// and square to the ridge (it is braced). Its weight then brings it down onto whichever
-    /// of them hold it up, level or tilted as they say: the solve finds which. One that nothing
-    /// holds (a single bearing, or all to one side of its middle) goes on down, and is said.
-    /// Nothing ties one truss to another, so each is solved on its own.
+    /// - **support nodes**, fixed on the bearings: wherever a bearing's top is under some part
+    ///   of a bottom chord, across it (at each edge and the middle of the top) or along it (at
+    ///   each end of where they overlap);
+    /// - which two of them carry the truss: those of the upper hull of the supports (their
+    ///   heights, less the chord's own height there) that its middle is between; or one, if
+    ///   its middle is not between any two (it is then not held, and that is said);
+    /// - **chord nodes**: for each carrying support, the point of the chord's underside over
+    ///   it: on a line of the truss (one number, bounded by the chord).
+    ///
+    /// Each truss is a rigid frame, free in the world, in one system for the roof. Hard: each
+    /// chord node is on its support node (level with it, and over it); the heel is where the
+    /// layout puts it on plan (datums). Hints: its plane is plumb and square to the ridge, and
+    /// it is level; these settle what the supports leave open and give way where they do not.
+    /// Nothing ties one truss to another, so each is solved on its own. Afterward, every
+    /// support node the chord touches is one it sits on.
     fn seats(&self, heels: &[(Vec3, Option<Vec3>)], parts: &mut RoofParts) -> Vec<(Vec3, Vec3, Vec3)> {
         use topo_solve::{Dir, Joint, Kind, Point, Pose, System, Tier, WORLD};
         struct Under {
             bearing: usize,
-            /// Along the span from the heel, and the top's height there.
+            /// Which part of the bearing's top, in words.
+            label: String,
+            /// The point of the top, in the world; how far along the span from the heel it is; its height.
+            top: Vec3,
             s: f64,
             z: f64,
             /// The point of the chord's underside over it, in the truss's own frame, and the chord's direction there.
@@ -720,22 +732,26 @@ impl TrussRoof {
             for (k, b) in self.bearings.iter().enumerate() {
                 let len = (b.b - b.a).norm();
                 let along = (b.b - b.a) / len;
-                let mut at = |p: Vec3| {
+                let mut at = |p: Vec3, part: &str| {
                     let s = (p - heel).dot(span);
                     if let Some((z, slope)) = underside(s) {
                         let n = (1.0 + slope * slope).sqrt();
-                        under.push(Under { bearing: k, s, z: p.z, chord: [s, 0.0, z], along: [1.0 / n, 0.0, slope / n] });
+                        let label = if b.name.is_empty() { format!("{part} at {s:.2} m") } else { format!("{part} of {}", b.name) };
+                        under.push(Under { bearing: k, label, top: p, s, z: p.z, chord: [s, 0.0, z], along: [1.0 / n, 0.0, slope / n] });
                     }
                 };
                 if along.dot(run).abs() >= 0.2 {
                     // Across the truss: under it where it crosses the lumber.
                     let t = (middle - b.a).dot(run) / along.dot(run);
                     if t > -thick / 2.0 - 1e-6 && t < len + thick / 2.0 + 1e-6 {
-                        // (Its top's two edges: a chord that slopes sits on one of them.)
+                        // (Its top's two edges, and its middle: a chord that slopes sits on an edge.)
                         let edge = b.half_width / along.dot(run).abs();
-                        at(b.a + along * t - span * edge);
                         if edge > 0.0 {
-                            at(b.a + along * t + span * edge);
+                            at(b.a + along * t - span * edge, "near edge");
+                            at(b.a + along * t, "middle");
+                            at(b.a + along * t + span * edge, "far edge");
+                        } else {
+                            at(b.a + along * t, "top");
                         }
                     }
                 } else {
@@ -744,8 +760,8 @@ impl TrussRoof {
                     let (from, to) = (sa.min(sb).max(lo), sa.max(sb).min(hi));
                     let point = |s: f64| b.a + (b.b - b.a) * ((s - sa) / (sb - sa));
                     if to - from > 1e-6 && (point((from + to) / 2.0) - middle).dot(run).abs() <= b.half_width + thick / 2.0 + 1e-6 {
-                        at(point(from));
-                        at(point(to));
+                        at(point(from), "near end");
+                        at(point(to), "far end");
                     }
                 }
             }
@@ -756,28 +772,52 @@ impl TrussRoof {
                 placed.push((None, under));
                 continue;
             }
+            // What carries it: the upper hull of (where, how high the truss must be to touch there).
+            let mut order: Vec<usize> = (0..under.len()).collect();
+            let need = |k: usize| under[k].z - under[k].chord[2];
+            order.sort_by(|&a, &b| under[a].s.total_cmp(&under[b].s).then(need(b).total_cmp(&need(a))));
+            order.dedup_by(|b, a| (under[*a].s - under[*b].s).abs() < 1e-9);
+            let mut hull: Vec<usize> = vec![];
+            for k in order {
+                while hull.len() >= 2 {
+                    let (a, b) = (hull[hull.len() - 2], hull[hull.len() - 1]);
+                    let turn = (under[b].s - under[a].s) * (need(k) - need(b)) - (need(b) - need(a)) * (under[k].s - under[b].s);
+                    if turn >= -1e-12 {
+                        hull.pop();
+                    } else {
+                        break;
+                    }
+                }
+                hull.push(k);
+            }
+            let mid = (lo + hi) / 2.0;
+            let carry: Vec<usize> = match hull.windows(2).find(|w| under[w[0]].s <= mid && mid <= under[w[1]].s) {
+                Some(w) => w.to_vec(),
+                None => vec![*hull.iter().min_by(|&&a, &&b| (under[a].s - mid).abs().total_cmp(&(under[b].s - mid).abs())).unwrap()],
+            };
+            if carry.len() < 2 {
+                parts.unsteady.push(i + 1);
+            }
             let name = format!("T{}", i + 1);
             let pose = Pose { r: [[span.x, normal.x, 0.0], [span.y, normal.y, 0.0], [span.z, normal.z, 1.0]], t: arr(heel) };
             let truss = sys.frame(&name, WORLD, Joint::Free, pose);
-            for u in &under {
-                // The chord's underside, where it is over this top (wherever along the chord that
-                // is), is no lower than it: it may sit on it, or be clear of it.
-                let top = heel + span * u.s;
-                let top = Point::at(WORLD, [top.x, top.y, u.z]);
-                let slid = sys.scalar(truss, &format!("where {name} is over what is under it at {:.2} m", u.s), 0.0);
-                let chord = Point::at(truss, u.chord).plus(slid, u.along);
-                sys.constrain(&format!("{name} over what is under it at {:.2} m", u.s), Tier::Hard, Kind::offset(top.clone(), chord.clone(), Dir(WORLD, arr(span)), 0.0));
-                sys.constrain(&format!("{name} on what is under it at {:.2} m", u.s), Tier::Hard, Kind::above(top, chord, Dir(WORLD, [0.0, 0.0, 1.0]), 0.0));
+            // The nodes: every support under it, fixed on its bearing; and, for those that carry
+            // it, the point of the chord's underside that is over the support (somewhere along the chord).
+            let supports: Vec<_> = under.iter().map(|u| sys.node(&format!("{name} support: {}", u.label), Point::at(WORLD, arr(u.top)))).collect();
+            for &k in &carry {
+                let slid = sys.scalar(truss, &format!("where along its chord {name} is over the {}", under[k].label), 0.0);
+                sys.bound(slid, lo - under[k].s - 1e-6, hi - under[k].s + 1e-6);
+                let chord = sys.node(&format!("{name} chord over the {}", under[k].label), Point::at(truss, under[k].chord).plus(slid, under[k].along));
+                let (support, chord) = (sys.at(supports[k]), sys.at(chord));
+                sys.constrain(&format!("{name} on the {}", under[k].label), Tier::Hard, Kind::offset(support.clone(), chord.clone(), Dir(WORLD, [0.0, 0.0, 1.0]), 0.0));
+                sys.constrain(&format!("{name} over the {}", under[k].label), Tier::Hard, Kind::offset(support, chord, Dir(WORLD, arr(span)), 0.0));
             }
-            let (laid, origin) = (Point::at(WORLD, arr(heel)), Point::at(truss, [0.0; 3]));
+            let heel_node = sys.node(&format!("{name}/heel"), Point::at(truss, [0.0; 3]));
+            let (laid, origin) = (Point::at(WORLD, arr(heel)), sys.at(heel_node));
             sys.constrain(&format!("{name} at its place along the ridge"), Tier::Hard, Kind::offset(laid.clone(), origin.clone(), Dir(WORLD, arr(run)), 0.0));
             sys.constrain(&format!("{name} at its place along the span"), Tier::Hard, Kind::offset(laid, origin, Dir(WORLD, arr(span)), 0.0));
-            // (A truss is braced: it does not lie down under its own weight.)
-            sys.constrain(&format!("{name} plumb and square to the ridge"), Tier::Hard, Kind::Aligned(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, arr(normal))));
-            // Its weight, at about its middle, brings it down onto what holds it up.
-            let count = shape.points.len().max(1) as f64;
-            let middle = shape.points.iter().fold([0.0; 3], |m, p| [m[0] + p.s / count, 0.0, m[2] + p.z / count]);
-            sys.weigh(truss, middle, 1.0);
+            sys.constrain(&format!("{name} plumb and square to the ridge"), Tier::Default, Kind::Aligned(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, arr(normal))));
+            sys.constrain(&format!("{name} level"), Tier::Default, Kind::Aligned(Dir(truss, [1.0, 0.0, 0.0]), Dir(WORLD, arr(span))));
             placed.push((Some(truss), under));
         }
         let report = sys.solve();
@@ -786,16 +826,26 @@ impl TrussRoof {
             let (tier, at) = (|t: usize| ["hard", "measured", "hint", "weight"][t].to_string(), |p: [f64; 3]| v3(p[0], p[1], p[2]));
             parts.solved = Some(topo_core::Solved {
                 name: format!("{}: trusses on what is under them", self.name),
+                nodes: (e.nodes.iter())
+                    .map(|n| topo_core::SolvedNode {
+                        name: n.name.clone(),
+                        of: n.of.clone(),
+                        kind: n.kind.into(),
+                        at: at(n.at),
+                        numbers: n.numbers.iter().map(|x| topo_core::SolvedNumber { name: x.name.clone(), value: x.value, dir: at(x.dir), bounds: x.bounds, settled: x.settled.map_or("open".into(), tier) }).collect(),
+                    })
+                    .collect(),
                 variables: (e.variables.iter())
                     .map(|v| topo_core::SolvedVariable {
                         name: v.name.clone(),
                         kind: v.kind.into(),
                         at: at(v.at),
                         value: v.value,
+                        node: v.node.clone(),
                         freedoms: v.freedoms.iter().map(|f| topo_core::SolvedFreedom { what: f.what.clone(), dir: at(f.dir), turn: f.turn, settled: f.settled.map_or("open".into(), tier) }).collect(),
                     })
                     .collect(),
-                constraints: (e.constraints.iter()).map(|c| topo_core::SolvedConstraint { name: c.name.clone(), tier: tier(c.tier), kind: c.kind.into(), gap: c.gap, room: c.room, points: c.points.iter().map(|p| at(*p)).collect(), touches: c.touches.clone() }).collect(),
+                constraints: (e.constraints.iter()).map(|c| topo_core::SolvedConstraint { name: c.name.clone(), tier: tier(c.tier), kind: c.kind.into(), gap: c.gap, room: c.room, points: c.points.iter().map(|p| at(*p)).collect(), nodes: c.nodes.clone(), touches: c.touches.clone() }).collect(),
             });
         }
         for c in &report.conflicts {
@@ -803,17 +853,12 @@ impl TrussRoof {
             parts.problems.push(format!("{} cannot sit on what is under it: {}", c.frames.join(", "), gaps.join("; ")));
         }
         (placed.iter().zip(heels).enumerate())
-            .map(|(i, ((frame, under), &(heel, _)))| match frame {
-                // (One that nothing holds up has gone on down: it is left where it started, and said.)
-                Some(f) if report.falls.iter().any(|n| n == sys.name(*f)) => {
-                    parts.unsteady.push(i + 1);
-                    parts.seats.push(vec![]);
-                    (heel, span, Vec3::Z)
-                }
+            .map(|(_, ((frame, under), &(heel, _)))| match frame {
                 Some(f) if !report.conflicts.iter().any(|c| c.frames.iter().any(|n| n == sys.name(*f))) => {
                     let p = sys.in_world(*f);
                     // It sits on everything its underside touches (to a fifth of a millimetre).
-                    let on = under.iter().map(|u| (u.bearing, p.apply(u.chord), u.z)).filter(|(_, at, z)| (at[2] - z).abs() < 2e-4).map(|(k, at, _)| (k, v3(at[0], at[1], at[2]))).collect();
+                    // (Where: the point of the chord's axis that is on it.)
+                    let on = (under.iter().map(|u| (u, p.apply(u.chord))).filter(|(u, c)| (c[2] - u.z).abs() < 2e-4)).map(|(u, c)| (u.bearing, v3(c[0], c[1], c[2]), format!("{} support: {}", sys.name(*f), u.label))).collect();
                     parts.seats.push(on);
                     let col = |k: usize| v3(p.r[0][k], p.r[1][k], p.r[2][k]);
                     (v3(p.t[0], p.t[1], p.t[2]), col(0), col(2))
@@ -849,7 +894,7 @@ mod tests {
         let shape = TrussShape::standard(shape, 6.0, 4.0 / 12.0, 0.0).unwrap();
         // It starts from 2.4 m up; what is under it says where it sits.
         let mut roof = TrussRoof::new("Roof", v3(0.0, 0.0, 2.4), Vec3::Y, shape, 4.0 * inch(24.0), inch(24.0), mat);
-        roof.bearings = bearings.into_iter().map(|(a, b)| Bearing { a, b, half_width }).collect();
+        roof.bearings = bearings.into_iter().map(|(a, b)| Bearing { name: String::new(), a, b, half_width }).collect();
         let parts = roof.build(&mut m);
         (m, parts)
     }
@@ -885,7 +930,7 @@ mod tests {
             let (near, height) = if on_header { (0.3, 2.43) } else { (0.05, 2.4) };
             assert!((at(near) - height).abs() < 1e-7 && (at(5.95) - 2.362).abs() < 1e-7, "T{}: {} {}", i + 1, at(near), at(5.95));
             // It sits on those two and on nothing else (over the header, it is clear of the near plate).
-            let on: Vec<usize> = parts.seats[i].iter().map(|(k, _)| *k).collect();
+            let on: Vec<usize> = parts.seats[i].iter().map(|(k, ..)| *k).collect();
             assert_eq!(on, if on_header { vec![1, 2] } else { vec![0, 1] }, "T{}", i + 1);
             // Its heel is where the layout puts it on plan, and its plane is plumb and square to the ridge.
             assert!((a.x - i as f64 * inch(24.0)).abs() < 1e-7 && a.y.abs() < 1e-7 && (b.x - a.x).abs() < 1e-7, "T{}: {a:?} {b:?}", i + 1);
@@ -900,11 +945,11 @@ mod tests {
         let (a, b) = low_ends(&m, &parts.trusses[2]);
         assert!((a.z - 2.5).abs() < 1e-9 && (b.z - 2.5).abs() < 1e-9, "{a:?} {b:?}");
 
-        // One beam only, off its middle: that does not hold it up. It is left where it started, and said.
+        // One beam only: it sits on it, level (nothing else saying), and it is said that nothing holds it so.
         let (m, parts) = roof_on(vec![(v3(-0.5, 2.0, 2.5), v3(3.0, 2.0, 2.5))], StandardTruss::Fink);
-        assert!(parts.seats.iter().all(|on| on.is_empty()) && parts.unsteady == [1, 2, 3, 4, 5], "{parts:#?}");
+        assert!(parts.seats.iter().all(|on| on.len() == 1) && parts.unsteady == [1, 2, 3, 4, 5], "{parts:#?}");
         let (a, b) = low_ends(&m, &parts.trusses[2]);
-        assert!((a.z - 2.4).abs() < 1e-9 && (b.z - 2.4).abs() < 1e-9, "{a:?} {b:?}");
+        assert!((a.z - 2.5).abs() < 1e-9 && (b.z - 2.5).abs() < 1e-9, "{a:?} {b:?}");
 
         // A wall along the first truss (as under a gable), a little to one side of its plane but under its
         // lumber: that truss sits on it along its length. The others have nothing under them, and say so.

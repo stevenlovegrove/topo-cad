@@ -165,15 +165,25 @@ fn the_primitives_examples_show_what_they_say() {
     let s = &m.solves[0];
     assert_eq!(s.variables.iter().filter(|v| v.kind == "free").count(), 3);
     assert!(s.variables.iter().all(|v| v.freedoms.iter().all(|f| f.settled != "open")), "nothing is left open");
-    // T1's place on plan, its being plumb and its being square to the ridge are hard; its height and its
-    // tilt (and, its own x being tilted with it, its move along that) are where its weight brought it to rest.
+    // The supports fix T1's height and its tilt, and the datums its place on plan (hard); the hints settle its roll and its turn on plan.
     let t1 = s.variables.iter().find(|v| v.name == "T1").unwrap();
-    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["weight", "hard", "weight", "hard", "weight", "hard"]);
-    // Each beam's top has two edges it might sit on. Sloping down to the far beam, it touches one edge of each and is clear of the other.
-    let contacts: Vec<_> = s.constraints.iter().filter(|c| c.name.starts_with("T1 on what is under it")).collect();
-    assert_eq!(contacts.len(), 4);
-    assert_eq!(contacts.iter().filter(|c| c.room.unwrap().abs() < 1e-7).count(), 2, "{contacts:#?}");
-    assert!(contacts.iter().all(|c| c.gap == 0.0 && c.room.unwrap() > -1e-7 && c.room.unwrap() < 0.002));
+    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hard", "hard", "hint", "hard", "hint"]);
+    // The level hint gives way to the beams (2 inches over the span between them), and says by how much.
+    let level = s.constraints.iter().find(|c| c.name == "T1 level").unwrap();
+    assert!(level.gap > 0.009 && level.gap < 0.012, "{level:?}");
+    // The nodes. Supports, fixed on the beams: an edge, the middle and an edge of each beam's top under T1. Chord
+    // nodes, on a line of T1 (one number, bounded): over the two supports that carry it, the far edge of each top.
+    let of_t1: Vec<_> = s.nodes.iter().filter(|n| n.name.starts_with("T1 ")).collect();
+    assert_eq!(of_t1.iter().filter(|n| n.kind == "fixed" && n.of == "world" && n.name.starts_with("T1 support: ")).count(), 6, "{of_t1:#?}");
+    let chords: Vec<_> = of_t1.iter().filter(|n| n.kind == "on a line").collect();
+    assert_eq!(chords.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["T1 chord over the far edge of Trusses on beams/Beams/beam#1", "T1 chord over the far edge of Trusses on beams/Beams/beam#2"]);
+    assert!(chords.iter().all(|n| n.of == "T1" && n.numbers.len() == 1 && n.numbers[0].bounds.is_some() && n.numbers[0].settled == "hard"));
+    // Each contact is between a support node and a chord node, by name.
+    let on = s.constraints.iter().find(|c| c.name == "T1 on the far edge of Trusses on beams/Beams/beam#1").unwrap();
+    assert_eq!(on.nodes, ["T1 support: far edge of Trusses on beams/Beams/beam#1", "T1 chord over the far edge of Trusses on beams/Beams/beam#1"]);
+    // The model's bearing points are those support nodes, by name.
+    let named: Vec<&str> = m.attachments.iter().filter_map(|a| m.nodes[a.node.idx()].name.as_deref()).filter(|n| n.starts_with("T1 ")).collect();
+    assert_eq!(named, ["T1 support: far edge of Trusses on beams/Beams/beam#1", "T1 support: far edge of Trusses on beams/Beams/beam#2"]);
 
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();

@@ -186,12 +186,19 @@ pub struct Point {
     pub frame: FrameId,
     pub at: V3,
     pub along: Vec<(ScalarId, V3)>,
+    /// The node this is, if it is one (see `System::node`).
+    pub node: Option<usize>,
 }
+
+/// A node: a named point of the system. It is fixed in its frame, or has numbers of its own
+/// (one: it is somewhere on a line; two: somewhere on a face), which may be bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(pub usize);
 
 impl Point {
     /// At these coordinates of the frame.
     pub fn at(frame: FrameId, at: V3) -> Point {
-        Point { frame, at, along: vec![] }
+        Point { frame, at, along: vec![], node: None }
     }
 
     /// And `s` (in the frame's unit) times `dir`.
@@ -361,8 +368,34 @@ pub struct Report {
 /// free, and what each constraint holds together.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Explained {
+    pub nodes: Vec<ShownNode>,
     pub variables: Vec<Variable>,
     pub constraints: Vec<Shown>,
+}
+
+/// A node, to show: where it is, what it is fixed in or free on, and its numbers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShownNode {
+    pub name: String,
+    pub at: V3,
+    /// The frame it is a point of.
+    pub of: String,
+    /// `fixed` (a point of its frame), `on a line` (one number), `on a face` (two), or `free` (more).
+    pub kind: &'static str,
+    pub numbers: Vec<Number>,
+}
+
+/// One of a node's numbers: how far it is along a direction of its frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Number {
+    pub name: String,
+    pub value: f64,
+    /// The direction, in the world.
+    pub dir: V3,
+    /// What it is kept between, if it is bounded.
+    pub bounds: Option<(f64, f64)>,
+    /// What settled it (0 hard, 1 measured, 2 default, 3 weight), or none: open.
+    pub settled: Option<usize>,
 }
 
 /// An unknown: a frame with an open joint, or a scalar.
@@ -375,6 +408,8 @@ pub struct Variable {
     pub at: V3,
     /// A scalar's value.
     pub value: Option<f64>,
+    /// For a scalar that is one of a node's numbers: the node.
+    pub node: Option<String>,
     pub freedoms: Vec<Freedom>,
 }
 
@@ -399,6 +434,8 @@ pub struct Shown {
     pub room: Option<f64>,
     /// The points it relates, in the world.
     pub points: Vec<V3>,
+    /// The nodes among them, by name.
+    pub nodes: Vec<String>,
     /// The unknowns it depends on, by name.
     pub touches: Vec<String>,
 }
@@ -644,6 +681,9 @@ pub struct System {
     joints: Diagonal<Joint>,
     scalars: Vec<Scalar>,
     pub constraints: Vec<Constraint>,
+    nodes: Vec<(String, Point)>,
+    /// The bounds given to scalars: the scalar, and what it is kept between.
+    bounds: Vec<(usize, f64, f64)>,
     /// Weights: a frame, the point of it the weight acts at, and how much.
     weights: Vec<(usize, V3, f64)>,
     /// The way weights pull (a unit vector in the world).
@@ -690,7 +730,7 @@ impl Default for System {
 
 impl System {
     pub fn new() -> System {
-        let mut s = System { names: vec![], poses: ParentChild::default(), joints: Diagonal(vec![]), scalars: vec![], constraints: vec![], weights: vec![], down: [0.0, 0.0, -1.0] };
+        let mut s = System { names: vec![], poses: ParentChild::default(), joints: Diagonal(vec![]), scalars: vec![], constraints: vec![], nodes: vec![], bounds: vec![], weights: vec![], down: [0.0, 0.0, -1.0] };
         s.names.push("world".into());
         s.poses.push(None, Pose::identity());
         s.joints.0.push(Joint::Fixed);
@@ -715,8 +755,29 @@ impl System {
         self.constraints.push(Constraint { name: name.into(), tier, kind });
     }
 
+    /// A node: this point, named. Constraints are stated between nodes (`at`).
+    pub fn node(&mut self, name: &str, point: Point) -> NodeId {
+        self.nodes.push((name.into(), Point { node: None, ..point }));
+        NodeId(self.nodes.len() - 1)
+    }
+
+    /// A node, as the point to state a constraint on.
+    pub fn at(&self, n: NodeId) -> Point {
+        Point { node: Some(n.0), ..self.nodes[n.0].1.clone() }
+    }
+
+    /// Where a node is, in the world.
+    pub fn node_at(&self, n: NodeId) -> V3 {
+        self.point(&self.nodes[n.0].1)
+    }
+
+    pub fn node_name(&self, n: NodeId) -> &str {
+        &self.nodes[n.0].0
+    }
+
     /// Keeps a scalar between two values.
     pub fn bound(&mut self, s: ScalarId, lo: f64, hi: f64) {
+        self.bounds.push((s.0, lo, hi));
         let name = self.scalars[s.0].name.clone();
         self.constrain(&format!("{name}: at least {lo}"), Tier::Hard, Kind::at_least(s, lo));
         self.constrain(&format!("{name}: at most {hi}"), Tier::Hard, Kind::at_least(hi, s));
@@ -1434,7 +1495,7 @@ impl System {
                     Freedom { what, dir: world[f].rotate(if turn { w } else { v }), turn, settled: report.frames.get(f).and_then(|t| t.get(k).copied()).flatten() }
                 })
                 .collect();
-            out.variables.push(Variable { name: self.names[f].clone(), kind, at: world[f].t, value: None, freedoms });
+            out.variables.push(Variable { name: self.names[f].clone(), kind, at: world[f].t, value: None, node: None, freedoms });
         }
         fn points(k: &Kind) -> Vec<&Point> {
             match k {
@@ -1446,7 +1507,15 @@ impl System {
             // Where it shows: a point it moves, and the way it moves it; or, moving none, its owner's origin.
             let moved = self.constraints.iter().flat_map(|c| points(&c.kind)).find_map(|p| p.along.iter().find(|(id, _)| id.0 == s).map(|(_, u)| (self.point_in(&world, p), world[p.frame.0].rotate(*u))));
             let (at, dir) = moved.unwrap_or((world[scalar.owner].t, [0.0; 3]));
-            out.variables.push(Variable { name: scalar.name.clone(), kind: "scalar", at, value: Some(scalar.value), freedoms: vec![Freedom { what: "change".into(), dir, turn: false, settled: report.scalars.get(s).copied().flatten() }] });
+            let node = self.nodes.iter().find(|(_, p)| p.along.iter().any(|(id, _)| id.0 == s)).map(|(name, _)| name.clone());
+            out.variables.push(Variable { name: scalar.name.clone(), kind: "scalar", at, value: Some(scalar.value), node, freedoms: vec![Freedom { what: "change".into(), dir, turn: false, settled: report.scalars.get(s).copied().flatten() }] });
+        }
+        for (name, p) in &self.nodes {
+            let numbers: Vec<Number> = (p.along.iter())
+                .map(|(s, u)| Number { name: self.scalars[s.0].name.clone(), value: self.scalars[s.0].value, dir: world[p.frame.0].rotate(*u), bounds: self.bounds.iter().find(|b| b.0 == s.0).map(|b| (b.1, b.2)), settled: report.scalars.get(s.0).copied().flatten() })
+                .collect();
+            let kind = ["fixed", "on a line", "on a face"].get(numbers.len()).copied().unwrap_or("free");
+            out.nodes.push(ShownNode { name: name.clone(), at: self.point_in(&world, p), of: self.names[p.frame.0].clone(), kind, numbers });
         }
         for (c, gap) in self.constraints.iter().zip(&report.gaps) {
             let kind = match c.kind {
@@ -1464,7 +1533,8 @@ impl System {
             let (frames, scalars) = c.kind.touches();
             let mut touches: Vec<String> = frames.into_iter().filter(|&f| self.joints.0[f] != Joint::Fixed).map(|f| self.names[f].clone()).chain(scalars.into_iter().map(|s| self.scalars[s].name.clone())).collect();
             touches.dedup();
-            out.constraints.push(Shown { name: c.name.clone(), tier: tier_of(c.tier), kind, gap: gap.size, room, points: points(&c.kind).into_iter().map(|p| self.point_in(&world, p)).collect(), touches });
+            let nodes = points(&c.kind).into_iter().filter_map(|p| p.node).map(|n| self.nodes[n].0.clone()).collect();
+            out.constraints.push(Shown { name: c.name.clone(), tier: tier_of(c.tier), kind, gap: gap.size, room, points: points(&c.kind).into_iter().map(|p| self.point_in(&world, p)).collect(), nodes, touches });
         }
         out
     }
@@ -1582,7 +1652,7 @@ impl Instance {
                 Err(value) => at = add(at, scale(*u, value)),
             }
         }
-        Point { frame, at: from.apply(at), along }
+        Point { frame, at: from.apply(at), along, node: None }
     }
 
     /// A direction of the definition, here.
@@ -1799,6 +1869,7 @@ mod tests {
         let west = &e.constraints[0];
         assert_eq!((west.kind, west.tier, west.touches.len()), ("coincident", 0, 2));
         assert!(norm(sub(west.points[0], WEST)) < 1e-8 && norm(sub(west.points[1], WEST)) < 1e-8, "{west:?}");
+        assert!(e.nodes.is_empty() && e.variables[1].node.is_none());
         // The scalar is shown at the point it moves, with the way it moves it (along the chord).
         let chord = s.dir(&Dir(FrameId(1), [1.0, 0.0, 0.0]));
         let v = &e.variables[1];
@@ -1986,6 +2057,31 @@ mod tests {
             assert!(!r.refused && r.open.is_empty(), "from {start}: {r:#?}");
             assert!((s.dir(&Dir(f, [0.0, 1.0, 0.0]))[2] - y_dot_z).abs() < 1e-9, "from {start}");
         }
+    }
+
+    #[test]
+    fn nodes_are_named_points_and_constraints_are_between_them() {
+        // A plate fixed in the world, and a joist free above it. Nodes: the joist's end (fixed in the joist),
+        // and a point somewhere along the plate's top (one number, bounded by the plate's length).
+        let mut s = System::new();
+        let joist = s.frame("joist", WORLD, Joint::Free, Pose::at([0.4, 0.3, 1.0]));
+        let end = s.node("joist/end", Point::at(joist, [0.0; 3]));
+        let along = s.scalar(WORLD, "how far along the plate the joist bears", 1.0);
+        s.bound(along, 0.0, 3.0);
+        let bearing = s.node("joist on plate", Point::at(WORLD, [0.0, 0.0, 2.4]).plus(along, [1.0, 0.0, 0.0]));
+        s.constrain("joist end on the plate", Tier::Hard, Kind::Coincident(s.at(end), s.at(bearing)));
+        s.constrain("2 m along, if it may be", Tier::Default, Kind::equal(along, 2.0));
+        let r = s.solve();
+        assert!(!r.refused);
+        assert!(norm(sub(s.node_at(end), [2.0, 0.0, 2.4])) < 1e-9 && norm(sub(s.node_at(bearing), s.node_at(end))) < 1e-9);
+        let e = s.explain(&r);
+        assert_eq!(e.nodes.iter().map(|n| (n.name.as_str(), n.of.as_str(), n.kind)).collect::<Vec<_>>(), [("joist/end", "joist", "fixed"), ("joist on plate", "world", "on a line")]);
+        let n = &e.nodes[1].numbers[0];
+        assert_eq!((n.bounds, n.settled, n.dir), (Some((0.0, 3.0)), Some(2), [1.0, 0.0, 0.0]));
+        assert!((n.value - 2.0).abs() < 1e-9);
+        // The constraint is between the two nodes, by name; and the number is shown as its node's.
+        assert_eq!(e.constraints[2].nodes, ["joist/end", "joist on plate"]);
+        assert_eq!(e.variables.iter().find(|v| v.kind == "scalar").unwrap().node.as_deref(), Some("joist on plate"));
     }
 
     #[test]
