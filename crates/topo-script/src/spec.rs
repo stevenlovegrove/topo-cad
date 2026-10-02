@@ -4,6 +4,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use topo_core::*;
+use topo_core::scene;
 use topo_timber::fastening as fx;
 use topo_timber::lumber::graded;
 use topo_timber::lumber::{built_up, sawn};
@@ -157,6 +158,10 @@ pub enum ItemSpec {
     Perimeter(PerimeterSpec),
     TrussRoof(TrussRoofSpec),
     Assembly(AssemblySpec),
+    /// Two nodes are one (`Assembly name/point`).
+    Coincide { a: String, b: String },
+    /// A node is at this place.
+    Datum { node: String, at: [f64; 3] },
 }
 
 /// Placement of a local frame in world coordinates.
@@ -225,6 +230,16 @@ pub struct AssemblySpec {
     /// Pairs of members, the first resting on the second where they cross.
     #[serde(default)]
     pub rests: Vec<(String, String)>,
+    /// Free: its placement is only where it starts; relations place it.
+    #[serde(default)]
+    pub free: bool,
+}
+
+/// An assembly, declared in the scene: its points' nodes, its members, its rests' nodes.
+struct Declared {
+    points: HashMap<String, scene::NodeRef>,
+    members: Vec<scene::MemberRef>,
+    rests: Vec<(scene::NodeRef, usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -636,32 +651,29 @@ impl Builder {
 }
 
 impl Builder {
-    fn assembly(&mut self, a: &AssemblySpec) -> Result<(), String> {
+    /// An assembly, into the scene: a body (fixed at its placement, or free), a node for each
+    /// point, its members between them, and a node for each member resting on another.
+    fn declare(&mut self, sc: &mut scene::Scene, a: &AssemblySpec) -> Result<Declared, String> {
         let f = a.placement.frame();
-        let g = self.m.add_group(&a.name, "assembly", f, Some(self.root));
-        let mut nodes: HashMap<&str, NodeId> = HashMap::new();
+        let body = sc.body(&a.name, "assembly", f, a.free, Some(self.root));
+        let mut points = HashMap::new();
         for p in &a.points {
-            let n = self.m.node_at(f.to_world(v3(p.at[0], p.at[1], p.at[2])));
-            if nodes.insert(p.name.as_str(), n).is_some() {
+            if points.contains_key(&p.name) {
                 return Err(format!("assembly {}: duplicate point {}", a.name, p.name));
             }
+            points.insert(p.name.clone(), sc.node(&format!("{}/{}", a.name, p.name), body, v3(p.at[0], p.at[1], p.at[2]))?);
         }
-        let mut ids = vec![];
+        let mut members = vec![];
         for (i, mm) in a.members.iter().enumerate() {
-            let path: Vec<NodeId> = mm
-                .path
-                .iter()
-                .map(|n| nodes.get(n.as_str()).copied().ok_or(format!("assembly {}: member {i} uses unknown point {n}", a.name)))
-                .collect::<Result<_, _>>()?;
+            let path: Vec<scene::NodeRef> = mm.path.iter().map(|n| points.get(n).copied().ok_or(format!("assembly {}: member {i} uses unknown point {n}", a.name))).collect::<Result<_, _>>()?;
             if path.len() < 2 {
                 return Err(format!("assembly {}: member {i} needs two points", a.name));
             }
             let sec = if mm.plies > 1 { built_up(mm.plies, mm.size.0, mm.size.1, 0.0) } else { sawn(mm.size.0, mm.size.1) };
             let sec = self.m.add_section(sec);
             let mat = self.material(&mm.grade)?;
-            // Depth direction in the assembly's local frame (default: up, or +y
-            // for vertical members), then placed with it, so a rotated copy is
-            // identical to the original.
+            // Depth direction in the assembly's own frame (default: up, or +y for vertical
+            // members); it is placed with the assembly, so a rotated copy is identical to the original.
             let (la, lb) = (&a.points.iter().find(|p| p.name == mm.path[0]).unwrap().at, &a.points.iter().find(|p| p.name == *mm.path.last().unwrap()).unwrap().at);
             let local_axis = v3(lb[0] - la[0], lb[1] - la[1], lb[2] - la[2]);
             let local_depth = match mm.depth {
@@ -669,12 +681,33 @@ impl Builder {
                 None if local_axis.try_normalized().is_some_and(|x| x.dot(Vec3::Z).abs() > 0.99) => Vec3::Y,
                 None => Vec3::Z,
             };
-            let mut spec = MemberSpec::new(&mm.role, sec, mat).priority(mm.priority).group(g).depth_dir(f.dir_to_world(local_depth));
+            let mut spec = MemberSpec::new(&mm.role, sec, mat).priority(mm.priority).depth_dir(local_depth);
             if let Some((u, v)) = mm.anchor {
                 spec = spec.anchor(Anchor { u, v, offset: Vec2::ZERO });
             }
-            ids.push(self.m.add_member(&path, &spec));
+            let label = format!("{}#{}", mm.role, a.members[..i].iter().filter(|o| o.role == mm.role).count() + 1);
+            members.push(sc.member(body, &path, spec, &label).map_err(|e| format!("assembly {}: {e}", a.name))?);
         }
+        let find = |sel: &str| -> Result<usize, String> {
+            let (role, index) = match sel.split_once('#') {
+                Some((r, i)) => (r, i.parse::<usize>().map_err(|_| format!("assembly {}: bad member {sel}", a.name))?),
+                None => (sel, 1),
+            };
+            (0..a.members.len()).filter(|&k| a.members[k].role == role).nth(index - 1).ok_or(format!("assembly {}: no member {sel}", a.name))
+        };
+        let mut rests = vec![];
+        for (upper, lower) in &a.rests {
+            let (u, l) = (find(upper)?, find(lower)?);
+            let n = sc.rest(&format!("{}/{upper} on {lower}", a.name), members[u], members[l], &self.m)?;
+            rests.push((n, u, l));
+        }
+        Ok(Declared { points, members, rests })
+    }
+
+    /// An assembly, once the scene is written: its fastenings, supports and loads, by its model ids.
+    fn finish(&mut self, a: &AssemblySpec, d: &Declared, w: &scene::Written) -> Result<(), String> {
+        let ids: Vec<MemberId> = d.members.iter().map(|m| w.members[m.0]).collect();
+        let nodes: HashMap<&str, NodeId> = d.points.iter().map(|(k, n)| (k.as_str(), w.nodes[n.0])).collect();
         self.assemblies.insert(a.name.clone(), ids.clone());
         // Face-to-face bonds (a cap nailed on a header, plies of a post).
         let find = |sel: &str| -> Result<MemberId, String> {
@@ -689,29 +722,10 @@ impl Builder {
             let c = self.m.add_connection(fx::double_top_plate());
             self.m.bond(mx, my, c);
         }
-        // One member resting on another where they cross: the bearing point is a node, on the
-        // underside of the one and the top of the other (on each one's axis, if its axis is there).
-        for (upper, lower) in &a.rests {
-            let (mu, ml) = (find(upper)?, find(lower)?);
-            let (fu, fl) = (self.m.face_toward(mu, -Vec3::Z), self.m.face_toward(ml, Vec3::Z));
-            let (pu, pl) = (self.m.face(mu, fu), self.m.face(ml, fl));
-            // Where the middles of the two faces come nearest each other.
-            let (w, b) = (pu.origin - pl.origin, pu.along.dot(pl.along));
-            if 1.0 - b * b < 1e-9 {
-                return Err(format!("assembly {}: {upper} and {lower} run the same way: they do not cross (fasten them face to face with bonded)", a.name));
-            }
-            let (d, e) = (pu.along.dot(w), pl.along.dot(w));
-            let (qu, ql) = (pu.origin + pu.along * ((b * e - d) / (1.0 - b * b)), pl.origin + pl.along * ((e - b * d) / (1.0 - b * b)));
-            if qu.distance(ql) > LEN_TOL {
-                let dz = (qu - ql).z;
-                return Err(format!("assembly {}: {upper} does not rest on {lower}: where they cross, its underside is {:.1} mm {} the top of {lower}", a.name, dz.abs() * 1000.0, if dz > 0.0 { "above" } else { "below" }));
-            }
-            let n = self.m.node_at((qu + ql) * 0.5);
-            for (m, f) in [(mu, fu), (ml, fl)] {
-                self.m.attach(n, m, f).map_err(|e| format!("assembly {}: {upper} resting on {lower}: {e}", a.name))?;
-            }
+        // Where one rests on another: fastened at that node.
+        for &(n, u, l) in &d.rests {
             let c = self.m.add_connection(fx::joist_to_plate());
-            self.m.connect(n, mu, Some(ml), c);
+            self.m.connect(w.nodes[n.0], ids[u], Some(ids[l]), c);
         }
         let conn = match &a.joints {
             JointsSpec::Kind(k) => match k.as_str() {
@@ -869,11 +883,35 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
             b.perimeter(p)?;
         }
     }
-    // Then assemblies (roofs may bear on them), then roofs.
+    // Then assemblies (roofs may bear on them), placed together with the relations between
+    // their nodes: one scene, solved, then written into the model. Then roofs.
+    let mut sc = scene::Scene::new("Assemblies and the relations between them");
+    let mut declared = vec![];
     for item in &spec.items {
         if let ItemSpec::Assembly(a) = item {
-            b.assembly(a)?;
+            declared.push((a, b.declare(&mut sc, a)?));
         }
+    }
+    let node = |sc: &scene::Scene, name: &str| sc.node_named(name).ok_or_else(|| format!("no node named {name} (nodes: {})", sc.node_names().collect::<Vec<_>>().join(", ")));
+    for item in &spec.items {
+        match item {
+            ItemSpec::Coincide { a, b: other } => {
+                let (na, nb) = (node(&sc, a)?, node(&sc, other)?);
+                sc.coincide(&format!("{a} is {other}"), na, nb);
+            }
+            ItemSpec::Datum { node: n, at } => {
+                let nn = node(&sc, n)?;
+                sc.datum(&format!("{n} at [{}, {}, {}]", at[0], at[1], at[2]), nn, v3(at[0], at[1], at[2]));
+            }
+            _ => {}
+        }
+    }
+    let written = sc.write(&mut b.m)?;
+    for open in &written.open {
+        b.m.issues.push(Issue::new(Severity::Warning, "open", format!("nothing places this: {open}")));
+    }
+    for (a, d) in &declared {
+        b.finish(a, d, &written)?;
     }
     for item in &spec.items {
         if let ItemSpec::TrussRoof(r) = item {

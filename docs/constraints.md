@@ -298,6 +298,33 @@ member's frame, held to another member's point. The solver has bounds
 now, but bearing points are not yet its unknowns: they are read off where
 the contacts touch (see [unified-plan.md](unified-plan.md)).
 
+## The scene
+
+`topo_core::scene` is how things are placed. A **body** is a rigid thing
+(a frame), fixed where it is put, or free: then its placement is only
+where the solve starts, relations place it, and a hint keeps it upright.
+A **node** is a named point fixed in a body. **Members** run between a
+body's nodes. **Relations** are between nodes:
+
+- `coincide`: two nodes are one point, and one node of the model;
+- `datum`: a node is at a place in the world;
+- `rest`: one member rests on another where they cross. It makes a node
+  on the underside of the one and the top of the other: on each face two
+  numbers (along, across) bounded by the face; held to be the same
+  point; with a hint for each, the middle of its face across. If the two
+  cannot touch (both fixed, apart), it is refused, with how far apart.
+
+The scene is solved, then written into the model: each body's group at
+its pose, a model node per node (one for nodes made one), the members,
+and the nodes on faces as attachments (their numbers are the solve's).
+The solve is kept in the model to be shown.
+
+In the script, assemblies are bodies in one scene: their points are
+nodes named `Assembly name/point`, and `Assembly.free()`,
+`assembly.node(point)`, `coincide(a, b)` and `datum(node, at)` relate
+them. `examples/primitives/04-placed-by-nodes.ts` places a free beam on
+two posts by its end nodes alone.
+
 ## Seeing it
 
 `examples/primitives` has the smallest models that show each thing:

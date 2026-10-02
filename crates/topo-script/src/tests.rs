@@ -185,6 +185,27 @@ fn the_primitives_examples_show_what_they_say() {
     let named: Vec<&str> = m.attachments.iter().filter_map(|a| m.nodes[a.node.idx()].name.as_deref()).filter(|n| n.starts_with("T1 ")).collect();
     assert_eq!(named, ["T1 support: far edge of Trusses on beams/Beams/beam#1", "T1 support: far edge of Trusses on beams/Beams/beam#2"]);
 
+    // Placed by nodes: the free beam, put anywhere and turned, ends up on the posts' tops, sharing their nodes.
+    let m = run(include_str!("../../../examples/primitives/04-placed-by-nodes.ts"), "04-placed-by-nodes.ts").unwrap();
+    sound(&m);
+    all_clean(&m);
+    let ft = topo_core::units::ft;
+    let beam = m.members.iter().find(|x| x.role == "beam").unwrap();
+    let posts: Vec<_> = m.members.iter().filter(|x| x.role == "post").collect();
+    assert_eq!((beam.start(), beam.end()), (posts[0].end(), posts[1].end()), "the beam's ends are the posts' top nodes");
+    assert!(m.pos(beam.start()).distance(topo_core::v3(0.0, 0.0, ft(7.0))) < 1e-9 && m.pos(beam.end()).distance(topo_core::v3(ft(10.0), 0.0, ft(7.0))) < 1e-9);
+    // (One node, made of two: it has the name of the one declared first.)
+    assert_eq!(m.nodes[beam.start().idx()].name.as_deref(), Some("Posts/a top"));
+    // Upright: its depth is up, as it was drawn.
+    assert!(m.member_axes(beam.id).v.dot(topo_core::Vec3::Z) > 1.0 - 1e-9);
+    let s = &m.solves[0];
+    let b = s.variables.iter().find(|v| v.name == "Beam").unwrap();
+    assert_eq!(b.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hard", "hard", "hint", "hard", "hard"]);
+    // A beam that does not fit between the posts cannot be placed by both: refused, and said.
+    let long = include_str!("../../../examples/primitives/04-placed-by-nodes.ts").replace(r#".point("east end", [ft(10), 0, 0])"#, r#".point("east end", [ft(11), 0, 0])"#);
+    let e = run(&long, "long.ts").unwrap_err().to_string();
+    assert!(e.contains("Beam/east end is Posts/b top"), "{e}");
+
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
     sound(&m);

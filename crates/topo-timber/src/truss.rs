@@ -822,31 +822,7 @@ impl TrussRoof {
         }
         let report = sys.solve();
         if placed.iter().any(|(f, _)| f.is_some()) {
-            let e = sys.explain(&report);
-            let (tier, at) = (|t: usize| ["hard", "measured", "hint", "weight"][t].to_string(), |p: [f64; 3]| v3(p[0], p[1], p[2]));
-            parts.solved = Some(topo_core::Solved {
-                name: format!("{}: trusses on what is under them", self.name),
-                nodes: (e.nodes.iter())
-                    .map(|n| topo_core::SolvedNode {
-                        name: n.name.clone(),
-                        of: n.of.clone(),
-                        kind: n.kind.into(),
-                        at: at(n.at),
-                        numbers: n.numbers.iter().map(|x| topo_core::SolvedNumber { name: x.name.clone(), value: x.value, dir: at(x.dir), bounds: x.bounds, settled: x.settled.map_or("open".into(), tier) }).collect(),
-                    })
-                    .collect(),
-                variables: (e.variables.iter())
-                    .map(|v| topo_core::SolvedVariable {
-                        name: v.name.clone(),
-                        kind: v.kind.into(),
-                        at: at(v.at),
-                        value: v.value,
-                        node: v.node.clone(),
-                        freedoms: v.freedoms.iter().map(|f| topo_core::SolvedFreedom { what: f.what.clone(), dir: at(f.dir), turn: f.turn, settled: f.settled.map_or("open".into(), tier) }).collect(),
-                    })
-                    .collect(),
-                constraints: (e.constraints.iter()).map(|c| topo_core::SolvedConstraint { name: c.name.clone(), tier: tier(c.tier), kind: c.kind.into(), gap: c.gap, room: c.room, points: c.points.iter().map(|p| at(*p)).collect(), nodes: c.nodes.clone(), touches: c.touches.clone() }).collect(),
-            });
+            parts.solved = Some(topo_core::scene::solved(&format!("{}: trusses on what is under them", self.name), &sys.explain(&report)));
         }
         for c in &report.conflicts {
             let gaps: Vec<String> = c.constraints.iter().map(|g| format!("{} ({:.0} mm off)", g.constraint, g.size * 1000.0)).collect();

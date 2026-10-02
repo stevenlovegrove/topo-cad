@@ -366,6 +366,21 @@ impl FacePlane {
     }
 }
 
+/// A face of a member with these axes, section and anchor (the face's plane follows from them).
+pub fn face_plane(axes: &MemberAxes, section: &Section, anchor: &Anchor, face: Face) -> FacePlane {
+    let bb = section.bbox();
+    // The point of the section that is on the axis; the section's other points are placed from it.
+    let on_axis = (bb.min.x + (anchor.u + 0.5) * bb.width() + anchor.offset.x, bb.min.y + (anchor.v + 0.5) * bb.height() + anchor.offset.y);
+    let (mid_u, mid_v) = (bb.min.x + bb.width() / 2.0 - on_axis.0, bb.min.y + bb.height() / 2.0 - on_axis.1);
+    let (offset, across, normal, half_width) = match face {
+        Face::PlusV => (axes.u * mid_u + axes.v * (mid_v + bb.height() / 2.0), axes.u, axes.v, bb.width() / 2.0),
+        Face::MinusV => (axes.u * mid_u + axes.v * (mid_v - bb.height() / 2.0), axes.u, -axes.v, bb.width() / 2.0),
+        Face::PlusU => (axes.u * (mid_u + bb.width() / 2.0) + axes.v * mid_v, axes.v, axes.u, bb.height() / 2.0),
+        Face::MinusU => (axes.u * (mid_u - bb.width() / 2.0) + axes.v * mid_v, axes.v, -axes.u, bb.height() / 2.0),
+    };
+    FacePlane { origin: axes.origin + offset, along: axes.x, across, normal, length: axes.length, half_width }
+}
+
 /// Named alternatives a script offers (e.g. "current code" vs "as built"),
 /// each evaluated as its own model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -823,18 +838,8 @@ impl Model {
 
     /// A face of a member: where it is, from the member's axes, section and anchor.
     pub fn face(&self, member: MemberId, face: Face) -> FacePlane {
-        let (m, axes) = (self.member(member), self.member_axes(member));
-        let bb = self.section(m.section).bbox();
-        // The point of the section that is on the axis; the section's other points are placed from it.
-        let on_axis = (bb.min.x + (m.anchor.u + 0.5) * bb.width() + m.anchor.offset.x, bb.min.y + (m.anchor.v + 0.5) * bb.height() + m.anchor.offset.y);
-        let (mid_u, mid_v) = (bb.min.x + bb.width() / 2.0 - on_axis.0, bb.min.y + bb.height() / 2.0 - on_axis.1);
-        let (offset, across, normal, half_width) = match face {
-            Face::PlusV => (axes.u * mid_u + axes.v * (mid_v + bb.height() / 2.0), axes.u, axes.v, bb.width() / 2.0),
-            Face::MinusV => (axes.u * mid_u + axes.v * (mid_v - bb.height() / 2.0), axes.u, -axes.v, bb.width() / 2.0),
-            Face::PlusU => (axes.u * (mid_u + bb.width() / 2.0) + axes.v * mid_v, axes.v, axes.u, bb.height() / 2.0),
-            Face::MinusU => (axes.u * (mid_u - bb.width() / 2.0) + axes.v * mid_v, axes.v, -axes.u, bb.height() / 2.0),
-        };
-        FacePlane { origin: axes.origin + offset, along: axes.x, across, normal, length: axes.length, half_width }
+        let m = self.member(member);
+        face_plane(&self.member_axes(member), self.section(m.section), &m.anchor, face)
     }
 
     /// The face of a member that faces most nearly `toward`.

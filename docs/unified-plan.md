@@ -63,8 +63,8 @@ positions because the solve found them.
 | --- | --- |
 | Constraints are between anonymous points; bearing points are made after the solve, by geometry | Nodes are first class in the solve, named; a model's nodes are the solve's nodes |
 | `TrussRoof.bearingOn` finds what is under each truss inside the roof generator | An explicit utility the script calls, returning nodes; the roof rests on nodes |
-| `Assembly.resting` only checks that two members already touch | The upper member is a body; resting places it |
-| Assembly points, walls, perimeters, floors: placed by coordinates in the world | Bodies with published nodes, placed by datums and relations |
+| Walls, perimeters, floors, roofs: placed by coordinates in the world, written straight into the model | Bodies with published nodes in the scene, placed by datums and relations |
+| A model node is made with `node_at`, which reuses any node within half a millimetre: things placed at the same point are joined | Nodes are one only by a relation (`coincide`) or inside a generator |
 | `Assembly.bearingOn`: connects where axes happen to meet | Explicit relations between named nodes |
 | `TrussRoof` has a plan `origin` | Its stations are nodes along the plates it bears on |
 | `shifted`, `studsAt`, surveyed walls: as-built numbers written over the layout rule | Readings: measured constraints on the same unknowns the layout rule hints |
@@ -87,12 +87,19 @@ Each step leaves everything working and removes one row above.
    states its supports as nodes (a utility finds them and chooses which
    two carry each truss) and its contacts as equalities; the model's
    bearing points are those nodes, by name.
-3. **A scene: bodies, nodes, relations, then solve, then the model.** A
-   builder that generators and the script write to, in place of writing
-   positions into the model. The model becomes its output.
-4. **Assemblies on the scene.** Each member a body, or the assembly one
-   body; points become nodes; `resting`, `coincide`, `datum`. Coordinates
-   only in a body's frame. `Assembly.bearingOn` goes.
+3. **A scene: bodies, nodes, relations, then solve, then the model.**
+   *Done* (`topo_core::scene`). Bodies (fixed, or free and placed by
+   relations, kept upright by a hint), nodes fixed in them, members
+   between nodes, relations (`coincide`, `datum`, `rest`); solved, then
+   written into the model, which keeps the solve.
+4. **Assemblies on the scene.** *Mostly done.* Each assembly is a body,
+   its points are nodes (`Assembly name/point`), `free()` makes it placed
+   only by relations; the script has node handles (`assembly.node(...)`)
+   and `coincide`, `datum`; `resting` is a node on the faces of both,
+   with two bounded numbers on each, solved. Still to go:
+   `Assembly.bearingOn`, and the model's `node_at` merging nodes by
+   position when the scene is written (kept for now: the pergola example
+   relies on it).
 5. **Walls and perimeters publish nodes** (plate ends, corners, points
    along plates) and are placed by datums; roofs take their stations
    from nodes along the plates they bear on. `TrussRoof.origin` goes.

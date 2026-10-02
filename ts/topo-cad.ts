@@ -1076,13 +1076,14 @@ export class Assembly {
     readonly loads: readonly AssemblyLoad[],
     readonly bonds: readonly (readonly [string, string])[],
     readonly rests: readonly (readonly [string, string])[] = [],
+    readonly free_: boolean = false,
   ) {}
 
   static named(name: string): Assembly {
     return new Assembly(name, Placement.identity, [], [], "nailed", [], [], [], []);
   }
   private copy(
-    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; rests: Assembly["rests"] }>,
+    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; rests: Assembly["rests"]; free_: boolean }>,
   ): Assembly {
     return new Assembly(
       p.name ?? this.name,
@@ -1095,7 +1096,21 @@ export class Assembly {
       p.loads ?? this.loads,
       p.bonds ?? this.bonds,
       p.rests ?? this.rests,
+      p.free_ ?? this.free_,
     );
+  }
+  /**
+   * Free: its placement is only where it starts. It is placed by relations
+   * between its nodes and others (`coincide`, `datum`), and kept upright
+   * (its z up) where they leave it free to turn.
+   */
+  free(): Assembly {
+    return this.copy({ free_: true });
+  }
+  /** One of its points, as a node others can be related to: `assembly.node("top")`. */
+  node(point: string): NodeHandle {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
+    return new NodeHandle(`${this.name}/${point}`);
   }
   /**
    * One member resting on another where they cross (`"joist"`, `"beam"` or
@@ -1175,6 +1190,7 @@ export class Assembly {
       loads: this.loads,
       bonds: this.bonds,
       rests: this.rests,
+      free: this.free_,
     };
   }
 }
@@ -1460,7 +1476,32 @@ export interface Info {
   readonly notes: readonly string[];
 }
 
-export type Item = Perimeter | TrussRoof | Assembly;
+/** A node: a named point of something, to relate to others. */
+export class NodeHandle {
+  constructor(readonly name: string) {}
+}
+
+/** A relation between nodes, added to a building like anything else. */
+export class Relation {
+  private constructor(readonly spec: Record<string, unknown>) {}
+  /** Two nodes are one: the same point, and joined there. */
+  static coincide(a: NodeHandle, b: NodeHandle): Relation {
+    return new Relation({ type: "coincide", a: a.name, b: b.name });
+  }
+  /** A node is at this place (in the building's coordinates). */
+  static datum(node: NodeHandle, at: Point3): Relation {
+    return new Relation({ type: "datum", node: node.name, at });
+  }
+  toJSON() {
+    return this.spec;
+  }
+}
+/** Two nodes are one: the same point, and joined there. */
+export const coincide = (a: NodeHandle, b: NodeHandle): Relation => Relation.coincide(a, b);
+/** A node is at this place (in the building's coordinates). */
+export const datum = (node: NodeHandle, at: Point3): Relation => Relation.datum(node, at);
+
+export type Item = Perimeter | TrussRoof | Assembly | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of

@@ -12,6 +12,7 @@ pub mod material;
 pub mod math;
 pub mod model;
 pub mod refs;
+pub mod scene;
 pub mod section;
 pub mod sheets;
 pub mod surfaces;
