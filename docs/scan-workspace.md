@@ -305,10 +305,11 @@ Details that were decided in the building:
   free-space switch (when the scan has a trajectory): under the points,
   a picture over the slab's middle plane of where the scanner's rays
   pass inside it, brighter where more do. Every ray is taken: the part
-  of it inside the slab is drawn into a grid over the slab's width and
-  height (cells of 2 cm, or 1024 along the longer side), each cell
-  counting the rays over it; the counts are shown on a logarithmic
-  scale. Where it is dark, something was in the way or nothing looked;
+  of it inside the slab is drawn into a grid, each cell counting the
+  rays over it; the counts are shown on a logarithmic scale. The grid
+  covers what the view sees of the slab, a cell to a pixel (no finer
+  than 1 mm, no more than 2048 across), and is made again when the view
+  comes to rest: zoomed in close, single rays are seen as lines. Where it is dark, something was in the way or nothing looked;
   a streak through a wall is an opening, or rays that should not be
   there. The service makes it (`/api/free`, about a third of a second
   for 14 million rays) and it follows the slab as it is dragged.

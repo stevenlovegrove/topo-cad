@@ -113,8 +113,8 @@ export const service = {
     return parseCloud(await r.arrayBuffer());
   },
   /** Free space in a box, over its first two axes: { w, h, max, data } (a byte per cell: how many rays pass over it, on a logarithmic scale; row 0 at the low side of the second axis). */
-  async free(box) {
-    const r = await fetch(`api/free?${["c", "u", "v", "n", "h"].map((k) => `${k}=${box[k].join(",")}`).join("&")}`);
+  async free(box, w, h) {
+    const r = await fetch(`api/free?${["c", "u", "v", "n", "h"].map((k) => `${k}=${box[k].join(",")}`).join("&")}&w=${w}&ht=${h}`);
     if (!r.ok) return null;
     const buf = await r.arrayBuffer(), d = new DataView(buf);
     return { w: d.getUint32(0, true), h: d.getUint32(4, true), max: d.getUint32(8, true), data: new Uint8Array(buf, 12) };

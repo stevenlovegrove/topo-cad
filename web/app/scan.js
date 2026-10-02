@@ -317,21 +317,64 @@ async function askMinRange() {
 
 /** Every scan point in the box a view is clipped to (a moment after it stops changing). */
 function requestSlab(v) {
-  const box = v.state.box, free = !!(box && v.state.free), key = box ? JSON.stringify([box, free]) : "";
+  requestFree(v);
+  const box = v.state.box, key = box ? JSON.stringify(box) : "";
   if (key === (v.slabWant ?? "") || !st?.scan.loaded) return;
   v.slabWant = key;
   clearTimeout(v.slabTimer);
   v.slabTimer = setTimeout(async () => {
-    if (!box) { v.setCloud("slab", null); v.setImage(null); return setInfo(v.name, ""); }
-    // With free space: where the rays pass in the slab, as a picture over its middle plane.
-    const [c, f] = await Promise.all([service.slab(box), free ? service.free(box) : null]);
+    if (!box) { v.setCloud("slab", null); return setInfo(v.name, ""); }
+    const c = await service.slab(box);
     if (v.slabWant !== key) return;
     v.setCloud("slab", c);
-    const at = (a, b) => vec.add(box.c, vec.add(vec.scale(box.u, a * box.h[0]), vec.scale(box.v, b * box.h[1])));
-    v.setImage(f && f.max ? { ...f, corners: [at(-1, -1), at(1, -1), at(-1, 1), at(1, 1)] } : null);
     const s = slabOf(v.slab);
-    setInfo(v.name, c ? `${s ? `slab ${slabName(s)} · ` : ""}${c.count.toLocaleString()} points${f ? ` · free space: up to ${f.max.toLocaleString()} rays over a cell` : ""}` : "");
+    setInfo(v.name, c ? `${s ? `slab ${slabName(s)} · ` : ""}${c.count.toLocaleString()} points` : "");
   }, 200);
+}
+
+/**
+ * Free space in the slab a view is clipped to (when it is switched on): where the rays pass in
+ * it, as a picture over its middle plane. Made for the part of the slab the view sees, with a
+ * cell for each of its pixels, and again when the view or the slab changes: zooming in sharpens it.
+ */
+function requestFree(v) {
+  const box = v.state.box;
+  let want = null;
+  if (box && v.state.free && st?.scan.loaded && st.scan.rays) {
+    // What of the slab's middle plane the view sees: where the rays through its corners meet it.
+    const W = v.canvas.clientWidth || 1, H = v.canvas.clientHeight || 1, dpr = window.devicePixelRatio || 1;
+    let lo = [-box.h[0], -box.h[1]], hi = [box.h[0], box.h[1]];
+    const pts = [[0, 0], [W, 0], [0, H], [W, H]].map(([x, y]) => onPlane(box.c, box.n, v.ray(x, y)));
+    // (Not for a view along the plane, or one that looks past it to the horizon: the whole slab then.)
+    if (pts.every(Boolean) && v.state.ortho) {
+      const uv = pts.map((p) => { const q = vec.sub(p, box.c); return [vec.dot(q, box.u), vec.dot(q, box.v)]; });
+      lo = lo.map((x, k) => Math.max(x, Math.min(...uv.map((p) => p[k]))));
+      hi = hi.map((x, k) => Math.min(x, Math.max(...uv.map((p) => p[k]))));
+    }
+    if (hi[0] - lo[0] > 1e-3 && hi[1] - lo[1] > 1e-3) {
+      // A cell a pixel: as fine as the view can show, no finer than 1 mm.
+      const cam = v.camera(), perPx = v.state.ortho ? (2 * cam.hh) / (H * dpr) : Math.max(hi[0] - lo[0], hi[1] - lo[1]) / (Math.max(W, H) * dpr);
+      const cell = Math.max(perPx, 0.001, Math.max(hi[0] - lo[0], hi[1] - lo[1]) / 2048);
+      // (Snapped to cells, so a small move asks for the same picture.)
+      const snap = (x, up) => (up ? Math.ceil : Math.floor)(x / (cell * 16)) * cell * 16;
+      lo = lo.map((x, k) => Math.max(-box.h[k], snap(x, false))); hi = hi.map((x, k) => Math.min(box.h[k], snap(x, true)));
+      const mid = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])], half = [0.5 * (hi[0] - lo[0]), 0.5 * (hi[1] - lo[1])];
+      want = { box: { ...box, c: vec.add(box.c, vec.add(vec.scale(box.u, mid[0]), vec.scale(box.v, mid[1]))), h: [half[0], half[1], box.h[2]] }, w: Math.max(1, Math.round((2 * half[0]) / cell)), h: Math.max(1, Math.round((2 * half[1]) / cell)), cell };
+    }
+  }
+  const key = want ? JSON.stringify([want.box, want.w, want.h]) : "";
+  if (key === (v.freeWant ?? "")) return;
+  v.freeWant = key;
+  clearTimeout(v.freeTimer);
+  if (!want) return v.setImage(null);
+  v.freeTimer = setTimeout(async () => {
+    const f = await service.free(want.box, want.w, want.h);
+    if (v.freeWant !== key) return;
+    const b = want.box, at = (a, c) => vec.add(b.c, vec.add(vec.scale(b.u, a * b.h[0]), vec.scale(b.v, c * b.h[1])));
+    v.setImage(f && f.max ? { ...f, corners: [at(-1, -1), at(1, -1), at(-1, 1), at(1, 1)] } : null);
+    v.freeInfo = f ? ` Now in cells of ${want.cell >= 0.01 ? `${(want.cell * 100).toFixed(1)} cm` : `${(want.cell * 1000).toFixed(1)} mm`}, up to ${f.max.toLocaleString()} rays over one.` : "";
+    renderTools(v);
+  }, 150);
 }
 
 async function loadMembers() {
@@ -763,6 +806,7 @@ function makeGlPane(kind) {
   v.onHandleMenu = (id, e) => handleMenu(v, id, e);
   v.onLine = (a, b) => cutAlong(v, a, b);
   v.onChange = () => {
+    requestFree(v);
     if (v.modelNeutral !== neutralModel(v)) rebuildModel();
     renderLayers();
   };
@@ -1400,7 +1444,7 @@ function renderTools(v) {
     `<select data-k="slab" title="What of the scan this view shows: all of it, or what is in a slab (a section)"><option value="">Whole scan</option>${slabs().map((x) => `<option value="${esc(x.id)}" ${x.id === v.slab ? "selected" : ""}>Slab ${esc(slabName(x))}</option>`).join("")}<option value="+plan">New slab: plan…</option><option value="+x">New slab: across x…</option><option value="+y">New slab: across y…</option></select>` +
     `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}</span>` +
     (sb
-      ? `<span class="grp">${btn("square", ICON.square, "Look square on at the slab, fitted in the view")}${btn("flat", ICON.lock, "Held square on: a drag slides the view. Off: a drag turns it", s.flat)}${st?.scan.rays ? btn("free", ICON.free, "Free space: where the scanner's rays pass in the slab, under the points. Brighter: more rays. Where it is dark, something was in the way, or nothing looked", s.free) : ""}</span>` +
+      ? `<span class="grp">${btn("square", ICON.square, "Look square on at the slab, fitted in the view")}${btn("flat", ICON.lock, "Held square on: a drag slides the view. Off: a drag turns it", s.flat)}${st?.scan.rays ? btn("free", ICON.free, "Free space: where the scanner's rays pass in the slab, under the points. Brighter: more rays. Where it is dark, something was in the way, or nothing looked. It is made for what the view sees, a cell a pixel: zoom in for finer." + (s.free ? v.freeInfo ?? "" : ""), s.free) : ""}</span>` +
         `<span class="grp" title="The slab: its thickness (m), and stepping it back and forward by half of that">${btn("back", ICON.back, "Slab back (away from the viewer)")}<input type="number" step="0.05" min="0.01" value="${(2 * sb.half[2]).toFixed(2)}" data-a="thick">${btn("fwd", ICON.fwd, "Slab forward (toward the viewer)")}</span>`
       : "") +
     `<span class="grp">${btn("line", ICON.line, "Draw a polyline: click its points (on the scan, or in the slab seen square on)", drawing?.view === v.name)}${btn("cut", ICON.cut, "Cut a slab: drag a line across the building, seen from above, to look at what it cuts through", v.tool === "line")}</span>` +

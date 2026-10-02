@@ -205,9 +205,11 @@ impl Work {
                 let Some(scan) = scan else { return respond_json(req, 503, &json!({"error": "the scan is still loading"})) };
                 let Some(sensor) = scan.sensor.as_deref() else { return respond_json(req, 404, &json!({"error": "this scan has no trajectory: where each point was seen from is not known"})) };
                 let (Some(c), Some(u), Some(vv), Some(n), Some(h)) = (v3(q.get("c")), v3(q.get("u")), v3(q.get("v")), v3(q.get("n")), v3(q.get("h"))) else { return respond_json(req, 400, &json!({"error": "c, u, v, n and h: x,y,z each"})) };
-                // Cells of 2 cm, or as many as fit 1024 along the longer side.
+                // As many cells as asked for (w, h: what the viewer has pixels for; the box is what it
+                // sees of the slab), else cells of 2 cm or as many as fit 1024 along the longer side.
                 let cell = (2.0 * h[0].max(h[1]) / 1024.0).max(0.02);
-                let (w, ht) = (((2.0 * h[0] / cell).ceil() as usize).clamp(1, 1024), ((2.0 * h[1] / cell).ceil() as usize).clamp(1, 1024));
+                let px = |k: &str, d: f32| q.get(k).and_then(|x| x.parse::<usize>().ok()).unwrap_or((d / cell).ceil() as usize).clamp(1, 2048);
+                let (w, ht) = (px("w", 2.0 * h[0]), px("ht", 2.0 * h[1]));
                 let stride = q.get("stride").and_then(|x| x.parse().ok()).unwrap_or(1usize);
                 let grid = topo_scan::rays::free_space(&scan.xyz, sensor, &scan.used, stride, c, &[u, vv, n], h, w, ht);
                 let max = grid.iter().copied().max().unwrap_or(0);
