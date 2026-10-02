@@ -37,16 +37,22 @@ is wanted, and "Not yet" what is left.
 A constraint has a tier, and the tiers are solved in order, each only
 within what the ones above leave free:
 
-1. **Hard**: it must hold. Connections, rigid shapes, datums.
-2. **Measured**: it should hold, to a stated tolerance. A reading from a
+1. **Hard**: it must hold. Connections, rigid shapes, datums. A hard
+   constraint may be **one-sided**: a number at least another (a bound),
+   a point on or beyond a plane (a contact: it may touch, or be clear).
+2. **Weight**: frames given weight settle as low as the hard constraints
+   let them, onto whatever holds them up. Which one-sided constraints end
+   up touching is found here, not chosen beforehand. Weight moves frames,
+   never a scalar.
+3. **Measured**: it should hold, to a stated tolerance. A reading from a
    scan or a tape.
-3. **Default**: a generator's hint ("my y is up"), or a layout rule. It
+4. **Default**: a generator's hint ("my y is up"), or a layout rule. It
    decides only what nothing above decides.
 
 Solving in order, not with small weights, means a hint cannot bend a
 measurement and a measurement cannot bend a hard constraint, and the
-problem stays well conditioned. Whatever is still free after the three
-stays where it was put (its nominal place).
+problem stays well conditioned. Whatever is still free after these stays
+where it was put (its nominal place).
 
 A generator is given its parent scope, so it can add constraints and hints
 between its frame and what it is in (and named things further up: gravity,
@@ -61,6 +67,11 @@ north, a survey datum).
   truss can move along its x").
 - **Every constraint's gap.** A measurement or a hint that gives way to
   something above it is not an error; its gap is the finding.
+- **What is touching**: the one-sided constraints that are met exactly
+  (a bound reached, a contact made), and for the others how much room
+  they have.
+- **What falls**: a thing its weight carries off without limit. Nothing
+  holds it up, and that is an error.
 - **Refusal.** Hard constraints that cannot all hold are refused: nothing
   downstream may use the result. The report lists the hard constraints not
   met, with their gaps, at the pose that comes nearest to meeting them all.
@@ -193,26 +204,24 @@ the chord's lumber, at either edge of the top) or along it (a wall under
 a gable truss, for as far as the two overlap). Not only at the heels: a
 beam under the middle is under it too.
 
-**It rests on them as a rigid thing does**: on the two it would touch,
-either side of its middle (the upper hull of the tops' heights, less the
-chord's own height there), level or tilted as they say, and clear of any
-that are lower. A chord that rises (scissors) sits where it is over the
-bearing, on the edge it meets first.
+**It rests on them as a rigid thing does**, and the solve finds how.
+Each truss is a rigid frame, free in the world, with weight, in one
+system for the roof (`TrussRoof::seats`). All hard:
 
-Each truss is a rigid frame, free in the world, in one system for the
-roof (`TrussRoof::seats`):
+- **contacts, one-sided**: the chord's underside, where it is over each
+  of those tops, is no lower than it. It may sit on it or be clear of it;
+- **datums**: its heel is where the layout puts it on plan, along the
+  ridge and along the span;
+- **bracing**: it is plumb and square to the ridge (a truss does not lie
+  down under its own weight).
 
-- **hard**: the chord's underside, somewhere along it, is at the top of
-  each bearing that carries it, where that bearing is;
-- **hard, datums**: its heel is where the layout puts it on plan, along
-  the ridge and along the span;
-- **hints**: its plane is square to the ridge and plumb, and it is
-  level. These settle what the bearings leave open and give way where
-  they do not.
-
-Nothing ties one truss to another, so each is a component of its own.
-On level plates no step is taken and the trusses are exactly where the
-plates' height puts them.
+Its weight then brings it down onto what holds it up: the two contacts
+either side of its middle that it reaches first, level or tilted as they
+say, clear of any that are lower. A chord that rises (scissors) sits
+where it is over the bearing, on the edge it meets first. Nothing ties
+one truss to another, so each is a component of its own. On level plates
+no step is taken and the trusses are exactly where the plates' height
+puts them.
 
 **It is fastened to what it sits on, and to nothing else**, at a node:
 the bearing point. Where the chord's axis meets the bearing's axis (a
@@ -229,8 +238,9 @@ What cannot be done is said, as an error on the model:
 
 - `truss-not-seated`: none of what the roof bears on is under any part
   of the truss;
-- `truss-not-held`: it is on one bearing only, or all that is under it
-  is to one side of its middle (it is placed level there);
+- `truss-not-held`: what is under it does not hold it up (one bearing
+  only, or all to one side of its middle): in the solve it falls. It is
+  left where it started;
 - a truss whose hard constraints cannot all hold stops the model
   building, naming the truss and the gaps.
 
@@ -265,9 +275,10 @@ Downstream, an attachment is a rigid arm from the member's axis to the
 node (`AnalysisModel::links`), and a point of support in the load path:
 what is at a node on a member's upward face rests on the member there.
 
-In the solver's terms this is a point with two scalars in the member's
-frame, held to another member's point. The solver does not yet bound
-scalars, so the box is checked by the model, not held by the solve.
+In the solver's terms this is a point with two bounded scalars in the
+member's frame, held to another member's point. The solver has bounds
+now, but bearing points are not yet its unknowns: they are read off where
+the contacts touch (see [unified-plan.md](unified-plan.md)).
 
 ## Seeing it
 
@@ -314,7 +325,16 @@ gaps.
 
 Gauss-Newton on the joints' coordinates and the scalars, component by
 component and, within one, tier by tier, each tier's least-squares step
-taken within the space the tiers above leave free. A component's rows
+taken within the space the tiers above leave free.
+
+One-sided constraints are held by an **active set**: those taken as met
+exactly are solved as equalities with the hard constraints. One that a
+step would cross becomes active; an active one is let go when, without
+it, the step would move off it into the clear. Weight is a stride
+downhill within what the hard and active constraints leave free, no
+longer than a cap and no further than the first inactive contact in the
+way; the stride is brought back onto the hard constraints before it is
+judged. A part still going down when the passes run out is falling. A component's rows
 are laid out as a small dense matrix for that step, and the
 rank-revealing solve (what is settled, what is left free) is by
 eigenvectors. Ideas are taken from articulated-body formulations; no

@@ -55,7 +55,6 @@ positions because the solve found them.
 
 | Today | What it should be |
 | --- | --- |
-| Truss seating picks which bearings carry a truss before solving (a hull over their heights), then solves | Every candidate support is a one-sided contact; the truss's weight and the solve find which are touched |
 | Bearing points are worked out by geometry after the solve, and their two numbers back-computed | The contacts are in the solve; bearing nodes are what it touched |
 | `Assembly.resting` only checks that two members already touch | The upper member is a body; resting places it |
 | Assembly points, walls, perimeters, floors: placed by coordinates in the world | Bodies with published nodes, placed by datums and relations |
@@ -71,13 +70,14 @@ positions because the solve found them.
 
 Each step leaves everything working and removes one row above.
 
-1. **Contact in the solver.** Inequalities (at least, above) and bounds
-   on numbers, held by an active set; weights on bodies, as a tier after
-   hard; "not held" detected. *This is the piece everything else needs.*
-2. **Truss seating by contact.** Every candidate support a one-sided
-   contact; plumb and square to the ridge hard (a truss is braced);
-   weight does the rest. The hull goes. Bearing nodes are the touched
-   contacts.
+1. **Contact in the solver.** *Done.* Inequalities (at least, above) and
+   bounds on numbers, held by an active set; weights on bodies, as a tier
+   after hard; "not held" detected (it falls).
+2. **Truss seating by contact.** *Done.* Every candidate support a
+   one-sided contact; plumb and square to the ridge hard (a truss is
+   braced); weight does the rest. Choosing the bearings beforehand is
+   gone. (Finding the candidates is still by geometry, and the bearing
+   nodes are still made afterward from what is touched: steps 3 and 5.)
 3. **A scene: bodies, nodes, relations, then solve, then the model.** A
    builder that generators and the script write to, in place of writing
    positions into the model. The model becomes its output.

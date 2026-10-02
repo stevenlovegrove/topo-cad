@@ -494,7 +494,7 @@ fn structure(b: &Built) -> Value {
             let variables: Vec<Value> = (s.variables.iter())
                 .map(|v| json!({ "name": v.name, "kind": v.kind, "at": v3(v.at), "value": v.value, "freedoms": v.freedoms.iter().map(|f| json!({ "what": f.what, "dir": v3(f.dir), "turn": f.turn, "settled": f.settled })).collect::<Vec<_>>() }))
                 .collect();
-            let constraints: Vec<Value> = (s.constraints.iter()).map(|c| json!({ "name": c.name, "tier": c.tier, "kind": c.kind, "gap": c.gap, "points": c.points.iter().map(|p| v3(*p)).collect::<Vec<_>>(), "touches": c.touches })).collect();
+            let constraints: Vec<Value> = (s.constraints.iter()).map(|c| json!({ "name": c.name, "tier": c.tier, "kind": c.kind, "gap": c.gap, "room": c.room, "points": c.points.iter().map(|p| v3(*p)).collect::<Vec<_>>(), "touches": c.touches })).collect();
             json!({ "name": s.name, "variables": variables, "constraints": constraints })
         })
         .collect();

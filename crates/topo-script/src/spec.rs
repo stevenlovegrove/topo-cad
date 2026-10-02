@@ -537,7 +537,7 @@ impl Builder {
                 self.m.issues.push(Issue::new(Severity::Error, "truss-not-seated", message).members(t.bottom_chords.clone()));
             }
             if roof.unsteady.contains(&(i + 1)) {
-                let message = format!("roof {}: truss T{} is not held: what is under it is one bearing, or all to one side of its middle", r.name, i + 1);
+                let message = format!("roof {}: truss T{} is not held up by what is under it (one bearing, or all to one side of its middle)", r.name, i + 1);
                 self.m.issues.push(Issue::new(Severity::Error, "truss-not-held", message).members(t.bottom_chords.clone()));
             }
             let mut on: Vec<usize> = roof.seats[i].iter().map(|(k, _)| *k).collect();

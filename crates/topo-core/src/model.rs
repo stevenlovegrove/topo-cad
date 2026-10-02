@@ -296,7 +296,7 @@ pub struct SolvedFreedom {
     /// The direction it moves along, or the axis it turns about.
     pub dir: Vec3,
     pub turn: bool,
-    /// What settled it: `hard`, `measured`, `hint`, or `open` (nothing did).
+    /// What settled it: `hard`, `weight` (it came to rest), `measured`, `hint`, or `open` (nothing did).
     pub settled: String,
 }
 
@@ -308,6 +308,9 @@ pub struct SolvedConstraint {
     pub kind: String,
     /// How far it is from holding (metres; radians for directions).
     pub gap: f64,
+    /// For a one-sided constraint (a contact, a bound): how much room it has; nothing when it is touching.
+    #[serde(default)]
+    pub room: Option<f64>,
     pub points: Vec<Vec3>,
     /// The variables it depends on, by name.
     pub touches: Vec<String>,

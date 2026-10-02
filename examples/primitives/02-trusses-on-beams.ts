@@ -1,21 +1,25 @@
 // Free variables: trusses sat on what is under them.
 //
 // Three trusses on two beams, the far beam 2 inches lower. The roof is given
-// no height. Each truss is a rigid thing, free to move (6 freedoms), with a
-// number for where along its chord it sits on each beam. It is asked:
+// no height. Each truss is a rigid thing, free to move (6 freedoms), with
+// weight. It is asked, all hard:
 //
-// - hard: its chord's underside is at the top of each beam, over that beam;
-// - hard (datums): its heel is where the layout puts it on plan;
-// - hints: its plane is plumb and square to the ridge, and it is level.
+// - its chord's underside is no lower than each edge of each beam's top (a
+//   one-sided contact: it may sit on it, or be clear of it);
+// - its heel is where the layout puts it on plan (datums);
+// - it is plumb and square to the ridge (it is braced).
 //
-// The beams decide its height and its tilt; the level hint gives way to them
-// (and says by how much); the other hint settles its roll and its turn on plan.
+// Its weight then brings it down onto whatever holds it up. The solve finds
+// which contacts those are: sloping down to the lower beam, one edge of each
+// top; it is clear of the other two by a fraction of a millimetre.
 //
 // In the 3D view, turn on Skeleton. Squares are the trusses (at their heels),
-// short bars are the numbers, rings are constraints, and orange diamonds are
-// the bearing points the trusses were then joined to the beams at (on the
-// beams' top faces: their axes are through their middles). Hover a square
-// for its six freedoms, each coloured by what settled it.
+// short bars are numbers (where along the chord it is over each edge), rings
+// are constraints (faint and dotted: a contact that is not touching), and
+// orange diamonds are the bearing points the trusses were then joined to the
+// beams at (on the beams' top faces: their axes are through their middles).
+// Hover a square for its six freedoms, each coloured by what settled it:
+// hard, or its weight.
 import { Assembly, Building, DFL, ft, inch, TrussRoof, TrussShape } from "topo-cad";
 
 const grade = DFL.No2;

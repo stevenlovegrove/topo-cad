@@ -165,11 +165,15 @@ fn the_primitives_examples_show_what_they_say() {
     let s = &m.solves[0];
     assert_eq!(s.variables.iter().filter(|v| v.kind == "free").count(), 3);
     assert!(s.variables.iter().all(|v| v.freedoms.iter().all(|f| f.settled != "open")), "nothing is left open");
+    // T1's place on plan, its being plumb and its being square to the ridge are hard; its height and its
+    // tilt (and, its own x being tilted with it, its move along that) are where its weight brought it to rest.
     let t1 = s.variables.iter().find(|v| v.name == "T1").unwrap();
-    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hard", "hard", "hint", "hard", "hint"]);
-    // The level hint gives way to the beams (2 inches over the span between them), and says by how much.
-    let level = s.constraints.iter().find(|c| c.name == "T1 level").unwrap();
-    assert!(level.gap > 0.009 && level.gap < 0.012, "{level:?}");
+    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["weight", "hard", "weight", "hard", "weight", "hard"]);
+    // Each beam's top has two edges it might sit on. Sloping down to the far beam, it touches one edge of each and is clear of the other.
+    let contacts: Vec<_> = s.constraints.iter().filter(|c| c.name.starts_with("T1 on what is under it")).collect();
+    assert_eq!(contacts.len(), 4);
+    assert_eq!(contacts.iter().filter(|c| c.room.unwrap().abs() < 1e-7).count(), 2, "{contacts:#?}");
+    assert!(contacts.iter().all(|c| c.gap == 0.0 && c.room.unwrap() > -1e-7 && c.room.unwrap() < 0.002));
 
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
