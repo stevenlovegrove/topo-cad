@@ -894,21 +894,20 @@ export class TrussRoof {
     readonly chord: Nominal;
     readonly web: Nominal;
     readonly grade: Grade;
-    readonly height?: Length;
     readonly bears_on: readonly string[];
     readonly loads: readonly AreaLoad[];
     readonly overrides?: readonly { readonly trusses: readonly number[]; readonly shape: TrussShape }[];
     readonly shifts?: readonly { readonly trusses: readonly number[]; readonly along: Length }[];
-    readonly raises?: readonly { readonly trusses: readonly number[]; readonly by: Length }[];
   }) {}
 
   /**
-   * `origin`: outside corner of a bearing wall where the first truss's left
-   * heel sits; `spanDir`: direction the trusses span; `length`: along the ridge.
+   * `origin`: where the first truss's left heel is on plan; `spanDir`:
+   * direction the trusses span; `length`: along the ridge. Their height is
+   * not given: they sit on what they bear on (`bearingOn`).
    */
   static of(
     shape: TrussShape,
-    o: { name?: string; origin: Point; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal; height?: Length },
+    o: { name?: string; origin: Point; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal },
   ): TrussRoof {
     return new TrussRoof({
       name: o.name ?? "Roof trusses",
@@ -920,7 +919,6 @@ export class TrussRoof {
       chord: o.chord ?? [2, 4],
       web: o.web ?? [2, 4],
       grade: o.grade,
-      height: o.height,
       bears_on: [],
       loads: [],
     });
@@ -942,17 +940,6 @@ export class TrussRoof {
   shifted(trusses: readonly number[], along: Length): TrussRoof {
     return new TrussRoof({ ...this.spec, shifts: [...(this.spec.shifts ?? []), { trusses, along }] });
   }
-  /**
-   * Trusses as built off the bearing height (1-based numbers, T1 at the
-   * origin): each sits `by` higher than the roof's bearing height (negative:
-   * lower), whole and level: on a plate laid on a header, a shim, a taller
-   * wall. What they bear on has to be modelled at that height too, or they
-   * stand clear of it. The roof's surfaces are set out from the roof as a
-   * whole and do not follow them.
-   */
-  raised(trusses: readonly number[], by: Length): TrussRoof {
-    return new TrussRoof({ ...this.spec, raises: [...(this.spec.raises ?? []), { trusses, by }] });
-  }
   /** Fink trusses (shorthand for `TrussRoof.of(TrussShape.fink(...), ...)`). */
   static fink(o: {
     name?: string;
@@ -964,14 +951,17 @@ export class TrussRoof {
     spacing?: Length;
     overhang?: Length;
     grade: Grade;
-    height?: Length;
   }): TrussRoof {
     return TrussRoof.of(TrussShape.fink({ span: o.span, pitch: o.pitch, overhang: o.overhang ?? inch(12) }), o);
   }
   /**
-   * Trusses bear on the cap plates of these perimeters (which also set the
-   * height if not given) and on the horizontal members (beams, headers) of
-   * these assemblies, wherever a bottom chord crosses them.
+   * What the trusses sit on: the cap plates of these perimeters and the
+   * horizontal members (beams, headers) of these assemblies. Each truss
+   * sits on whichever of them are under any part of its bottom chord, as
+   * they are modelled: at their height, level or tilted as they say, on the
+   * two that carry it (it is clear of any that are lower). It is fastened
+   * to those it sits on and to nothing else. A truss with none of them
+   * under it is an error.
    */
   bearingOn(...ps: (Perimeter | Assembly)[]): TrussRoof {
     return new TrussRoof({ ...this.spec, bears_on: [...this.spec.bears_on, ...ps.map((p) => p.name)] });

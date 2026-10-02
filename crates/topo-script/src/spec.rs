@@ -331,7 +331,6 @@ pub struct TrussRoofSpec {
     pub chord: (u32, u32),
     pub web: (u32, u32),
     pub grade: GradeSpec,
-    pub height: Option<f64>,
     pub bears_on: Vec<String>,
     pub loads: Vec<AreaLoadSpec>,
     /// Other shapes for particular trusses (1-based numbers).
@@ -340,15 +339,6 @@ pub struct TrussRoofSpec {
     /// Trusses as built off the layout: further along the ridge by `along`.
     #[serde(default)]
     pub shifts: Vec<TrussShiftSpec>,
-    /// Trusses as built off the bearing height: higher by `by`.
-    #[serde(default)]
-    pub raises: Vec<TrussRaiseSpec>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TrussRaiseSpec {
-    pub trusses: Vec<usize>,
-    pub by: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -478,28 +468,33 @@ impl Builder {
         Ok(())
     }
 
-    /// The line along the top of a member: its axis, lifted to its highest face.
-    fn top_line(&self, id: MemberId) -> (Vec3, Vec3) {
+    /// The top of a member: the line along the middle of its highest face, and half that face's width.
+    fn top_of(&self, id: MemberId) -> topo_timber::truss::Bearing {
         let (mm, axes) = (self.m.member(id), self.m.member_axes(id));
         let bb = self.m.section(mm.section).bbox();
         // The point of the section that is on the axis; the body's corners are placed from it.
         let on_axis = (bb.min.x + (mm.anchor.u + 0.5) * bb.width() + mm.anchor.offset.x, bb.min.y + (mm.anchor.v + 0.5) * bb.height() + mm.anchor.offset.y);
-        let corner = |x: f64, y: f64| (axes.u * (x - on_axis.0) + axes.v * (y - on_axis.1)).z;
-        let lift = [corner(bb.min.x, bb.min.y), corner(bb.min.x + bb.width(), bb.min.y), corner(bb.min.x, bb.min.y + bb.height()), corner(bb.min.x + bb.width(), bb.min.y + bb.height())].into_iter().fold(f64::MIN, f64::max);
-        (self.m.pos(mm.start()) + Vec3::Z * lift, self.m.pos(mm.end()) + Vec3::Z * lift)
+        let corners = [(bb.min.x, bb.min.y), (bb.min.x + bb.width(), bb.min.y), (bb.min.x, bb.min.y + bb.height()), (bb.min.x + bb.width(), bb.min.y + bb.height())].map(|(x, y)| axes.u * (x - on_axis.0) + axes.v * (y - on_axis.1));
+        let lift = corners.iter().map(|c| c.z).fold(f64::MIN, f64::max);
+        let top: Vec<Vec3> = corners.into_iter().filter(|c| c.z > lift - 1e-9).collect();
+        let middle = top.iter().fold(Vec3::ZERO, |a, c| a + *c) / top.len() as f64;
+        let half_width = top.iter().map(|c| (*c - middle).norm()).fold(0.0, f64::max);
+        topo_timber::truss::Bearing { a: self.m.pos(mm.start()) + middle, b: self.m.pos(mm.end()) + middle, half_width }
     }
 
     fn truss_roof(&mut self, r: &TrussRoofSpec) -> Result<(), String> {
         let mat = self.material(&r.grade)?;
+        r.shape.validate()?;
+        for o in &r.overrides {
+            o.shape.validate()?;
+        }
+        // What the script says it bears on: a perimeter's cap plates, an assembly's horizontal
+        // members (beams, headers). Nothing else is looked for.
         let mut plates = vec![];
-        let mut height = r.height;
         for name in &r.bears_on {
-            if let Some((parts, top)) = self.perimeters.get(name) {
+            if let Some((parts, _)) = self.perimeters.get(name) {
                 plates.extend(parts.cap_plates());
-                height = height.or(Some(*top));
             } else if let Some(ms) = self.assemblies.get(name) {
-                // Bear on its horizontal members (beams, headers); the roof's
-                // height then comes from a perimeter or is given.
                 plates.extend(ms.iter().copied().filter(|&m| {
                     let mm = self.m.member(m);
                     (self.m.pos(mm.start()).z - self.m.pos(mm.end()).z).abs() < 1e-6
@@ -508,66 +503,48 @@ impl Builder {
                 return Err(format!("roof {}: nothing named {name} to bear on (a perimeter or an assembly)", r.name));
             }
         }
-        let h = height.ok_or_else(|| format!("roof {}: give a height or bearingOn(...)", r.name))?;
+        if plates.is_empty() {
+            return Err(format!("roof {}: say what it bears on, with bearingOn(...): its height is that of what is under it", r.name));
+        }
+        let bearings: Vec<_> = plates.iter().map(|&p| self.top_of(p)).collect();
+        // Where the trusses start from before they are sat on what is under them: the highest top.
+        let start = bearings.iter().map(|b| b.a.z.max(b.b.z)).fold(f64::MIN, f64::max);
         let span = Vec3::new(r.span_dir.0, r.span_dir.1, 0.0).try_normalized().ok_or("roof span direction is zero")?;
-        let mut roof = TrussRoof::new(&r.name, v3(r.origin.0, r.origin.1, h), span, r.shape.clone(), r.length, r.spacing, mat);
+        let mut roof = TrussRoof::new(&r.name, v3(r.origin.0, r.origin.1, start), span, r.shape.clone(), r.length, r.spacing, mat);
         roof.chord = r.chord;
         roof.web = r.web;
         for o in &r.overrides {
-            o.shape.validate()?;
             roof.overrides.push((o.trusses.clone(), o.shape.clone()));
         }
         for s in &r.shifts {
             roof.shifts.push((s.trusses.clone(), s.along));
         }
-        for s in &r.raises {
-            roof.raises.push((s.trusses.clone(), s.by));
-        }
-        r.shape.validate()?;
-        // What it bears on, as lines along the top of each: the trusses are seated on these.
-        roof.bearings = plates.iter().map(|&p| self.top_line(p)).collect();
+        roof.bearings = bearings;
         let roof = roof.build(&mut self.m);
         if !roof.problems.is_empty() {
             return Err(format!("roof {}: {}", r.name, roof.problems.join(". ")));
         }
         self.m.group_mut(roof.group).parent = Some(self.root);
+        // Each truss is fastened to what it sits on: at a node where the chord's axis meets the
+        // other's axis, and otherwise face to face.
         let c = self.m.add_connection(fx::truss_to_plate());
-        let chords = roof.bottom_chords();
-        for n in self.m.connect_members(&chords, &plates) {
-            for &bc in &chords {
-                if self.m.member(bc).path.contains(&n) {
-                    let plate = plates.iter().copied().find(|p| self.m.member(*p).path.contains(&n));
-                    self.m.connect(n, bc, plate, c);
-                }
-            }
-        }
-        // Each truss and what it sits on are connected: at a node where their axes meet there,
-        // or (the bearing's axis being elsewhere than its top) face to face.
         for (i, t) in roof.trusses.iter().enumerate() {
-            let shares = |m: &Model, plate: MemberId| t.bottom_chords.iter().any(|&bc| m.member(bc).path.iter().any(|n| m.member(plate).path.contains(n)));
-            let Some(seat) = roof.seats[i] else {
-                if let Some(&(_, heel)) = roof.unseated.iter().find(|(n, _)| *n == i + 1) {
-                    // (A truss along a wall, as at a gable, crosses no plate but lies on one: it meets it at nodes.)
-                    let mut met: Vec<NodeId> = t.bottom_chords.iter().flat_map(|&bc| self.m.member(bc).path.clone()).filter(|n| plates.iter().any(|&p| self.m.member(p).path.contains(n))).collect();
-                    met.sort();
-                    met.dedup();
-                    if met.len() < 2 {
-                        let message = format!("roof {}: truss T{} bears on nothing: none of what the roof bears on is under its {heel} heel", r.name, i + 1);
-                        self.m.issues.push(Issue::new(Severity::Error, "truss-not-seated", message).members(t.bottom_chords.clone()));
-                    }
-                }
-                continue;
-            };
-            for (end, (k, at)) in seat.into_iter().enumerate() {
+            if roof.unseated.contains(&(i + 1)) {
+                let message = format!("roof {}: truss T{} bears on nothing: none of what the roof bears on is under any part of it", r.name, i + 1);
+                self.m.issues.push(Issue::new(Severity::Error, "truss-not-seated", message).members(t.bottom_chords.clone()));
+            }
+            if roof.unsteady.contains(&(i + 1)) {
+                let message = format!("roof {}: truss T{} is not held: what is under it is one bearing, or all to one side of its middle", r.name, i + 1);
+                self.m.issues.push(Issue::new(Severity::Error, "truss-not-held", message).members(t.bottom_chords.clone()));
+            }
+            let mut on: Vec<usize> = roof.seats[i].iter().map(|(k, _)| *k).collect();
+            on.dedup();
+            for k in on {
                 let plate = plates[k];
-                if shares(&self.m, plate) {
-                    continue;
-                }
-                let chord = if end == 0 { t.bottom_chords[0] } else { *t.bottom_chords.last().unwrap() };
-                let node = t.bottom_chords.iter().find_map(|&bc| self.m.node_on(bc, at).ok().map(|n| (bc, n)));
+                let node = t.bottom_chords.iter().find_map(|&bc| self.m.intersect(bc, plate).ok().map(|n| (bc, n)));
                 match node {
-                    Some((bc, n)) if self.m.insert_node_on(plate, n).is_ok() => self.m.connect(n, bc, Some(plate), c),
-                    _ => self.m.bond(chord, plate, c),
+                    Some((bc, n)) => self.m.connect(n, bc, Some(plate), c),
+                    None => self.m.bond(t.bottom_chords[0], plate, c),
                 }
             }
         }

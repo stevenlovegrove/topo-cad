@@ -575,26 +575,33 @@ pub struct TrussRoof {
     /// Trusses as built off the layout (1-based numbers): further along the
     /// ridge by this much than their place at the spacing.
     pub shifts: Vec<(Vec<usize>, f64)>,
-    /// Trusses as built off the bearing height (1-based numbers): higher by
-    /// this much than the roof's (they sit on something more: a plate on a
-    /// header, a shim).
-    pub raises: Vec<(Vec<usize>, f64)>,
-    /// What the trusses may bear on: the axes (end to end) of plates, beams and headers.
-    /// A truss that crosses one of these near each heel is seated on them: its bottom chord
-    /// meets both, wherever they are (so it sits higher, or tilted, as they say). Without
-    /// these, or where a truss finds none, it is placed at `origin`'s height.
-    pub bearings: Vec<(Vec3, Vec3)>,
+    /// What the trusses may sit on: the tops of plates, beams and headers. A truss sits on
+    /// whichever of these are under any part of its bottom chords, as they are modelled: it
+    /// rests on them as a rigid thing does (on the two that carry it, level or not), and
+    /// `origin`'s height is only where it starts from. Without any, it is built at `origin`.
+    pub bearings: Vec<Bearing>,
+}
+
+/// The top of something a truss may sit on: the line along the middle of its top face, and half that face's width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bearing {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub half_width: f64,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct RoofParts {
     pub group: GroupId,
     pub trusses: Vec<TrussParts>,
-    /// For each truss seated on bearings: under its near heel and its far one, which bearing
-    /// (its place in `TrussRoof::bearings`) and the point of it the bottom chord is on.
-    pub seats: Vec<Option<[(usize, Vec3); 2]>>,
-    /// Trusses (1-based numbers) with bearings to sit on but none under a heel (which one): left at the layout's height.
-    pub unseated: Vec<(usize, &'static str)>,
+    /// For each truss: the bearings it sits on (their places in `TrussRoof::bearings`), and
+    /// the point of its bottom chord's underside that is on each.
+    pub seats: Vec<Vec<(usize, Vec3)>>,
+    /// Trusses (1-based numbers) with nothing under any part of them, among the bearings given: built at the height they started from.
+    pub unseated: Vec<usize>,
+    /// Trusses (1-based numbers) that sit on one bearing only, or with all that is under them
+    /// to one side of their middle: placed level on it, but nothing holds them so.
+    pub unsteady: Vec<usize>,
     /// Trusses that could not be seated on the bearings found for them, and why.
     pub problems: Vec<String>,
 }
@@ -614,7 +621,7 @@ impl TrussRoof {
     pub fn new(name: &str, origin: Vec3, span_dir: Vec3, shape: TrussShape, length: f64, spacing: f64, material: MaterialId) -> TrussRoof {
         let span_dir = span_dir.normalized();
         let run_dir = v3(span_dir.y, -span_dir.x, 0.0);
-        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material, overrides: vec![], shifts: vec![], raises: vec![], bearings: vec![] }
+        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material, overrides: vec![], shifts: vec![], bearings: vec![] }
     }
 
     pub fn build(&self, m: &mut Model) -> RoofParts {
@@ -634,12 +641,11 @@ impl TrussRoof {
         stations.push((self.length, Some(-run)));
         let mut parts = RoofParts { group: g, ..Default::default() };
         let stations: Vec<(f64, Option<Vec3>)> = stations.into_iter().enumerate().map(|(i, (r, face))| (r + self.shifts.iter().filter(|(ns, _)| ns.contains(&(i + 1))).map(|(_, d)| d).sum::<f64>(), face)).collect();
-        let seats = self.seats(&stations.iter().map(|(r, _)| self.origin + run * *r).collect::<Vec<_>>(), &mut parts);
+        let seats = self.seats(&stations.iter().map(|(r, face)| (self.origin + run * *r, *face)).collect::<Vec<_>>(), &mut parts);
         for (i, (_, face)) in stations.into_iter().enumerate() {
             let shape = self.overrides.iter().find(|(ns, _)| ns.contains(&(i + 1))).map(|(_, s)| s).unwrap_or(&self.shape);
-            let raise = self.raises.iter().filter(|(ns, _)| ns.contains(&(i + 1))).map(|(_, d)| d).sum::<f64>();
             let (heel, span_dir, up) = seats[i];
-            let mut t = Truss::new(&format!("T{}", i + 1), heel + Vec3::Z * raise, span_dir, shape.clone(), self.material);
+            let mut t = Truss::new(&format!("T{}", i + 1), heel, span_dir, shape.clone(), self.material);
             t.up = up;
             t.chord = self.chord;
             t.web = self.web;
@@ -660,82 +666,155 @@ impl TrussRoof {
         parts
     }
 
-    /// Where each truss sits (its heel, span direction and up), given where the layout puts its heel.
+    /// Where each truss sits (its heel, span direction and up), given where the layout puts
+    /// its heel on plan (and which side of its plane its lumber is on).
     ///
-    /// Each truss is a rigid frame, free in the world. Where it crosses a bearing near each
-    /// heel, its bottom chord is held on both (hard), with its heel where the layout puts it
-    /// along the ridge and along the span (hard: datums). Its plane staying square to the
-    /// ridge is the generator's hint: it settles what the bearings leave open (rolling about
-    /// the chord, turning on plan). One system for the roof: nothing ties one truss to
-    /// another, so each is solved on its own, and one that cannot sit is reported as itself.
-    fn seats(&self, heels: &[Vec3], parts: &mut RoofParts) -> Vec<(Vec3, Vec3, Vec3)> {
+    /// What is under a truss: every bearing whose top is under some part of a bottom chord,
+    /// across it or along it. A rigid truss rests on two of them: those of the upper hull of
+    /// the bearings (their heights, less the chord's own height there) that its middle is
+    /// between; or on one, if its middle is not between any two.
+    ///
+    /// Each truss is a rigid frame, free in the world, in one system for the roof. Hard: the
+    /// chord's underside is at the top of each bearing that carries it; its heel is where the
+    /// layout puts it on plan (along the ridge and along the span: datums). Hints: its plane
+    /// is square to the ridge and plumb, and it is level; these settle what the bearings
+    /// leave open and give way where they do not. Nothing ties one truss to another, so each
+    /// is solved on its own. Afterward, every bearing its chord touches is one it sits on.
+    fn seats(&self, heels: &[(Vec3, Option<Vec3>)], parts: &mut RoofParts) -> Vec<(Vec3, Vec3, Vec3)> {
         use topo_solve::{Dir, Joint, Kind, Point, Pose, System, Tier, WORLD};
+        struct Under {
+            bearing: usize,
+            /// Along the span from the heel, and the top's height there.
+            s: f64,
+            z: f64,
+            /// The point of the chord's underside over it, in the truss's own frame, and the chord's direction there.
+            chord: [f64; 3],
+            along: [f64; 3],
+        }
         let (span, run) = (self.span_dir, self.run_dir.normalized());
         let normal = Vec3::Z.cross(span);
         let arr = |v: Vec3| [v.x, v.y, v.z];
-        let nominal: Vec<(Vec3, Vec3, Vec3)> = heels.iter().map(|&h| (h, span, Vec3::Z)).collect();
-        // A bearing's crossing of a truss's plane: how far along the bearing, how far along the span, and how high.
-        let crossing = |heel: Vec3, (a, b): (Vec3, Vec3)| -> Option<(f64, f64, f64)> {
-            let (d, len) = ((b - a).normalized(), (b - a).norm());
-            let toward = d.dot(run);
-            if toward.abs() < 0.2 {
-                return None; // it runs along the truss, not under it
-            }
-            let t = (heel - a).dot(run) / toward;
-            let p = a + d * t;
-            (t > -0.1 && t < len + 0.1).then(|| (t, (p - heel).dot(span), p.z))
+        let thick = {
+            let bb = sawn(self.chord.0, self.chord.1).bbox();
+            bb.width().min(bb.height())
         };
         let mut sys = System::new();
-        let mut frames = vec![];
-        for (i, &heel) in heels.iter().enumerate() {
+        let mut placed = vec![];
+        for (i, &(heel, face)) in heels.iter().enumerate() {
             let shape = self.overrides.iter().find(|(ns, _)| ns.contains(&(i + 1))).map(|(_, s)| s).unwrap_or(&self.shape);
-            // The highest bearing under each heel (within a wall's thickness of it).
-            let under = |at: f64| self.bearings.iter().enumerate().filter_map(|(k, &l)| crossing(heel, l).map(|c| (k, c))).filter(|(_, c)| (c.1 - at).abs() < 0.3).max_by(|a, b| a.1 .2.total_cmp(&b.1 .2));
-            let (Some(near), Some(far)) = (under(0.0), under(shape.span)) else {
-                if !self.bearings.is_empty() {
-                    parts.unseated.push((i + 1, if under(0.0).is_none() { "near" } else { "far" }));
+            // The bottom chords' undersides (their axes), as height over distance along the span.
+            let chords: Vec<[(f64, f64); 2]> = (shape.members.iter().filter(|m| m.role == ShapeRole::BottomChord))
+                .filter_map(|m| Some([shape.point(&m.path[0])?, shape.point(m.path.last()?)?].map(|p| (p.s, p.z))))
+                .map(|[a, b]| if a.0 <= b.0 { [a, b] } else { [b, a] })
+                .collect();
+            // (The height, and the slope.)
+            let underside = |s: f64| chords.iter().filter(|[a, b]| s >= a.0 - 1e-9 && s <= b.0 + 1e-9 && b.0 > a.0).map(|[a, b]| (a.1 + (b.1 - a.1) * (s - a.0) / (b.0 - a.0), (b.1 - a.1) / (b.0 - a.0))).min_by(|a, b| a.0.total_cmp(&b.0));
+            let (lo, hi) = chords.iter().fold((f64::MAX, f64::MIN), |(lo, hi), [a, b]| (lo.min(a.0), hi.max(b.0)));
+            // The middle of the lumber: in the truss's plane, or to one side of it.
+            let middle = heel + face.map_or(Vec3::ZERO, |f| run * (f.dot(run).signum() * thick / 2.0));
+            let mut under: Vec<Under> = vec![];
+            for (k, b) in self.bearings.iter().enumerate() {
+                let len = (b.b - b.a).norm();
+                let along = (b.b - b.a) / len;
+                let mut at = |p: Vec3| {
+                    let s = (p - heel).dot(span);
+                    if let Some((z, slope)) = underside(s) {
+                        let n = (1.0 + slope * slope).sqrt();
+                        under.push(Under { bearing: k, s, z: p.z, chord: [s, 0.0, z], along: [1.0 / n, 0.0, slope / n] });
+                    }
+                };
+                if along.dot(run).abs() >= 0.2 {
+                    // Across the truss: under it where it crosses the lumber.
+                    let t = (middle - b.a).dot(run) / along.dot(run);
+                    if t > -thick / 2.0 - 1e-6 && t < len + thick / 2.0 + 1e-6 {
+                        // (Its top's two edges: a chord that slopes sits on one of them.)
+                        let edge = b.half_width / along.dot(run).abs();
+                        at(b.a + along * t - span * edge);
+                        if edge > 0.0 {
+                            at(b.a + along * t + span * edge);
+                        }
+                    }
+                } else {
+                    // Along the truss: under it for as far as the two overlap, if it is under the lumber at all.
+                    let (sa, sb) = ((b.a - heel).dot(span), (b.b - heel).dot(span));
+                    let (from, to) = (sa.min(sb).max(lo), sa.max(sb).min(hi));
+                    let point = |s: f64| b.a + (b.b - b.a) * ((s - sa) / (sb - sa));
+                    if to - from > 1e-6 && (point((from + to) / 2.0) - middle).dot(run).abs() <= b.half_width + thick / 2.0 + 1e-6 {
+                        at(point(from));
+                        at(point(to));
+                    }
                 }
-                frames.push(None);
+            }
+            if under.is_empty() {
+                if !self.bearings.is_empty() {
+                    parts.unseated.push(i + 1);
+                }
+                placed.push((None, under));
                 continue;
+            }
+            // What carries it: the upper hull of (where, how high the truss must be to touch there).
+            let mut order: Vec<usize> = (0..under.len()).collect();
+            let need = |k: usize| under[k].z - under[k].chord[2];
+            order.sort_by(|&a, &b| under[a].s.total_cmp(&under[b].s).then(need(b).total_cmp(&need(a))));
+            order.dedup_by(|b, a| (under[*a].s - under[*b].s).abs() < 1e-9);
+            let mut hull: Vec<usize> = vec![];
+            for k in order {
+                while hull.len() >= 2 {
+                    let (a, b) = (hull[hull.len() - 2], hull[hull.len() - 1]);
+                    let turn = (under[b].s - under[a].s) * (need(k) - need(b)) - (need(b) - need(a)) * (under[k].s - under[b].s);
+                    if turn >= -1e-12 {
+                        hull.pop();
+                    } else {
+                        break;
+                    }
+                }
+                hull.push(k);
+            }
+            let mid = (lo + hi) / 2.0;
+            let carry: Vec<usize> = match hull.windows(2).find(|w| under[w[0]].s <= mid && mid <= under[w[1]].s) {
+                Some(w) => w.to_vec(),
+                None => vec![*hull.iter().min_by(|&&a, &&b| (under[a].s - mid).abs().total_cmp(&(under[b].s - mid).abs())).unwrap()],
             };
+            if carry.len() < 2 {
+                parts.unsteady.push(i + 1);
+            }
             let name = format!("T{}", i + 1);
             let pose = Pose { r: [[span.x, normal.x, 0.0], [span.y, normal.y, 0.0], [span.z, normal.z, 1.0]], t: arr(heel) };
             let truss = sys.frame(&name, WORLD, Joint::Free, pose);
-            let mut on = vec![];
-            for (which, (k, (t, s, _))) in [("near", near), ("far", far)] {
-                let line = self.bearings[k];
-                let on_chord = sys.scalar(truss, &format!("where {name} bears, {which}"), s);
-                let on_bearing = sys.scalar(WORLD, &format!("where the {which} bearing carries {name}"), t);
-                let there = Point::along(WORLD, arr(line.0), arr(line.1), on_bearing);
-                sys.constrain(&format!("{name} on its {which} bearing"), Tier::Hard, Kind::Coincident(Point::at(truss, [0.0; 3]).plus(on_chord, [1.0, 0.0, 0.0]), there.clone()));
-                on.push((k, there));
+            for &k in &carry {
+                // The chord's underside, somewhere along it, is at the bearing's top where the bearing is.
+                let top = heel + span * under[k].s;
+                let top = Point::at(WORLD, [top.x, top.y, under[k].z]);
+                let slid = sys.scalar(truss, &format!("where {name} sits at {:.2} m", under[k].s), 0.0);
+                let chord = Point::at(truss, under[k].chord).plus(slid, under[k].along);
+                sys.constrain(&format!("{name} on what is under it at {:.2} m", under[k].s), Tier::Hard, Kind::offset(top.clone(), chord.clone(), Dir(WORLD, [0.0, 0.0, 1.0]), 0.0));
+                sys.constrain(&format!("{name} over what is under it at {:.2} m", under[k].s), Tier::Hard, Kind::offset(top, chord, Dir(WORLD, arr(span)), 0.0));
             }
-            let (laid, heel) = (Point::at(WORLD, arr(heel)), Point::at(truss, [0.0; 3]));
-            sys.constrain(&format!("{name} at its place along the ridge"), Tier::Hard, Kind::offset(laid.clone(), heel.clone(), Dir(WORLD, arr(run)), 0.0));
-            sys.constrain(&format!("{name} at its place along the span"), Tier::Hard, Kind::offset(laid, heel, Dir(WORLD, arr(span)), 0.0));
+            let (laid, origin) = (Point::at(WORLD, arr(heel)), Point::at(truss, [0.0; 3]));
+            sys.constrain(&format!("{name} at its place along the ridge"), Tier::Hard, Kind::offset(laid.clone(), origin.clone(), Dir(WORLD, arr(run)), 0.0));
+            sys.constrain(&format!("{name} at its place along the span"), Tier::Hard, Kind::offset(laid, origin, Dir(WORLD, arr(span)), 0.0));
             sys.constrain(&format!("{name} square to the ridge"), Tier::Default, Kind::Aligned(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, arr(normal))));
-            frames.push(Some((truss, on)));
+            sys.constrain(&format!("{name} level"), Tier::Default, Kind::Aligned(Dir(truss, [1.0, 0.0, 0.0]), Dir(WORLD, arr(span))));
+            placed.push((Some(truss), under));
         }
         let report = sys.solve();
         for c in &report.conflicts {
             let gaps: Vec<String> = c.constraints.iter().map(|g| format!("{} ({:.0} mm off)", g.constraint, g.size * 1000.0)).collect();
-            parts.problems.push(format!("{} cannot sit on its bearings: {}", c.frames.join(", "), gaps.join("; ")));
+            parts.problems.push(format!("{} cannot sit on what is under it: {}", c.frames.join(", "), gaps.join("; ")));
         }
-        (frames.iter().zip(nominal).enumerate())
-            .map(|(_, (frame, nominal))| match frame {
-                Some((f, on)) if !report.conflicts.iter().any(|c| c.frames.iter().any(|n| n == sys.name(*f))) => {
-                    let at = |k: usize| {
-                        let p = sys.point(&on[k].1);
-                        (on[k].0, v3(p[0], p[1], p[2]))
-                    };
-                    parts.seats.push(Some([at(0), at(1)]));
+        (placed.iter().zip(heels))
+            .map(|((frame, under), &(heel, _))| match frame {
+                Some(f) if !report.conflicts.iter().any(|c| c.frames.iter().any(|n| n == sys.name(*f))) => {
                     let p = sys.in_world(*f);
+                    // It sits on everything its underside touches (to a fifth of a millimetre).
+                    let on = under.iter().map(|u| (u.bearing, p.apply(u.chord), u.z)).filter(|(_, at, z)| (at[2] - z).abs() < 2e-4).map(|(k, at, _)| (k, v3(at[0], at[1], at[2]))).collect();
+                    parts.seats.push(on);
                     let col = |k: usize| v3(p.r[0][k], p.r[1][k], p.r[2][k]);
                     (v3(p.t[0], p.t[1], p.t[2]), col(0), col(2))
                 }
                 _ => {
-                    parts.seats.push(None);
-                    nominal
+                    parts.seats.push(vec![]);
+                    (heel, span, Vec3::Z)
                 }
             })
             .collect()
@@ -754,12 +833,17 @@ mod tests {
         (m.pos(bc.start()), m.pos(*t.bottom_chords.last().map(|&id| m.member(id).path.last().unwrap()).unwrap()))
     }
 
-    fn roof_on(bearings: Vec<(Vec3, Vec3)>) -> (Model, RoofParts) {
+    fn roof_on(bearings: Vec<(Vec3, Vec3)>, shape: StandardTruss) -> (Model, RoofParts) {
+        roof_on_wide(bearings, shape, 0.0)
+    }
+
+    fn roof_on_wide(bearings: Vec<(Vec3, Vec3)>, shape: StandardTruss, half_width: f64) -> (Model, RoofParts) {
         let mut m = Model::new("seated");
         let mat = m.add_material(graded("DFL", "No.2"));
-        let shape = TrussShape::standard(StandardTruss::Fink, 6.0, 4.0 / 12.0, 0.0).unwrap();
+        let shape = TrussShape::standard(shape, 6.0, 4.0 / 12.0, 0.0).unwrap();
+        // It starts from 2.4 m up; what is under it says where it sits.
         let mut roof = TrussRoof::new("Roof", v3(0.0, 0.0, 2.4), Vec3::Y, shape, 4.0 * inch(24.0), inch(24.0), mat);
-        roof.bearings = bearings;
+        roof.bearings = bearings.into_iter().map(|(a, b)| Bearing { a, b, half_width }).collect();
         let parts = roof.build(&mut m);
         (m, parts)
     }
@@ -767,54 +851,76 @@ mod tests {
     #[test]
     fn trusses_on_level_bearings_are_exactly_where_the_layout_puts_them() {
         // The ridge runs along x; plates under each heel line, a little inside it (as a wall's line is).
-        let (plain, _) = roof_on(vec![]);
-        let (m, parts) = roof_on(vec![(v3(-0.5, 0.05, 2.4), v3(3.0, 0.05, 2.4)), (v3(-0.5, 5.95, 2.4), v3(3.0, 5.95, 2.4))]);
-        assert_eq!((parts.seats.iter().flatten().count(), parts.problems.len(), parts.unseated.len()), (5, 0, 0), "{parts:#?}");
+        let (plain, _) = roof_on(vec![], StandardTruss::Fink);
+        let (m, parts) = roof_on(vec![(v3(-0.5, 0.05, 2.4), v3(3.0, 0.05, 2.4)), (v3(-0.5, 5.95, 2.4), v3(3.0, 5.95, 2.4))], StandardTruss::Fink);
+        assert!(parts.seats.iter().all(|on| on.len() == 2) && parts.problems.is_empty() && parts.unseated.is_empty(), "{parts:#?}");
         assert_eq!(m.nodes.iter().map(|n| n.pos).collect::<Vec<_>>(), plain.nodes.iter().map(|n| n.pos).collect::<Vec<_>>());
     }
 
     #[test]
     fn trusses_sit_on_what_is_under_them_and_tilt_as_it_says() {
-        // The far plate 38 mm lower; and, under the second and third trusses' near heels, a header's cap 30 mm above the plate.
-        let (m, parts) = roof_on(vec![
-            (v3(-0.5, 0.05, 2.4), v3(3.0, 0.05, 2.4)),
-            (v3(-0.5, 5.95, 2.362), v3(3.0, 5.95, 2.362)),
-            (v3(0.4, 0.05, 2.43), v3(1.4, 0.05, 2.43)),
-        ]);
-        assert_eq!((parts.seats.iter().flatten().count(), parts.problems.len(), parts.unseated.len()), (5, 0, 0), "{parts:#?}");
+        // The far plate 38 mm lower; under the second and third trusses, near their near heels, a header's
+        // cap 30 mm above the plate; and under the middle of all of them, a beam too low to touch.
+        let (m, parts) = roof_on(
+            vec![
+                (v3(-0.5, 0.05, 2.4), v3(3.0, 0.05, 2.4)),
+                (v3(-0.5, 5.95, 2.362), v3(3.0, 5.95, 2.362)),
+                (v3(0.4, 0.3, 2.43), v3(1.4, 0.3, 2.43)),
+                (v3(-0.5, 3.0, 2.2), v3(3.0, 3.0, 2.2)),
+            ],
+            StandardTruss::Fink,
+        );
+        assert!(parts.problems.is_empty() && parts.unseated.is_empty(), "{parts:#?}");
         for (i, t) in parts.trusses.iter().enumerate() {
-            let near = if i == 1 || i == 2 { 2.43 } else { 2.4 };
+            let on_header = i == 1 || i == 2;
             let (a, b) = low_ends(&m, t);
-            // The chord's bottom is on both bearings: a straight line through them, read at the bearings.
+            // The chord's bottom is a straight line through what carries it: the far plate, and the near plate or the header's cap.
             let at = |y: f64| a.z + (b.z - a.z) * (y - a.y) / (b.y - a.y);
-            assert!((at(0.05) - near).abs() < 1e-7 && (at(5.95) - 2.362).abs() < 1e-7, "T{}: {} {}", i + 1, at(0.05), at(5.95));
+            let (near, height) = if on_header { (0.3, 2.43) } else { (0.05, 2.4) };
+            assert!((at(near) - height).abs() < 1e-7 && (at(5.95) - 2.362).abs() < 1e-7, "T{}: {} {}", i + 1, at(near), at(5.95));
+            // It sits on those two and on nothing else (over the header, it is clear of the near plate).
+            let on: Vec<usize> = parts.seats[i].iter().map(|(k, _)| *k).collect();
+            assert_eq!(on, if on_header { vec![1, 2] } else { vec![0, 1] }, "T{}", i + 1);
             // Its heel is where the layout puts it on plan, and its plane is plumb and square to the ridge.
             assert!((a.x - i as f64 * inch(24.0)).abs() < 1e-7 && a.y.abs() < 1e-7 && (b.x - a.x).abs() < 1e-7, "T{}: {a:?} {b:?}", i + 1);
         }
     }
 
     #[test]
-    fn a_truss_with_nothing_under_a_heel_is_left_at_the_layout_height_and_said_so() {
-        // A plate under the near heels only.
-        let (plain, _) = roof_on(vec![]);
-        let (m, parts) = roof_on(vec![(v3(-0.5, 0.05, 2.5), v3(3.0, 0.05, 2.5))]);
-        assert!(parts.seats.iter().all(Option::is_none) && parts.problems.is_empty(), "{parts:#?}");
-        assert_eq!(parts.unseated, (1..=5).map(|n| (n, "far")).collect::<Vec<_>>());
-        assert_eq!(m.nodes.iter().map(|n| n.pos).collect::<Vec<_>>(), plain.nodes.iter().map(|n| n.pos).collect::<Vec<_>>());
+    fn a_truss_sits_on_whatever_is_under_any_part_of_it() {
+        // No plates under the heels: two beams inboard, at the third points. It sits on those, level, at their height.
+        let (m, parts) = roof_on(vec![(v3(-0.5, 2.0, 2.5), v3(3.0, 2.0, 2.5)), (v3(-0.5, 4.0, 2.5), v3(3.0, 4.0, 2.5))], StandardTruss::Fink);
+        assert!(parts.seats.iter().all(|on| on.len() == 2) && parts.unseated.is_empty(), "{parts:#?}");
+        let (a, b) = low_ends(&m, &parts.trusses[2]);
+        assert!((a.z - 2.5).abs() < 1e-9 && (b.z - 2.5).abs() < 1e-9, "{a:?} {b:?}");
+
+        // One beam only, under its middle: it sits on it, and (nothing else saying) level.
+        let (m, parts) = roof_on(vec![(v3(-0.5, 3.0, 2.5), v3(3.0, 3.0, 2.5))], StandardTruss::Fink);
+        assert!(parts.seats.iter().all(|on| on.len() == 1) && parts.unsteady == [1, 2, 3, 4, 5], "{parts:#?}");
+        let (a, b) = low_ends(&m, &parts.trusses[2]);
+        assert!((a.z - 2.5).abs() < 1e-9 && (b.z - 2.5).abs() < 1e-9, "{a:?} {b:?}");
+
+        // A wall along the first truss (as under a gable), a little to one side of its plane but under its
+        // lumber: that truss sits on it along its length. The others have nothing under them, and say so.
+        let (_, parts) = roof_on_wide(vec![(v3(0.03, 0.0, 2.45), v3(0.03, 6.0, 2.45))], StandardTruss::Fink, 0.045);
+        assert_eq!(parts.seats[0].len(), 2, "{parts:#?}");
+        assert_eq!(parts.unseated, [2, 3, 4, 5]);
     }
 
     #[test]
-    fn some_trusses_sit_higher() {
-        // Five trusses on a bearing height of 2.4 m; the second and third on something 38 mm thicker.
-        let mut m = Model::new("raised");
-        let mat = m.add_material(graded("DFL", "No.2"));
-        let shape = TrussShape::standard(StandardTruss::Fink, ft(20.0), 4.0 / 12.0, 0.0).unwrap();
-        let mut roof = TrussRoof::new("Roof", v3(0.0, 0.0, 2.4), Vec3::Y, shape, 4.0 * inch(24.0), inch(24.0), mat);
-        roof.raises.push((vec![2, 3], 0.038));
-        let parts = roof.build(&mut m);
-        let low = |k: usize| parts.trusses[k].all().iter().flat_map(|&id| [m.pos(m.member(id).start()).z, m.pos(m.member(id).end()).z]).fold(f64::MAX, f64::min);
-        assert!((low(1) - low(0) - 0.038).abs() < 1e-9 && (low(2) - low(0) - 0.038).abs() < 1e-9, "T2 and T3 up by 38 mm");
-        assert!((low(3) - low(0)).abs() < 1e-9 && (low(4) - low(0)).abs() < 1e-9, "the others where they were");
+    fn a_chord_that_rises_sits_where_it_is_over_the_bearing() {
+        // Scissors: the bottom chords rise from the heels. On beams a metre in from each heel, the chord
+        // there (not the heel line) is at the beams' height.
+        let (m, parts) = roof_on(vec![(v3(-0.5, 1.0, 2.5), v3(3.0, 1.0, 2.5)), (v3(-0.5, 5.0, 2.5), v3(3.0, 5.0, 2.5))], StandardTruss::Scissors { bottom_pitch: 2.0 / 12.0 });
+        assert!(parts.seats.iter().all(|on| on.len() == 2), "{parts:#?}");
+        let heel = m.pos(m.member(parts.trusses[2].bottom_chords[0]).start());
+        assert!((heel.z - (2.5 - 1.0 * 2.0 / 12.0)).abs() < 1e-9, "{heel:?}");
+
+        // On a beam with some width, it is the beam's outer edge the rising chord sits on: it does not sink into the beam.
+        let (m, parts) = roof_on_wide(vec![(v3(-0.5, 1.0, 2.5), v3(3.0, 1.0, 2.5)), (v3(-0.5, 5.0, 2.5), v3(3.0, 5.0, 2.5))], StandardTruss::Scissors { bottom_pitch: 2.0 / 12.0 }, 0.05);
+        assert!(parts.seats.iter().all(|on| on.len() == 2) && parts.unsteady.is_empty(), "{parts:#?}");
+        let heel = m.pos(m.member(parts.trusses[2].bottom_chords[0]).start());
+        assert!((heel.z - (2.5 - 0.95 * 2.0 / 12.0)).abs() < 1e-9, "{heel:?}");
     }
 
     fn all_standard() -> Vec<StandardTruss> {

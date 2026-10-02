@@ -173,3 +173,10 @@ Steps 1 and 2 answer the case that prompted this. Steps 5 to 7 are what
   unconnected-node warnings (needs a run).
 - `Floor` exists in the engine but is not reachable from the script.
 - The survey levels and datums were not read.
+
+## Since
+
+- Truss roofs are no longer given a height or `raised`: they sit on what
+  the script says they bear on, wherever it is under them, and are
+  fastened only to what they sit on. See
+  [constraints.md](constraints.md), "In the model".

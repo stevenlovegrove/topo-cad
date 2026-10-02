@@ -179,40 +179,60 @@ The constraints of the open parts are written into the using system once
 per instance (the same constraint, through the instance's mapping), not
 held by reference.
 
-## In the model: trusses on their bearings
+## In the model: trusses on what is under them
 
-A truss roof named as bearing on a perimeter or an assembly
-(`bearingOn(...)`) is given the top line of each of those members
-(plates, beams, headers). Each truss is a rigid frame, free in the world,
-in one system for the roof (`TrussRoof::seats`):
+A truss roof is not given a height. The script says what it bears on
+(`bearingOn(...)`: a perimeter's cap plates, an assembly's horizontal
+members), and nothing else is looked for. Each of those is given as the
+top of the member: the line along the middle of its top face, and that
+face's width. The roof's `origin` is where the first heel is on plan.
 
-- **hard**: where the truss's plane crosses a bearing near each heel (the
-  highest one there), its bottom chord is on it: a point somewhere along
-  the chord is a point somewhere along the bearing (two scalars each);
-- **hard, datums**: its heel is where the layout puts it, along the ridge
-  and along the span;
-- **hint**: its plane is square to the ridge and plumb.
+**What is under a truss** is every one of those tops that is under some
+part of a bottom chord, as modelled: across the truss (where it crosses
+the chord's lumber, at either edge of the top) or along it (a wall under
+a gable truss, for as far as the two overlap). Not only at the heels: a
+beam under the middle is under it too.
 
-Nothing ties one truss to another, so each is a component of ten
-unknowns. On level plates the answer is the layout's, exactly (no step is
-taken). Over a plate that is lower, or a header's cap that is higher, the
-truss sits on it and tilts as it says.
+**It rests on them as a rigid thing does**: on the two it would touch,
+either side of its middle (the upper hull of the tops' heights, less the
+chord's own height there), level or tilted as they say, and clear of any
+that are lower. A chord that rises (scissors) sits where it is over the
+bearing, on the edge it meets first.
 
-Each seated truss is then connected to what it sits on, at each heel: at
-a shared node where the chord's axis meets the bearing's (a wall's cap
-plate, whose axis is on its top face), and otherwise face to face (a
-bond: a beam or header whose axis is through its middle), which the
-analysis and the load path read as they do a doubled plate.
+Each truss is a rigid frame, free in the world, in one system for the
+roof (`TrussRoof::seats`):
 
-What cannot be done is said:
+- **hard**: the chord's underside, somewhere along it, is at the top of
+  each bearing that carries it, where that bearing is;
+- **hard, datums**: its heel is where the layout puts it on plan, along
+  the ridge and along the span;
+- **hints**: its plane is square to the ridge and plumb, and it is
+  level. These settle what the bearings leave open and give way where
+  they do not.
 
-- a truss that cannot sit on what is under it (the hard constraints
-  cannot all hold) is an error naming the truss and the gaps, and the
-  model does not build;
-- a truss with bearings to sit on but nothing under one heel is left at
-  the layout's height and is an error on the model
-  (`truss-not-seated`), unless it lies along a plate and meets it at
-  nodes (a gable truss on its end wall).
+Nothing ties one truss to another, so each is a component of its own.
+On level plates no step is taken and the trusses are exactly where the
+plates' height puts them.
+
+**It is fastened to what it sits on, and to nothing else.** Every
+bearing the chord touches once it is placed is one it sits on: at a
+shared node where the chord's axis meets the bearing's (a cap plate,
+whose axis is on its top face), and otherwise face to face (a bond: a
+beam whose axis is through its middle, a wall along a gable truss).
+There is no other connecting of trusses to things they happen to cross.
+
+What cannot be done is said, as an error on the model:
+
+- `truss-not-seated`: none of what the roof bears on is under any part
+  of the truss;
+- `truss-not-held`: it is on one bearing only, or all that is under it
+  is to one side of its middle (it is placed level there);
+- a truss whose hard constraints cannot all hold stops the model
+  building, naming the truss and the gaps.
+
+Nothing here is particular to buildings or to a code. A rule such as
+"a truss bears at its heels" or "at a panel point" is a check for a
+script to ask for; none is built in, and there is not yet a way to ask.
 
 ## How it solves
 
@@ -227,11 +247,14 @@ outside solver is used.
 ## Not yet
 
 - **Only truss seating uses it.** Walls and assemblies are still placed
-  by coordinates. `raised` still lifts a truss off what was found for it.
-  The roof's layers do not follow a tilted truss. A perimeter's walls
+  by coordinates. An assembly's own `bearingOn` still connects it to cap
+  plates wherever axes happen to meet, and says nothing where they do
+  not. The roof's layers do not follow a tilted truss. A perimeter's walls
   cannot yet differ in height (its cap plates must meet at the corners),
   so a roof tilted by its walls needs the lower bearing made as an
   assembly.
+- **Checks a script asks for** (a ruleset): rules particular to a kind of
+  building or a code, kept out of the generic model.
 - **A scope handle for generators**: a generator is not yet handed its
   frame and its parent's to add hints to; the roof's seating writes the
   truss's hint itself.

@@ -11,7 +11,10 @@ fn typescript_garage_matches_rust_example() {
     assert_eq!(ts.units, UnitSystem::Imperial);
     assert_eq!(ts.members.len(), rs.members.len());
     assert_eq!(ts.nodes.len(), rs.nodes.len());
-    assert_eq!(ts.bonds.len(), rs.bonds.len());
+    // The script's roof sits on what it bears on, as modelled: its two gable trusses lie along the end
+    // walls' cap plates and are fastened to them face to face, which the Rust example (connecting only
+    // where axes cross) does not do.
+    assert_eq!(ts.bonds.len(), rs.bonds.len() + 2);
     assert_eq!(ts.loads.len(), rs.loads.len());
     let roles = |m: &topo_core::Model| {
         let mut v: Vec<String> = m.members.iter().map(|x| x.role.clone()).collect();
@@ -145,7 +148,7 @@ fn roof_on_beams(far: Option<f64>) -> topo_core::Model {
         const shape = TrussShape.fink({{ span: ft(20), pitch: 6 / 12, overhang: inch(12) }});
         const o = {{ size: [4, 8], grade: DFL.No2 }};
         const beams = Assembly.named("Beams").point("a", [-1, inch(2), ft(8)]).point("b", [ft(12) + 1, inch(2), ft(8)]).member("beam", ["a", "b"], o){far};
-        const roof = TrussRoof.of(shape, {{ origin: [0, 0], spanDir: [0, 1], length: ft(12), height: ft(8), grade: DFL.No2 }}).bearingOn(beams);
+        const roof = TrussRoof.of(shape, {{ origin: [0, 0], spanDir: [0, 1], length: ft(12), grade: DFL.No2 }}).bearingOn(beams);
         export default Building.named("t").add(beams, roof);
     "#
     );
@@ -153,10 +156,11 @@ fn roof_on_beams(far: Option<f64>) -> topo_core::Model {
 }
 
 #[test]
-fn a_truss_with_nothing_under_a_heel_is_an_error_on_the_model() {
+fn a_truss_on_one_bearing_is_an_error_on_the_model() {
+    // A beam under the near heels only: each truss sits on it, level, and nothing holds it so.
     let m = roof_on_beams(None);
-    let unseated: Vec<_> = m.issues.iter().filter(|i| i.code == "truss-not-seated").collect();
-    assert!(!unseated.is_empty() && unseated.iter().all(|i| i.severity == topo_core::Severity::Error && i.message.contains("far heel")), "{:#?}", m.issues);
+    let loose: Vec<_> = m.issues.iter().filter(|i| i.code == "truss-not-held").collect();
+    assert!(!loose.is_empty() && loose.iter().all(|i| i.severity == topo_core::Severity::Error), "{:#?}", m.issues);
 }
 
 #[test]
@@ -169,10 +173,10 @@ fn trusses_sit_on_the_top_of_a_beam_and_are_fastened_to_it() {
     let beams: Vec<_> = m.members.iter().filter(|mm| mm.role == "beam").map(|mm| mm.id).collect();
     for c in m.members.iter().filter(|mm| mm.role == "bottom_chord") {
         // Its bottom is on the beams' tops, not at the height the roof was given (the beams' axes).
-        // (and tilted, as they say).
+        // (and tilted, as they say: sloping down to the far side, it is on the far-side edge of each top).
         let (a, b) = (m.pos(c.start()), m.pos(c.end()));
         let at = |y: f64| a.z + (b.z - a.z) * (y - a.y) / (b.y - a.y);
-        let (near, far) = (at(inch(2.0)), at(ft(20.0) - inch(2.0)));
+        let (near, far) = (at(inch(2.0 + 1.75)), at(ft(20.0) - inch(2.0 - 1.75)));
         assert!((near - top).abs() < 1e-6 && (far - (top - 0.038)).abs() < 1e-6, "{}: {near} {far}", m.member_path(c.id));
         // The axes do not meet, so it is fastened face to face, to each.
         assert_eq!(m.bonds.iter().filter(|x| x.a == c.id && beams.contains(&x.b)).count(), 2, "{}", m.member_path(c.id));
@@ -277,7 +281,7 @@ fn shape_edit_errors_are_reported() {
     let e = run(
         r#"import { Building, DFL, ft, TrussRoof, TrussShape } from "topo-cad";
            const s = TrussShape.fink({ span: ft(20), pitch: 0.5 }).withPoint("T1", [ft(5), ft(3)]);
-           export default Building.named("t").add(TrussRoof.of(s, { origin: [0, 0], spanDir: [0, 1], length: ft(8), grade: DFL.No2, height: ft(8) }));"#,
+           export default Building.named("t").add(TrussRoof.of(s, { origin: [0, 0], spanDir: [0, 1], length: ft(8), grade: DFL.No2 }));"#,
         "t.ts",
     )
     .unwrap_err()
