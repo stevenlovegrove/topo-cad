@@ -31,3 +31,4 @@ topo-analysis = { path = "crates/topo-analysis" }
 topo-script = { path = "crates/topo-script", default-features = false }
 topo-data = { path = "crates/topo-data" }
 topo-app = { path = "crates/topo-app" }
+topo-solve = { path = "crates/topo-solve" }

@@ -2,9 +2,10 @@
 
 How things are placed relative to each other, stated generically (building
 framing is the first use, not the only one). This is the design agreed in
-discussion and a first implementation of it, `crates/topo-solve`. It is not
-yet used by the model's generators: see "Not yet" below, and
-[topology-audit.md](topology-audit.md) for why it is wanted.
+discussion and a first implementation of it, `crates/topo-solve`. Its first
+use in the model is seating a roof's trusses on what they bear on (see
+"In the model" below); [topology-audit.md](topology-audit.md) says why it
+is wanted, and "Not yet" what is left.
 
 ## The model
 
@@ -178,6 +179,30 @@ The constraints of the open parts are written into the using system once
 per instance (the same constraint, through the instance's mapping), not
 held by reference.
 
+## In the model: trusses on their bearings
+
+A truss roof named as bearing on a perimeter or an assembly
+(`bearingOn(...)`) is given the top line of each of those members
+(plates, beams, headers). Each truss is a rigid frame, free in the world,
+in one system for the roof (`TrussRoof::seats`):
+
+- **hard**: where the truss's plane crosses a bearing near each heel (the
+  highest one there), its bottom chord is on it: a point somewhere along
+  the chord is a point somewhere along the bearing (two scalars each);
+- **hard, datums**: its heel is where the layout puts it, along the ridge
+  and along the span;
+- **hint**: its plane is square to the ridge and plumb.
+
+Nothing ties one truss to another, so each is a component of ten
+unknowns. On level plates the answer is the layout's, exactly (no step is
+taken). Over a plate that is lower, or a header's cap that is higher, the
+truss sits on it and tilts as it says. Where the bearing's axis is on its
+top face (a wall's cap plate), the chord's axis then meets it and the
+connection is made as before; for a member whose axis is elsewhere it is
+still not (see the audit). A truss that cannot sit
+on what is under it is an error naming the truss and the gaps. A truss
+with nothing under a heel is left at the layout's height, as before.
+
 ## How it solves
 
 Gauss-Newton on the joints' coordinates and the scalars, component by
@@ -190,9 +215,13 @@ outside solver is used.
 
 ## Not yet
 
-- **Generators do not use it.** Trusses, walls and assemblies are still
-  placed by coordinates. The next step is seating a truss on its bearings
-  with it, and making a missing connection an error.
+- **Only truss seating uses it.** Walls and assemblies are still placed
+  by coordinates. A truss with nothing under a heel is still left where
+  the layout puts it, silently; `raised` still lifts a truss off what was
+  found for it. The roof's layers do not follow a tilted truss.
+- **A scope handle for generators**: a generator is not yet handed its
+  frame and its parent's to add hints to; the roof's seating writes the
+  truss's hint itself.
 - **Instances of instances** are not tried: a definition that uses
   another should work (it is a system like any other), with no test yet.
 - **Bounds** on scalars (a point between a member's ends).

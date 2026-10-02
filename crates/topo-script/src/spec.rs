@@ -478,6 +478,17 @@ impl Builder {
         Ok(())
     }
 
+    /// The line along the top of a member: its axis, lifted to its highest face.
+    fn top_line(&self, id: MemberId) -> (Vec3, Vec3) {
+        let (mm, axes) = (self.m.member(id), self.m.member_axes(id));
+        let bb = self.m.section(mm.section).bbox();
+        // The point of the section that is on the axis; the body's corners are placed from it.
+        let on_axis = (bb.min.x + (mm.anchor.u + 0.5) * bb.width() + mm.anchor.offset.x, bb.min.y + (mm.anchor.v + 0.5) * bb.height() + mm.anchor.offset.y);
+        let corner = |x: f64, y: f64| (axes.u * (x - on_axis.0) + axes.v * (y - on_axis.1)).z;
+        let lift = [corner(bb.min.x, bb.min.y), corner(bb.min.x + bb.width(), bb.min.y), corner(bb.min.x, bb.min.y + bb.height()), corner(bb.min.x + bb.width(), bb.min.y + bb.height())].into_iter().fold(f64::MIN, f64::max);
+        (self.m.pos(mm.start()) + Vec3::Z * lift, self.m.pos(mm.end()) + Vec3::Z * lift)
+    }
+
     fn truss_roof(&mut self, r: &TrussRoofSpec) -> Result<(), String> {
         let mat = self.material(&r.grade)?;
         let mut plates = vec![];
@@ -513,8 +524,12 @@ impl Builder {
             roof.raises.push((s.trusses.clone(), s.by));
         }
         r.shape.validate()?;
-        let roof = roof
-        .build(&mut self.m);
+        // What it bears on, as lines along the top of each: the trusses are seated on these.
+        roof.bearings = plates.iter().map(|&p| self.top_line(p)).collect();
+        let roof = roof.build(&mut self.m);
+        if !roof.problems.is_empty() {
+            return Err(format!("roof {}: {}", r.name, roof.problems.join(". ")));
+        }
         self.m.group_mut(roof.group).parent = Some(self.root);
         let c = self.m.add_connection(fx::truss_to_plate());
         let chords = roof.bottom_chords();
