@@ -218,7 +218,10 @@ pub enum Kind {
     Distance(Point, Point, Num),
     /// From the first point to the second is this far along the direction (0: level with it, on its plane).
     Offset(Point, Point, Dir, Num),
-    /// The directions agree (or oppose).
+    /// The directions are the same.
+    Aligned(Dir, Dir),
+    /// The directions agree or oppose: the lines along them are parallel. (Exactly at right angles
+    /// this pulls neither way; where the sense is known, say `Aligned`.)
     Parallel(Dir, Dir),
     /// The directions are at right angles.
     Perpendicular(Dir, Dir),
@@ -261,7 +264,7 @@ impl Kind {
                 frames.push(along.0 .0);
                 nums.push(d);
             }
-            Kind::Parallel(a, b) | Kind::Perpendicular(a, b) => frames.extend([a.0 .0, b.0 .0]),
+            Kind::Aligned(a, b) | Kind::Parallel(a, b) | Kind::Perpendicular(a, b) => frames.extend([a.0 .0, b.0 .0]),
             Kind::Equal(a, b) => nums.extend([a, b]),
         }
         scalars.extend(nums.iter().flat_map(|n| n.terms.iter().map(|(s, _)| s.0)));
@@ -689,6 +692,7 @@ impl System {
             Kind::Coincident(a, b) => own(sub(point(b), point(a))),
             Kind::Distance(a, b, d) => vec![norm(sub(point(b), point(a))) - self.num(d)],
             Kind::Offset(a, b, along, d) => vec![dot(sub(point(b), point(a)), dir(along)) - self.num(d)],
+            Kind::Aligned(a, b) => own(sub(dir(b), dir(a))),
             Kind::Parallel(a, b) => own(cross(dir(a), dir(b))),
             Kind::Perpendicular(a, b) => vec![dot(dir(a), dir(b))],
             Kind::Equal(a, b) => vec![self.num(a) - self.num(b)],
@@ -746,6 +750,11 @@ impl System {
                 self.point_terms(world, a, &neg(&u), &mut out);
                 self.dir_terms(world, along, &[sub(self.point_in(world, b), self.point_in(world, a))], &mut out);
                 self.num_terms(d, -1.0, &mut out);
+            }
+            Kind::Aligned(a, b) => {
+                self.dir_terms(world, b, &axes, &mut out);
+                self.dir_terms(world, a, &neg(&axes), &mut out);
+                read_in_scope(world[scope].rotate_back(sub(self.dir_in(world, b), self.dir_in(world, a))), &mut out);
             }
             Kind::Parallel(a, b) => {
                 let (da, db) = (self.dir_in(world, a), self.dir_in(world, b));
@@ -1013,11 +1022,18 @@ impl System {
     /// left at the answer, or, where refused, as near the hard constraints as they get),
     /// and says what settled what.
     pub fn solve(&mut self) -> Report {
+        self.solve_parts().0
+    }
+
+    /// The same, with the parts and how many of each one's freedoms each tier settled.
+    fn solve_parts(&mut self) -> (Report, Vec<Component>, Vec<[usize; 3]>) {
         let parts = self.components();
+        let mut settled = vec![];
         let mut report = Report { refused: false, conflicts: vec![], gaps: vec![], passes: 0, components: parts.len(), unknowns: 0, by_hard: 0, by_measured: 0, by_default: 0, open: vec![] };
         for part in &parts {
             let (passes, ranks, open) = self.solve_part(part);
             report.passes = report.passes.max(passes);
+            settled.push(ranks);
             report.unknowns += self.unknowns(part).len();
             report.by_hard += ranks[0];
             report.by_measured += ranks[1];
@@ -1040,7 +1056,154 @@ impl System {
             report.conflicts.push(Conflict { constraints, frames: part.frames.iter().map(|&f| self.names[f].clone()).collect(), scope: self.names[scope].clone() });
         }
         report.refused = !report.conflicts.is_empty();
-        report
+        (report, parts, settled)
+    }
+
+    /// The definition, used here: a frame in `parent` (at `pose` to start with, free as `joint`
+    /// says) that stands for the definition's root. What the definition's own hard constraints
+    /// settle is not made again: it is the definition's, seen through this frame. What they
+    /// leave open is this instance's own: those frames, scalars and constraints are made here,
+    /// starting where the definition left them.
+    pub fn instance(&mut self, name: &str, parent: FrameId, joint: Joint, pose: Pose, of: &Definition) -> Instance {
+        let d = &of.system;
+        let root = self.frame(name, parent, joint, pose);
+        let mut frames: Vec<(FrameId, Pose)> = vec![];
+        for f in 0..d.names.len() {
+            let at = match d.poses.parents()[f] {
+                None => (root, Pose::identity()),
+                Some(p) => {
+                    let (anchor, from) = frames[p];
+                    let pose = from.then(&d.poses.blocks()[f]);
+                    if of.settled_frames[f] {
+                        (anchor, pose)
+                    } else {
+                        (self.frame(&format!("{name}/{}", d.names[f]), anchor, d.joints.0[f], pose), Pose::identity())
+                    }
+                }
+            };
+            frames.push(at);
+        }
+        let scalars = (d.scalars.iter().enumerate())
+            .map(|(i, s)| if of.settled_scalars[i] { Err(s.value) } else { Ok(self.scalar(frames[s.owner].0, &format!("{name}/{}", s.name), s.value)) })
+            .collect();
+        let instance = Instance { frame: root, frames, scalars, own: (0..d.names.len()).map(|f| f != 0 && !of.settled_frames[f]).collect() };
+        for c in of.open.iter().map(|&i| &d.constraints[i]) {
+            self.constrain(&format!("{name}/{}", c.name), c.tier, instance.kind(&c.kind));
+        }
+        instance
+    }
+}
+
+/// A system made to be used more than once: solved once, on its own, with its world as its root.
+#[derive(Debug, Clone)]
+pub struct Definition {
+    system: System,
+    report: Report,
+    /// Whether each frame's joint, and each scalar, is settled by the definition's own hard constraints.
+    settled_frames: Vec<bool>,
+    settled_scalars: Vec<bool>,
+    /// The constraints of the parts that are not: each instance has these for itself.
+    open: Vec<usize>,
+}
+
+impl Definition {
+    /// Solves the system; it is refused (with why) if its hard constraints cannot all hold.
+    ///
+    /// A part of it is settled when its hard constraints alone decide all of it. A part closed
+    /// only by measurements or hints is not: something outside, of a higher tier, may yet decide it otherwise.
+    pub fn new(mut system: System) -> Result<Definition, Report> {
+        let (report, parts, ranks) = system.solve_parts();
+        if report.refused {
+            return Err(report);
+        }
+        let (mut settled_frames, mut settled_scalars, mut open) = (vec![true; system.names.len()], vec![true; system.scalars.len()], vec![]);
+        for (part, ranks) in parts.iter().zip(&ranks) {
+            if ranks[0] < system.unknowns(part).len() {
+                part.frames.iter().for_each(|&f| settled_frames[f] = false);
+                part.scalars.iter().for_each(|&s| settled_scalars[s] = false);
+                open.extend(&part.constraints);
+            }
+        }
+        Ok(Definition { system, report, settled_frames, settled_scalars, open })
+    }
+
+    /// The definition, solved.
+    pub fn system(&self) -> &System {
+        &self.system
+    }
+
+    /// What its own solve found: said once, for the definition, not for each use of it.
+    pub fn report(&self) -> &Report {
+        &self.report
+    }
+}
+
+/// A use of a definition: things of the definition, as they are in the system that uses it.
+#[derive(Debug, Clone)]
+pub struct Instance {
+    /// The frame that stands for the definition's root.
+    pub frame: FrameId,
+    /// For each of the definition's frames: the frame here that it is rigid with, and its pose in that.
+    frames: Vec<(FrameId, Pose)>,
+    /// For each of the definition's scalars: this instance's own, or the value the definition settled.
+    scalars: Vec<Result<ScalarId, f64>>,
+    own: Vec<bool>,
+}
+
+impl Instance {
+    /// This instance's own copy of one of the definition's scalars, if the definition leaves it open.
+    pub fn scalar(&self, s: ScalarId) -> Option<ScalarId> {
+        self.scalars[s.0].ok()
+    }
+
+    /// This instance's own copy of one of the definition's frames, if the definition leaves its joint open.
+    pub fn own_frame(&self, f: FrameId) -> Option<FrameId> {
+        self.own[f.0].then(|| self.frames[f.0].0)
+    }
+
+    /// A point of the definition, here.
+    pub fn point(&self, p: &Point) -> Point {
+        let (frame, from) = self.frames[p.frame.0];
+        let mut at = p.at;
+        let mut along = vec![];
+        for (s, u) in &p.along {
+            match self.scalars[s.0] {
+                Ok(own) => along.push((own, from.rotate(*u))),
+                Err(value) => at = add(at, scale(*u, value)),
+            }
+        }
+        Point { frame, at: from.apply(at), along }
+    }
+
+    /// A direction of the definition, here.
+    pub fn dir(&self, d: &Dir) -> Dir {
+        let (frame, from) = self.frames[d.0 .0];
+        Dir(frame, from.rotate(d.1))
+    }
+
+    /// A number of the definition, here.
+    pub fn num(&self, n: &Num) -> Num {
+        let mut out = Num::from(n.constant);
+        for (s, k) in &n.terms {
+            match self.scalars[s.0] {
+                Ok(own) => out.terms.push((own, *k)),
+                Err(value) => out.constant += k * value,
+            }
+        }
+        out
+    }
+
+    /// A constraint of the definition, here.
+    pub fn kind(&self, k: &Kind) -> Kind {
+        match k {
+            Kind::Coincident(a, b) => Kind::Coincident(self.point(a), self.point(b)),
+            Kind::Distance(a, b, d) => Kind::Distance(self.point(a), self.point(b), self.num(d)),
+            Kind::Offset(a, b, along, d) => Kind::Offset(self.point(a), self.point(b), self.dir(along), self.num(d)),
+            Kind::Aligned(a, b) => Kind::Aligned(self.dir(a), self.dir(b)),
+            Kind::Parallel(a, b) => Kind::Parallel(self.dir(a), self.dir(b)),
+            Kind::Perpendicular(a, b) => Kind::Perpendicular(self.dir(a), self.dir(b)),
+            Kind::Equal(a, b) => Kind::Equal(self.num(a), self.num(b)),
+        }
     }
 }
 
@@ -1106,6 +1269,8 @@ mod tests {
         s.constrain("g", Tier::Default, Kind::distance(Point::at(corner, [0.0; 3]), Point::at(peg, [1.0, 0.0, 0.0]), width));
         s.constrain("h", Tier::Hard, Kind::offset(Point::at(sketch, [0.0; 3]), Point::at(peg, [0.0, 0.2, 0.0]), Dir(corner, [1.0, 0.0, 0.0]), 0.4));
         s.constrain("i", Tier::Measured { sigma: 0.05 }, Kind::Parallel(Dir(peg, [0.0, 0.0, 1.0]), Dir(sketch, [0.0, 1.0, 1.0])));
+        s.constrain("j", Tier::Default, Kind::Aligned(Dir(peg, [1.0, 0.0, 1.0]), Dir(corner, [0.0, 1.0, 0.0])));
+        s.constrain("k", Tier::Measured { sigma: 0.1 }, Kind::Aligned(Dir(rider, [1.0, 0.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
         s
     }
 
@@ -1297,6 +1462,81 @@ mod tests {
         let r = s.solve();
         assert!(!r.refused && r.open.is_empty(), "{r:#?}");
         assert!((s.value(span) - (36.0f64 + 0.038 * 0.038).sqrt()).abs() < 1e-9, "{}", s.value(span));
+    }
+
+    #[test]
+    fn a_definition_is_solved_once_and_what_it_settles_is_not_made_again() {
+        // A 3-4-5 corner in a sketch, its turn settled too: nothing in it is open.
+        let mut d = System::new();
+        let corner = d.frame("corner", WORLD, Joint::Planar([0.0, 0.0, 1.0]), Pose::at([3.5, 2.5, 0.0]));
+        d.constrain("5 from the origin", Tier::Hard, Kind::distance(Point::at(WORLD, [0.0; 3]), Point::at(corner, [0.0; 3]), 5.0));
+        d.constrain("3 up", Tier::Hard, Kind::offset(Point::at(WORLD, [0.0; 3]), Point::at(corner, [0.0; 3]), Dir(WORLD, [0.0, 1.0, 0.0]), 3.0));
+        d.constrain("square to the sketch", Tier::Hard, Kind::Parallel(Dir(corner, [1.0, 0.0, 0.0]), Dir(WORLD, [1.0, 0.0, 0.0])));
+        let d = Definition::new(d).unwrap();
+        assert!(d.report().open.is_empty() && d.report().by_hard == 3, "{:#?}", d.report());
+        // Used twice, each through its own transform: each use is one frame, with nothing to solve inside.
+        let mut s = System::new();
+        let poses = [Pose::at([1.0, 2.0, 3.0]).moved([0.0; 3], [0.4, 0.0, 0.0]), Pose::at([-2.0, 0.5, 1.0]).moved([0.0; 3], [0.0, 0.3, 1.1])];
+        let uses = poses.map(|p| s.instance("sketch", WORLD, Joint::Fixed, p, &d));
+        assert_eq!((s.names.len(), s.scalars.len(), s.constraints.len()), (3, 0, 0));
+        for (u, p) in uses.iter().zip(&poses) {
+            assert_eq!(u.own_frame(corner), None);
+            // A point 1 along the corner's x, by way of the definition.
+            let at = s.point(&u.point(&Point::at(corner, [1.0, 0.0, 0.0])));
+            assert!(norm(sub(at, p.apply([5.0, 3.0, 0.0]))) < 1e-8, "{at:?}");
+        }
+        // A definition whose hard constraints cannot all hold is refused, once, as itself.
+        let mut bad = System::new();
+        let x = bad.scalar(WORLD, "x", 0.0);
+        bad.constrain("x is 1", Tier::Hard, Kind::equal(x, 1.0));
+        bad.constrain("x is 2", Tier::Hard, Kind::equal(x, 2.0));
+        assert!(Definition::new(bad).is_err_and(|r| r.refused));
+    }
+
+    #[test]
+    fn what_a_definition_leaves_open_is_each_instance_s_own() {
+        // A truss with a span (its far heel at span along x), 7 m unless something says otherwise,
+        // and a king post that is settled: its top at half of 7 m along and 1.2 up, whatever the span.
+        let mut d = System::new();
+        let span = d.scalar(WORLD, "span", 6.5);
+        let rise = d.scalar(WORLD, "rise", 0.0);
+        d.constrain("span, unless told", Tier::Default, Kind::equal(span, 7.0));
+        d.constrain("rise", Tier::Hard, Kind::equal(rise, 1.2));
+        let far = Point::at(WORLD, [0.0; 3]).plus(span, [1.0, 0.0, 0.0]);
+        let top = Point::at(WORLD, [3.5, 0.0, 0.0]).plus(rise, [0.0, 1.0, 0.0]);
+        let d = Definition::new(d).unwrap();
+        assert!((d.system().value(span) - 7.0).abs() < 1e-12 && d.report().by_default == 1);
+
+        // Three uses: on bearings 6 m apart, on bearings 5 m apart, and on one bearing only.
+        let mut s = System::new();
+        let mut uses = vec![];
+        for (i, apart) in [Some(6.0), Some(5.0), None].into_iter().enumerate() {
+            let y = i as f64;
+            let u = s.instance(&format!("truss {i}"), WORLD, Joint::Free, Pose::at([0.1, y + 0.2, 2.1]), &d);
+            s.constrain(&format!("truss {i} near heel"), Tier::Hard, Kind::Coincident(u.point(&Point::at(WORLD, [0.0; 3])), Point::at(WORLD, [0.0, y, 2.4])));
+            if let Some(apart) = apart {
+                s.constrain(&format!("truss {i} far heel"), Tier::Hard, Kind::Coincident(u.point(&far), Point::at(WORLD, [apart, y, 2.4])));
+            }
+            s.constrain(&format!("truss {i} stands up"), Tier::Default, Kind::Aligned(Dir(u.frame, [0.0, 1.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
+            uses.push(u);
+        }
+        // Each has a span of its own, with the definition's hint; none has a rise (it is the definition's).
+        assert_eq!((s.names.len(), s.scalars.len()), (4, 3));
+        assert!(s.constraints.iter().any(|c| c.name == "truss 1/span, unless told") && !s.constraints.iter().any(|c| c.name.ends_with("/rise")));
+        let r = s.solve();
+        // (The third's span is tied to nothing but its hint: a part of its own.)
+        assert!(!r.refused && r.components == 4, "{r:#?}");
+        // Standing up settles each one's roll, though they start lying flat; the third can still turn about its one bearing.
+        assert_eq!(r.open, ["truss 2 can turn about its y"], "{r:#?}");
+        let spans: Vec<f64> = uses.iter().map(|u| s.value(u.scalar(span).unwrap())).collect();
+        // The bearings size the first two (the hint gives way, and says by how much); the hint sizes the third.
+        assert!((spans[0] - 6.0).abs() < 1e-9 && (spans[1] - 5.0).abs() < 1e-9 && (spans[2] - 7.0).abs() < 1e-9, "{spans:?}");
+        let gap = r.gaps.iter().find(|g| g.constraint == "truss 1/span, unless told").unwrap();
+        assert!((gap.size - 2.0).abs() < 1e-9, "{gap:?}");
+        // The king post's top is the definition's, in each: 3.5 along and 1.2 up from the near heel.
+        assert_eq!(uses[0].scalar(rise), None);
+        let at = s.point(&uses[0].point(&top));
+        assert!(norm(sub(at, [3.5, 0.0, 3.6])) < 1e-7, "{at:?}");
     }
 
     #[test]

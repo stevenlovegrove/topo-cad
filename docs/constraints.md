@@ -25,8 +25,8 @@ yet used by the model's generators: see "Not yet" below, and
   much of some scalars. So a generator with a `span` puts its far heel at
   `span` along x, and whatever it is fixed to sizes it.
 - **A constraint relates points and directions in whatever frames**:
-  coincident, distance, offset along a direction, parallel, perpendicular,
-  two numbers equal.
+  coincident, distance, offset along a direction, aligned (the same
+  direction), parallel (either sense), perpendicular, two numbers equal.
 - **A sketch is not a special thing**: it is a frame whose contents are
   held to its plane (a planar joint, or `z = 0`).
 
@@ -147,6 +147,36 @@ twenty. A conflict is reported for its component: the hard constraints
 not met, the frames that move with them, and the scope they share. The
 rest of the system is solved all the same.
 
+## Definitions and instances
+
+A **definition** is a system made to be used more than once
+(`Definition::new`): its world is its root, and it is solved once, on its
+own. Its report (what settled what, what is open) is the definition's,
+said once; one whose hard constraints cannot all hold is refused there,
+not at each use.
+
+An **instance** (`System::instance`) is a frame in the system that uses
+it, standing for the definition's root: the same subgraph, through
+another transform. Things of the definition are referred to through the
+instance (`Instance::point`, `dir`, `num`).
+
+- **What the definition's hard constraints settle is not made again.** A
+  frame they settle is rigid with the instance's frame (or with an open
+  frame it hangs from); a scalar they settle is a constant. A definition
+  with nothing open is one frame per use, with nothing to solve inside.
+- **What they leave open is each instance's own**: those frames and
+  scalars are made in the using system, starting where the definition
+  left them, with the constraints of those parts. Two instances share a
+  value only if the user ties them to a scalar of the parent.
+- **A part closed only by measurements or hints counts as open.**
+  Something outside, of a higher tier, may yet decide it otherwise: a
+  truss's "7 m unless told" span gives way to the bearings it is put on,
+  and its gap says by how much.
+
+The constraints of the open parts are written into the using system once
+per instance (the same constraint, through the instance's mapping), not
+held by reference.
+
 ## How it solves
 
 Gauss-Newton on the joints' coordinates and the scalars, component by
@@ -162,9 +192,11 @@ outside solver is used.
 - **Generators do not use it.** Trusses, walls and assemblies are still
   placed by coordinates. The next step is seating a truss on its bearings
   with it, and making a missing connection an error.
-- **Scoped solving**: a scope solved once, on its own, and then placed
-  (rigid, or with what it leaves open) wherever it is used. The rows are
-  already local to their scope; the solve does not yet reuse a scope.
+- **Instances of instances** are not tried: a definition that uses
+  another should work (it is a system like any other), with no test yet.
+- **Parallel at exactly a right angle pulls neither way** (its residual
+  is at its largest there). Where the sense is known, `Aligned` is the
+  constraint to use; a generator's "my y is up" is one.
 - **Bounds** on scalars (a point between a member's ends).
 - **Conflict feedback drawn**: the component in conflict shown in the
   view, and one gap per suspect (each released in turn).
