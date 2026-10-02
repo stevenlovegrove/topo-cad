@@ -328,6 +328,55 @@ pub struct Report {
     pub by_default: usize,
     /// What is still open: each a freedom nothing settles, in words.
     pub open: Vec<String>,
+    /// For each frame, for each of its joint's freedoms: the tier that settled it (0 hard,
+    /// 1 measured, 2 default), or none if it is open (alone, or together with others).
+    pub frames: Vec<Vec<Option<usize>>>,
+    /// The same for each scalar.
+    pub scalars: Vec<Option<usize>>,
+}
+
+/// A system and what its solve found, as things to show: where each unknown is and how it is
+/// free, and what each constraint holds together.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Explained {
+    pub variables: Vec<Variable>,
+    pub constraints: Vec<Shown>,
+}
+
+/// An unknown: a frame with an open joint, or a scalar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variable {
+    pub name: String,
+    /// `free`, `slider`, `hinge`, `planar` (a frame's joint), or `scalar`.
+    pub kind: &'static str,
+    /// Where it is, in the world: a frame's origin; for a scalar, a point it moves.
+    pub at: V3,
+    /// A scalar's value.
+    pub value: Option<f64>,
+    pub freedoms: Vec<Freedom>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Freedom {
+    pub what: String,
+    /// In the world: the direction it moves along, or the axis it turns about.
+    pub dir: V3,
+    pub turn: bool,
+    /// The tier that settled it (0 hard, 1 measured, 2 default), or none: open.
+    pub settled: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shown {
+    pub name: String,
+    /// 0 hard, 1 measured, 2 default.
+    pub tier: usize,
+    pub kind: &'static str,
+    pub gap: f64,
+    /// The points it relates, in the world.
+    pub points: Vec<V3>,
+    /// The unknowns it depends on, by name.
+    pub touches: Vec<String>,
 }
 
 /// A small motion of a frame, in its own axes: a turn (an axis times an angle), then a shift.
@@ -930,10 +979,12 @@ impl System {
     }
 
     /// The step the tiers ask of a part, tier by tier, each within what the ones before leave free:
-    /// the step, how many freedoms each tier settled, and what is left free (a basis, as columns).
-    fn tiered_step(&self, part: &Component, n: usize) -> (Vec<f64>, [usize; 3], Mat) {
+    /// the step, how many freedoms each tier settled, what is left free (a basis, as columns),
+    /// and for each unknown the tier after which it could no longer change.
+    fn tiered_step(&self, part: &Component, n: usize) -> (Vec<f64>, [usize; 3], Mat, Vec<Option<usize>>) {
         let rows = self.linearised(&part.constraints).rows();
         let (mut dx, mut free, mut ranks) = (vec![0.0; n], linalg::identity(n), [0; 3]);
+        let mut settled = vec![None; n];
         for tier in 0..3 {
             let (r, j) = self.dense(part, &rows, tier);
             let k = free.first().map_or(0, Vec::len);
@@ -949,8 +1000,13 @@ impl System {
             }
             free = if null.first().map_or(0, Vec::len) == 0 { zeros(n, 0) } else { mul(&free, &null) };
             ranks[tier] = rank;
+            for (j, s) in settled.iter_mut().enumerate() {
+                if s.is_none() && free[j].iter().all(|x| x.abs() < 1e-8) {
+                    *s = Some(tier);
+                }
+            }
         }
-        (dx, ranks, free)
+        (dx, ranks, free, settled)
     }
 
     fn hard_gap(&self, constraints: &[usize]) -> f64 {
@@ -975,17 +1031,18 @@ impl System {
         }
     }
 
-    /// Solves one part: how many passes it took, how many freedoms each tier settled, and what is open.
-    fn solve_part(&mut self, part: &Component) -> (usize, [usize; 3], Vec<String>) {
+    /// Solves one part: how many passes it took, how many freedoms each tier settled, what is
+    /// open, and the tier that settled each unknown.
+    fn solve_part(&mut self, part: &Component) -> (usize, [usize; 3], Vec<String>, Vec<Option<usize>>) {
         let unknowns = self.unknowns(part);
         let n = unknowns.len();
         if n == 0 {
-            return (0, [0; 3], vec![]);
+            return (0, [0; 3], vec![], vec![]);
         }
         let mut passes = 0;
         for _ in 0..60 {
             passes += 1;
-            let (dx, _, _) = self.tiered_step(part, n);
+            let (dx, ..) = self.tiered_step(part, n);
             let size = dx.iter().map(|x| x * x).sum::<f64>().sqrt();
             if size < 1e-11 {
                 break;
@@ -1005,7 +1062,7 @@ impl System {
                 break;
             }
         }
-        let (_, ranks, free) = self.tiered_step(part, n);
+        let (_, ranks, free, settled) = self.tiered_step(part, n);
         // What is still open, each as the unknowns that move together in it.
         let tidy = tidy_basis(&free);
         let open = (0..tidy.first().map_or(0, Vec::len))
@@ -1016,7 +1073,7 @@ impl System {
                 parts.join(", together with: ")
             })
             .collect();
-        (passes, ranks, open)
+        (passes, ranks, open, settled)
     }
 
     /// Solves for the unknowns, each part on its own (the frames' poses and the scalars are
@@ -1030,9 +1087,17 @@ impl System {
     fn solve_parts(&mut self) -> (Report, Vec<Component>, Vec<[usize; 3]>) {
         let parts = self.components();
         let mut settled = vec![];
-        let mut report = Report { refused: false, conflicts: vec![], gaps: vec![], passes: 0, components: parts.len(), unknowns: 0, by_hard: 0, by_measured: 0, by_default: 0, open: vec![] };
+        let mut report = Report { refused: false, conflicts: vec![], gaps: vec![], passes: 0, components: parts.len(), unknowns: 0, by_hard: 0, by_measured: 0, by_default: 0, open: vec![], frames: vec![vec![]; self.names.len()], scalars: vec![None; self.scalars.len()] };
         for part in &parts {
-            let (passes, ranks, open) = self.solve_part(part);
+            let (passes, ranks, open, by) = self.solve_part(part);
+            // (Laid out as the part's unknowns are: each frame's freedoms, then the scalars.)
+            let mut by = by.into_iter();
+            for &f in &part.frames {
+                report.frames[f] = by.by_ref().take(self.joints.0[f].basis().len()).collect();
+            }
+            for &s in &part.scalars {
+                report.scalars[s] = by.next().flatten();
+            }
             report.passes = report.passes.max(passes);
             settled.push(ranks);
             report.unknowns += self.unknowns(part).len();
@@ -1058,6 +1123,56 @@ impl System {
         }
         report.refused = !report.conflicts.is_empty();
         (report, parts, settled)
+    }
+
+    /// The system and what `report` (its solve's) found, as things to show.
+    pub fn explain(&self, report: &Report) -> Explained {
+        let world = self.world();
+        let mut out = Explained::default();
+        for (f, joint) in self.joints.0.iter().enumerate() {
+            let kind = match joint {
+                Joint::Fixed => continue,
+                Joint::Free => "free",
+                Joint::Slider(_) => "slider",
+                Joint::Hinge(_) => "hinge",
+                Joint::Planar(_) => "planar",
+            };
+            let freedoms = (joint.freedoms().into_iter().enumerate())
+                .map(|(k, (v, w, what))| {
+                    let turn = norm(w) > 0.0;
+                    Freedom { what, dir: world[f].rotate(if turn { w } else { v }), turn, settled: report.frames.get(f).and_then(|t| t.get(k).copied()).flatten() }
+                })
+                .collect();
+            out.variables.push(Variable { name: self.names[f].clone(), kind, at: world[f].t, value: None, freedoms });
+        }
+        fn points(k: &Kind) -> Vec<&Point> {
+            match k {
+                Kind::Coincident(a, b) | Kind::Distance(a, b, _) | Kind::Offset(a, b, _, _) => vec![a, b],
+                _ => vec![],
+            }
+        }
+        for (s, scalar) in self.scalars.iter().enumerate() {
+            // Where it shows: a point it moves, and the way it moves it; or, moving none, its owner's origin.
+            let moved = self.constraints.iter().flat_map(|c| points(&c.kind)).find_map(|p| p.along.iter().find(|(id, _)| id.0 == s).map(|(_, u)| (self.point_in(&world, p), world[p.frame.0].rotate(*u))));
+            let (at, dir) = moved.unwrap_or((world[scalar.owner].t, [0.0; 3]));
+            out.variables.push(Variable { name: scalar.name.clone(), kind: "scalar", at, value: Some(scalar.value), freedoms: vec![Freedom { what: "change".into(), dir, turn: false, settled: report.scalars.get(s).copied().flatten() }] });
+        }
+        for (c, gap) in self.constraints.iter().zip(&report.gaps) {
+            let kind = match c.kind {
+                Kind::Coincident(..) => "coincident",
+                Kind::Distance(..) => "distance",
+                Kind::Offset(..) => "offset along a direction",
+                Kind::Aligned(..) => "aligned",
+                Kind::Parallel(..) => "parallel",
+                Kind::Perpendicular(..) => "perpendicular",
+                Kind::Equal(..) => "equal",
+            };
+            let (frames, scalars) = c.kind.touches();
+            let mut touches: Vec<String> = frames.into_iter().filter(|&f| self.joints.0[f] != Joint::Fixed).map(|f| self.names[f].clone()).chain(scalars.into_iter().map(|s| self.scalars[s].name.clone())).collect();
+            touches.dedup();
+            out.constraints.push(Shown { name: c.name.clone(), tier: tier_of(c.tier), kind, gap: gap.size, points: points(&c.kind).into_iter().map(|p| self.point_in(&world, p)).collect(), touches });
+        }
+        out
     }
 
     /// The definition, used here: a frame in `parent` (at `pose` to start with, free as `joint`
@@ -1378,6 +1493,20 @@ mod tests {
         let r = s.solve();
         assert!(!r.refused, "{r:#?}");
         assert_eq!((r.unknowns, r.by_hard, r.open.len(), r.components), (8, 6, 2, 1), "{r:#?}");
+        // As things to show: the truss (free) and its two scalars; what settled each freedom; what each constraint holds.
+        let e = s.explain(&r);
+        assert_eq!(e.variables.iter().map(|v| (v.name.as_str(), v.kind, v.freedoms.len())).collect::<Vec<_>>(), [("truss", "free", 6), ("where the truss bears on the west plate", "scalar", 1), ("where the truss bears on the east plate", "scalar", 1)]);
+        let by = |name: &str| e.variables.iter().find(|v| v.name == name).unwrap().freedoms.iter().map(|f| f.settled).collect::<Vec<_>>();
+        // Its roll is open; so is its slide, which is the two scalars and a move along its x together.
+        assert_eq!(by("truss"), [None, Some(0), Some(0), None, Some(0), Some(0)]);
+        assert_eq!(by("where the truss bears on the west plate"), [None]);
+        let west = &e.constraints[0];
+        assert_eq!((west.kind, west.tier, west.touches.len()), ("coincident", 0, 2));
+        assert!(norm(sub(west.points[0], WEST)) < 1e-8 && norm(sub(west.points[1], WEST)) < 1e-8, "{west:?}");
+        // The scalar is shown at the point it moves, with the way it moves it (along the chord).
+        let chord = s.dir(&Dir(FrameId(1), [1.0, 0.0, 0.0]));
+        let v = &e.variables[1];
+        assert!(norm(sub(v.at, WEST)) < 1e-8 && norm(sub(v.freedoms[0].dir, chord)) < 1e-12);
     }
 
     #[test]

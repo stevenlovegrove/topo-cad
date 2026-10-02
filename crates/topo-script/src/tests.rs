@@ -139,6 +139,44 @@ fn standard_shapes_come_from_the_rust_generators() {
     }
 }
 
+#[test]
+fn the_primitives_examples_show_what_they_say() {
+    let sound = |m: &topo_core::Model| assert!(topo_core::validate(m, &Topology::build(m)).iter().all(|i| i.severity < topo_core::Severity::Error) && m.issues.is_empty());
+    // Beam on beam: two bearing points. The first joist's axis is on its underside, so its bearing
+    // point is in its path and on the beam's top face; the second's is on its own underside face too.
+    let m = run(include_str!("../../../examples/primitives/01-beam-on-beam.ts"), "01-beam-on-beam.ts").unwrap();
+    sound(&m);
+    let joists: Vec<_> = m.members.iter().filter(|x| x.role == "joist").collect();
+    let beam = m.members.iter().find(|x| x.role == "beam").unwrap().id;
+    let on = |node| m.attached_at(node).map(|a| a.member).collect::<Vec<_>>();
+    let points: Vec<_> = m.attachments.iter().filter(|a| a.member == beam).map(|a| a.node).collect();
+    assert_eq!(points.len(), 2);
+    assert!(joists[0].path.contains(&points[0]) && on(points[0]) == [beam]);
+    assert!(!joists[1].path.contains(&points[1]) && on(points[1]).contains(&joists[1].id) && on(points[1]).contains(&beam));
+    // A joist that does not touch the beam is not joined to it: said, with how far off it is.
+    let off = include_str!("../../../examples/primitives/01-beam-on-beam.ts").replace("[ft(2), -ft(3), top]", "[ft(2), -ft(3), top + inch(0.5)]");
+    let e = run(&off, "off.ts").unwrap_err().to_string();
+    assert!(e.contains("does not rest on") && e.contains("above"), "{e}");
+
+    // Trusses on beams: three free things and their numbers, sat by a solve kept with the model; six bearing points on faces.
+    let m = run(include_str!("../../../examples/primitives/02-trusses-on-beams.ts"), "02-trusses-on-beams.ts").unwrap();
+    sound(&m);
+    assert_eq!(m.attachments.len(), 6);
+    let s = &m.solves[0];
+    assert_eq!(s.variables.iter().filter(|v| v.kind == "free").count(), 3);
+    assert!(s.variables.iter().all(|v| v.freedoms.iter().all(|f| f.settled != "open")), "nothing is left open");
+    let t1 = s.variables.iter().find(|v| v.name == "T1").unwrap();
+    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hard", "hard", "hint", "hard", "hint"]);
+    // The level hint gives way to the beams (2 inches over the span between them), and says by how much.
+    let level = s.constraints.iter().find(|c| c.name == "T1 level").unwrap();
+    assert!(level.gap > 0.009 && level.gap < 0.012, "{level:?}");
+
+    // Trusses on walls: every bearing point is on both axes; none is on a face.
+    let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
+    sound(&m);
+    assert!(m.attachments.is_empty() && m.solves.len() == 1);
+}
+
 fn roof_on_beams(far: Option<f64>) -> topo_core::Model {
     // Beams with their axes through their middles (so their tops are half their depth above), under the heels.
     let far = far.map_or(String::new(), |z| format!(r#".point("c", [-1, ft(20) - inch(2), {z}]).point("d", [ft(12) + 1, ft(20) - inch(2), {z}]).member("beam", ["c", "d"], o)"#));

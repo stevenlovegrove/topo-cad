@@ -164,6 +164,15 @@ impl Model {
         for m in &mut self.members {
             m.depth_dir = m.depth_dir.map(|d| f.dir_to_world(d));
         }
+        for s in &mut self.solves {
+            for v in &mut s.variables {
+                v.at = f.to_world(v.at);
+                v.freedoms.iter_mut().for_each(|x| x.dir = f.dir_to_world(x.dir));
+            }
+            for c in &mut s.constraints {
+                c.points.iter_mut().for_each(|p| *p = f.to_world(*p));
+            }
+        }
         for j in &mut self.joints {
             for r in &mut j.rules {
                 if let JointRule::Plane { normal, .. } = r {
@@ -261,6 +270,7 @@ impl Model {
         for b in other.bonds {
             self.bonds.push(crate::model::Bond { a: m(b.a), b: m(b.b), connection: c(b.connection) });
         }
+        self.solves.extend(other.solves);
         for a in other.attachments {
             self.attachments.push(crate::model::Attachment { node: n(a.node), member: m(a.member), ..a });
         }

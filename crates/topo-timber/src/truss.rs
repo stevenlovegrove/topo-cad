@@ -602,6 +602,8 @@ pub struct RoofParts {
     /// Trusses (1-based numbers) that sit on one bearing only, or with all that is under them
     /// to one side of their middle: placed level on it, but nothing holds them so.
     pub unsteady: Vec<usize>,
+    /// The solve that sat them, to be shown (it is moved into the model's `solves`).
+    pub solved: Option<topo_core::Solved>,
     /// Trusses that could not be seated on the bearings found for them, and why.
     pub problems: Vec<String>,
 }
@@ -642,6 +644,9 @@ impl TrussRoof {
         let mut parts = RoofParts { group: g, ..Default::default() };
         let stations: Vec<(f64, Option<Vec3>)> = stations.into_iter().enumerate().map(|(i, (r, face))| (r + self.shifts.iter().filter(|(ns, _)| ns.contains(&(i + 1))).map(|(_, d)| d).sum::<f64>(), face)).collect();
         let seats = self.seats(&stations.iter().map(|(r, face)| (self.origin + run * *r, *face)).collect::<Vec<_>>(), &mut parts);
+        if let Some(solved) = parts.solved.take() {
+            m.solves.push(solved);
+        }
         for (i, (_, face)) in stations.into_iter().enumerate() {
             let shape = self.overrides.iter().find(|(ns, _)| ns.contains(&(i + 1))).map(|(_, s)| s).unwrap_or(&self.shape);
             let (heel, span_dir, up) = seats[i];
@@ -798,6 +803,23 @@ impl TrussRoof {
             placed.push((Some(truss), under));
         }
         let report = sys.solve();
+        if placed.iter().any(|(f, _)| f.is_some()) {
+            let e = sys.explain(&report);
+            let (tier, at) = (|t: usize| ["hard", "measured", "hint"][t].to_string(), |p: [f64; 3]| v3(p[0], p[1], p[2]));
+            parts.solved = Some(topo_core::Solved {
+                name: format!("{}: trusses on what is under them", self.name),
+                variables: (e.variables.iter())
+                    .map(|v| topo_core::SolvedVariable {
+                        name: v.name.clone(),
+                        kind: v.kind.into(),
+                        at: at(v.at),
+                        value: v.value,
+                        freedoms: v.freedoms.iter().map(|f| topo_core::SolvedFreedom { what: f.what.clone(), dir: at(f.dir), turn: f.turn, settled: f.settled.map_or("open".into(), tier) }).collect(),
+                    })
+                    .collect(),
+                constraints: (e.constraints.iter()).map(|c| topo_core::SolvedConstraint { name: c.name.clone(), tier: tier(c.tier), kind: c.kind.into(), gap: c.gap, points: c.points.iter().map(|p| at(*p)).collect(), touches: c.touches.clone() }).collect(),
+            });
+        }
         for c in &report.conflicts {
             let gaps: Vec<String> = c.constraints.iter().map(|g| format!("{} ({:.0} mm off)", g.constraint, g.size * 1000.0)).collect();
             parts.problems.push(format!("{} cannot sit on what is under it: {}", c.frames.join(", "), gaps.join("; ")));

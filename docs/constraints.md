@@ -269,6 +269,47 @@ In the solver's terms this is a point with two scalars in the member's
 frame, held to another member's point. The solver does not yet bound
 scalars, so the box is checked by the model, not held by the solve.
 
+## Seeing it
+
+`examples/primitives` has the smallest models that show each thing:
+
+1. **Beam on beam.** Two joists crossing a beam, joined by
+   `Assembly.resting(upper, lower)`: a node where they touch, on the
+   underside of the one and the top of the other. One joist has its axis
+   on its underside, so that node is in its path; the other's axis is
+   through its middle, so the node is on its underside face. For both it
+   is on the beam's top face. They have to touch: `resting` joins, it
+   does not move, and says how far apart they are if they do not.
+2. **Trusses on beams**, one beam lower: free things sat by a solve, then
+   joined to the beams at bearing points on the beams' top faces.
+3. **Trusses on walls**: the same, where the axes meet, so every bearing
+   point is an ordinary node on both axes.
+
+The 3D view draws the **skeleton** over the model, with a panel to show
+or hide each kind:
+
+- **nodes on axes** (dots: darker where members meet);
+- **bearing points, on faces** (orange diamonds). Hovering one draws the
+  face it is on (the box its two numbers are free in), the two ways it
+  may move there, and says the numbers and their bounds;
+- **free variables**: what a solve had to find. A square is a rigid thing
+  free to move, at its origin; a short bar is a number, at the point it
+  moves and along the way it moves it. Each is coloured by what settled
+  it (hard, measured, hint; red if open). Hovering a square draws each of
+  its freedoms (along an axis, or dashed about one) in the colour of what
+  settled it, lists the constraints on it, and marks them;
+- **constraints** (rings where they hold points together; dashed for
+  hints). Hovering one says what it is, what it depends on, and how far
+  off it is.
+
+The tiers can be shown or hidden one by one, which filters both the
+variables (by what settled them) and the constraints (by their tier).
+
+A solve that places part of a model is kept with the model for this
+(`Model::solves`): its variables, their freedoms and what settled each
+(the solver now says so per freedom), and its constraints with their
+gaps.
+
 ## How it solves
 
 Gauss-Newton on the joints' coordinates and the scalars, component by

@@ -222,6 +222,9 @@ pub struct AssemblySpec {
     /// Pairs of members fastened face to face (`role` or `role#i`).
     #[serde(default)]
     pub bonds: Vec<(String, String)>,
+    /// Pairs of members, the first resting on the second where they cross.
+    #[serde(default)]
+    pub rests: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -679,6 +682,30 @@ impl Builder {
             let (mx, my) = (find(x)?, find(y)?);
             let c = self.m.add_connection(fx::double_top_plate());
             self.m.bond(mx, my, c);
+        }
+        // One member resting on another where they cross: the bearing point is a node, on the
+        // underside of the one and the top of the other (on each one's axis, if its axis is there).
+        for (upper, lower) in &a.rests {
+            let (mu, ml) = (find(upper)?, find(lower)?);
+            let (fu, fl) = (self.m.face_toward(mu, -Vec3::Z), self.m.face_toward(ml, Vec3::Z));
+            let (pu, pl) = (self.m.face(mu, fu), self.m.face(ml, fl));
+            // Where the middles of the two faces come nearest each other.
+            let (w, b) = (pu.origin - pl.origin, pu.along.dot(pl.along));
+            if 1.0 - b * b < 1e-9 {
+                return Err(format!("assembly {}: {upper} and {lower} run the same way: they do not cross (fasten them face to face with bonded)", a.name));
+            }
+            let (d, e) = (pu.along.dot(w), pl.along.dot(w));
+            let (qu, ql) = (pu.origin + pu.along * ((b * e - d) / (1.0 - b * b)), pl.origin + pl.along * ((e - b * d) / (1.0 - b * b)));
+            if qu.distance(ql) > LEN_TOL {
+                let dz = (qu - ql).z;
+                return Err(format!("assembly {}: {upper} does not rest on {lower}: where they cross, its underside is {:.1} mm {} the top of {lower}", a.name, dz.abs() * 1000.0, if dz > 0.0 { "above" } else { "below" }));
+            }
+            let n = self.m.node_at((qu + ql) * 0.5);
+            for (m, f) in [(mu, fu), (ml, fl)] {
+                self.m.attach(n, m, f).map_err(|e| format!("assembly {}: {upper} resting on {lower}: {e}", a.name))?;
+            }
+            let c = self.m.add_connection(fx::joist_to_plate());
+            self.m.connect(n, mu, Some(ml), c);
         }
         let conn = match &a.joints {
             JointsSpec::Kind(k) => match k.as_str() {

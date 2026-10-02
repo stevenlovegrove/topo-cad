@@ -1075,13 +1075,14 @@ export class Assembly {
     readonly supports: readonly string[],
     readonly loads: readonly AssemblyLoad[],
     readonly bonds: readonly (readonly [string, string])[],
+    readonly rests: readonly (readonly [string, string])[] = [],
   ) {}
 
   static named(name: string): Assembly {
     return new Assembly(name, Placement.identity, [], [], "nailed", [], [], [], []);
   }
   private copy(
-    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"] }>,
+    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; rests: Assembly["rests"] }>,
   ): Assembly {
     return new Assembly(
       p.name ?? this.name,
@@ -1093,7 +1094,18 @@ export class Assembly {
       p.supports ?? this.supports,
       p.loads ?? this.loads,
       p.bonds ?? this.bonds,
+      p.rests ?? this.rests,
     );
+  }
+  /**
+   * One member resting on another where they cross (`"joist"`, `"beam"` or
+   * `"joist#2"`): the bearing point is a node, on the underside of the first
+   * and on the top of the second. They have to touch there: this joins
+   * them, it does not move them.
+   */
+  resting(upper: string, lower: string): Assembly {
+    for (const x of [upper, lower]) if (!this.members.some((m) => m.role === x.split("#")[0])) throw new Error(`assembly ${this.name}: no member ${x}`);
+    return this.copy({ rests: [...this.rests, [upper, lower]] });
   }
   /** Two members fastened face to face (e.g. a cap nailed onto a header): `"header_cap"`, `"header"` or `"post#2"`. */
   bonded(a: string, b: string): Assembly {
@@ -1162,6 +1174,7 @@ export class Assembly {
       supports: this.supports,
       loads: this.loads,
       bonds: this.bonds,
+      rests: this.rests,
     };
   }
 }

@@ -452,7 +452,53 @@ fn mesh(b: &Built) -> Value {
             json!({ "name": s.name, "region": s.region, "layers": s.layers, "panels": panels, "psf": s.psf(), "thickness": s.thickness() })
         })
         .collect();
-    json!({ "version_name": b.model.info.name, "members": members, "surfaces": surfaces })
+    json!({ "version_name": b.model.info.name, "members": members, "surfaces": surfaces, "structure": structure(b) })
+}
+
+/// The model's skeleton, to be drawn over it: its nodes and what each joins (the members it
+/// is on the axis of, and those it is on a face of, with the face and the two numbers that
+/// place it there), and the solves that placed parts of it.
+fn structure(b: &Built) -> Value {
+    let m = &b.model;
+    let v3 = |p: topo_core::Vec3| [p.x, p.y, p.z];
+    let mut on_axis: Vec<Vec<String>> = vec![vec![]; m.nodes.len()];
+    for mm in &m.members {
+        for n in &mm.path {
+            on_axis[n.idx()].push(m.member_path(mm.id));
+        }
+    }
+    let mut on_face: Vec<Vec<Value>> = vec![vec![]; m.nodes.len()];
+    for a in &m.attachments {
+        let f = m.face(a.member, a.face);
+        let corners: Vec<[f64; 3]> = [(0.0, -1.0), (f.length, -1.0), (f.length, 1.0), (0.0, 1.0)].into_iter().map(|(l, w)| v3(f.point(l, w * f.half_width))).collect();
+        let side = if f.normal.z > 0.5 {
+            "top"
+        } else if f.normal.z < -0.5 {
+            "underside"
+        } else {
+            "side"
+        };
+        on_face[a.node.idx()].push(json!({
+            "member": m.member_path(a.member), "face": a.face, "side": side,
+            "along": a.along, "across": a.across, "length": f.length, "half_width": f.half_width,
+            "corners": corners, "along_dir": v3(f.along), "across_dir": v3(f.across), "normal": v3(f.normal),
+        }));
+    }
+    let nodes: Vec<Value> = (m.nodes.iter())
+        .filter(|n| !on_axis[n.id.idx()].is_empty() || !on_face[n.id.idx()].is_empty())
+        .map(|n| json!({ "id": n.id.to_string(), "name": n.name, "pos": v3(n.pos), "on_axis": on_axis[n.id.idx()], "on_face": on_face[n.id.idx()], "support": m.supports.iter().any(|s| s.node == n.id) }))
+        .collect();
+    // (Positions as [x, y, z], as everywhere in what the page is given.)
+    let solves: Vec<Value> = (m.solves.iter())
+        .map(|s| {
+            let variables: Vec<Value> = (s.variables.iter())
+                .map(|v| json!({ "name": v.name, "kind": v.kind, "at": v3(v.at), "value": v.value, "freedoms": v.freedoms.iter().map(|f| json!({ "what": f.what, "dir": v3(f.dir), "turn": f.turn, "settled": f.settled })).collect::<Vec<_>>() }))
+                .collect();
+            let constraints: Vec<Value> = (s.constraints.iter()).map(|c| json!({ "name": c.name, "tier": c.tier, "kind": c.kind, "gap": c.gap, "points": c.points.iter().map(|p| v3(*p)).collect::<Vec<_>>(), "touches": c.touches })).collect();
+            json!({ "name": s.name, "variables": variables, "constraints": constraints })
+        })
+        .collect();
+    json!({ "nodes": nodes, "solves": solves })
 }
 
 /// Exact hidden-line view of the whole model from a compass bearing `az`

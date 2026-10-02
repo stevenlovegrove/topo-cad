@@ -270,6 +270,49 @@ pub struct Attachment {
     pub across: f64,
 }
 
+/// A solve that placed part of the model, kept to be shown: what was unknown and how it was
+/// free, what was asked, and what settled what.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Solved {
+    pub name: String,
+    pub variables: Vec<SolvedVariable>,
+    pub constraints: Vec<SolvedConstraint>,
+}
+
+/// An unknown of a solve: a rigid thing free to move (a frame and its joint), or a number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedVariable {
+    pub name: String,
+    /// `free`, `slider`, `hinge`, `planar` (how a rigid thing may move), or `scalar`.
+    pub kind: String,
+    pub at: Vec3,
+    pub value: Option<f64>,
+    pub freedoms: Vec<SolvedFreedom>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedFreedom {
+    pub what: String,
+    /// The direction it moves along, or the axis it turns about.
+    pub dir: Vec3,
+    pub turn: bool,
+    /// What settled it: `hard`, `measured`, `hint`, or `open` (nothing did).
+    pub settled: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedConstraint {
+    pub name: String,
+    /// `hard`, `measured` or `hint`.
+    pub tier: String,
+    pub kind: String,
+    /// How far it is from holding (metres; radians for directions).
+    pub gap: f64,
+    pub points: Vec<Vec3>,
+    /// The variables it depends on, by name.
+    pub touches: Vec<String>,
+}
+
 /// A face of a member, as geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FacePlane {
@@ -413,6 +456,9 @@ pub struct Model {
     /// Nodes on members' faces (off their axes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// The solves that placed parts of the model, to be shown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solves: Vec<Solved>,
     pub supports: Vec<Support>,
     pub load_cases: Vec<LoadCase>,
     pub loads: Vec<Load>,

@@ -119,6 +119,12 @@
   #layers3d .sw { width: 12px; height: 12px; border: 1px solid #888; border-radius: 2px; }
   #layers3d .lyr span.n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #layers3d .lyr span.v { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #struct3d { position: absolute; left: 12px; top: 12px; width: 230px; background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 11px; user-select: none; }
+  #struct3d .hdr { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+  #struct3d label { display: flex; gap: 5px; align-items: center; padding: 1px 0; }
+  #struct3d .key { width: 14px; text-align: center; font-size: 12px; }
+  #struct3d .tiers { display: grid; grid-template-columns: 1fr 1fr; margin-top: 3px; border-top: 1px solid var(--line); padding-top: 3px; }
+  #struct3d .sw { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
   #hint3d { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.85); padding: 2px 6px; border-radius: 4px; }
   #scriptBar { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
   #scriptBar .file { border: 1px solid var(--line); background: var(--bg); padding: 2px 8px; border-radius: 4px; cursor: pointer; font: 12px ui-monospace, monospace; }
@@ -361,6 +367,22 @@
     <div id="view3d">
       <canvas id="canvas3d"></canvas>
       <svg id="compass" viewBox="-60 -60 120 152"></svg>
+      <div id="struct3d" hidden>
+        <div class="hdr"><b id="structToggle" style="cursor:pointer" title="Collapse or expand">▾ Skeleton</b><label><input type="checkbox" data-k="on"> show</label></div>
+        <div id="structBody">
+          <label title="Nodes on members' axes: where members meet, and their ends"><input type="checkbox" data-k="axis"><span class="key" style="color:#555">●</span>Nodes on axes <span class="muted" id="skelAxisN"></span></label>
+          <label title="Nodes on a member's face: bearing points. Hover one for the face and the two numbers that place it there"><input type="checkbox" data-k="face"><span class="key" style="color:#ea580c">◆</span>Bearing points, on faces <span class="muted" id="skelFaceN"></span></label>
+          <label title="What a solve had to find: rigid things free to move, and numbers. Hover one for its freedoms and what settled each"><input type="checkbox" data-k="vars"><span class="key">▣</span>Free variables <span class="muted" id="skelVarN"></span></label>
+          <label title="What the solve was asked to hold. Hover one for what it holds together and how far off it is"><input type="checkbox" data-k="cons"><span class="key">◯</span>Constraints <span class="muted" id="skelConN"></span></label>
+          <div class="muted" style="margin-top:3px">Settled by / tier:</div>
+          <div class="tiers">
+            <label title="Must hold: connections, datums"><input type="checkbox" data-k="hard"><span class="sw" style="background:#1d4ed8"></span>hard</label>
+            <label title="Should hold, to a tolerance: readings"><input type="checkbox" data-k="measured"><span class="sw" style="background:#7c3aed"></span>measured</label>
+            <label title="A generator's hint: decides only what nothing above does"><input type="checkbox" data-k="hint"><span class="sw" style="background:#15803d"></span>hint</label>
+            <label title="Nothing settles it: it stays where it was put"><input type="checkbox" data-k="open"><span class="sw" style="background:#dc2626"></span>open</label>
+          </div>
+        </div>
+      </div>
       <div id="layers3d" hidden>
         <div class="hdr"><b id="layersToggle" style="cursor:pointer" title="Collapse or expand">▾ Roof layers</b><label><input type="checkbox" id="layersOn" checked> show</label></div>
         <div id="layersBody">
@@ -744,6 +766,7 @@ async function load3d(force) {
     center3d = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
     if (!cam.scale) fit3d();
     renderLayersLegend();
+    renderSkeletonPanel();
   }
   await loadRatios3d();
   draw3d();
@@ -792,6 +815,160 @@ async function requestExact() {
   if (exactValid()) draw3d(); else if (!drag3dActive) requestExact(); else draw3d();
 }
 let drag3dActive = false;
+
+// ----- The skeleton: nodes, bearing points, free variables, constraints -----
+// Drawn over the model. A node is on members' axes (in their paths) or on a
+// member's face (two numbers within the face, the face following the member).
+// A solve's unknowns are rigid things free to move and numbers; each freedom
+// is coloured by what settled it.
+const SKEL_KEY = "topo.skeleton";
+const TIER_COLOUR = { hard: "#1d4ed8", measured: "#7c3aed", hint: "#15803d", open: "#dc2626" };
+let skel = { on: true, axis: true, face: true, vars: true, cons: true, hard: true, measured: true, hint: true, open: true };
+try { Object.assign(skel, JSON.parse(localStorage.getItem(SKEL_KEY) || "{}")); } catch (_) {}
+let skelItems = [], hoverSkel = null;
+const worstOf = (v) => ["open", "hint", "measured", "hard"].find((k) => v.freedoms.some((f) => f.settled === k)) || "hard";
+const mm = (x) => `${(x * 1000).toFixed(1)} mm`;
+
+function renderSkeletonPanel() {
+  const S = mesh3d && mesh3d.structure;
+  $("struct3d").hidden = !S;
+  if (!S) return;
+  for (const c of $("struct3d").querySelectorAll("input[data-k]")) c.checked = !!skel[c.dataset.k];
+  const vars = S.solves.reduce((n, x) => n + x.variables.length, 0), cons = S.solves.reduce((n, x) => n + x.constraints.length, 0);
+  $("skelAxisN").textContent = `(${S.nodes.filter((n) => !n.on_face.length).length})`;
+  $("skelFaceN").textContent = `(${S.nodes.filter((n) => n.on_face.length).length})`;
+  $("skelVarN").textContent = `(${vars})`;
+  $("skelConN").textContent = `(${cons})`;
+}
+
+function nodeTip(n) {
+  const lines = [`${n.on_face.length ? "Bearing point" : "Node"} ${n.id}${n.name ? ` "${n.name}"` : ""}${n.support ? " · on the foundation" : ""}`];
+  if (n.on_axis.length) lines.push("on the axis of (in the path of):", ...n.on_axis.map((m) => `   ${m}`));
+  for (const a of n.on_face) {
+    lines.push(`on the ${a.side} face of:`, `   ${a.member}`,
+      `   ${a.along.toFixed(3)} m along (0 … ${a.length.toFixed(3)})`,
+      `   ${a.across >= 0 ? "+" : ""}${a.across.toFixed(3)} m across (± ${a.half_width.toFixed(3)})`,
+      "   2 free numbers, bounded by the face; the face's plane follows the member");
+  }
+  return lines.join("\n");
+}
+function variableTip(v, solve) {
+  const lines = [v.kind === "scalar" ? `${v.name}` : `${v.name}: a rigid thing, ${v.kind} (${v.freedoms.length} freedom${v.freedoms.length === 1 ? "" : "s"})`];
+  if (v.kind === "scalar") lines.push(`a number: ${v.value.toFixed(4)} · ${v.freedoms[0].settled === "open" ? "open (nothing settles it)" : `settled by ${v.freedoms[0].settled}`}`);
+  else for (const f of v.freedoms) lines.push(`   ${f.settled === "open" ? "open   " : f.settled.padEnd(7)} ${f.what}`);
+  const held = solve.constraints.filter((c) => c.touches.includes(v.name));
+  if (held.length) lines.push("constraints on it:", ...held.map((c) => `   ${c.tier.padEnd(7)} ${c.name}${c.gap > 1e-7 ? ` (off by ${c.points.length ? mm(c.gap) : c.gap.toFixed(4)})` : ""}`));
+  lines.push(`in: ${solve.name}`);
+  return lines.join("\n");
+}
+function constraintTip(c, solve) {
+  return [`${c.name}`, `${c.tier} · ${c.kind} · ${c.gap > 1e-7 ? `off by ${c.points.length ? mm(c.gap) : c.gap.toFixed(4)}` : "holds"}`, "depends on:", ...c.touches.map((t) => `   ${t}`), `in: ${solve.name}`].join("\n");
+}
+
+function drawSkeleton(g, P, r, u) {
+  skelItems = [];
+  const S = mesh3d.structure;
+  if (!S || !skel.on) return;
+  const dir2 = (d) => [dot3(d, r), -dot3(d, u)];
+  g.save();
+  g.font = "11px ui-sans-serif, system-ui, sans-serif";
+  g.lineCap = "round";
+  // An arrow of a fixed length on screen along a direction in the model (a ring if it points at the viewer).
+  const arrow = (p, d, len, colour, label, opts = {}) => {
+    const [dx, dy] = dir2(d), n = Math.hypot(dx, dy);
+    g.strokeStyle = g.fillStyle = colour; g.lineWidth = opts.width || 1.8;
+    g.setLineDash(opts.dash || []);
+    let tip = p;
+    if (n < 0.12) { g.beginPath(); g.arc(p[0], p[1], 6, 0, 7); g.stroke(); g.beginPath(); g.arc(p[0], p[1], 1.6, 0, 7); g.fill(); tip = [p[0] + 6, p[1]]; }
+    else {
+      const ux = dx / n, uy = dy / n, e = [p[0] + ux * len, p[1] + uy * len], s0 = opts.both ? [p[0] - ux * len, p[1] - uy * len] : p;
+      g.beginPath(); g.moveTo(s0[0], s0[1]); g.lineTo(e[0], e[1]); g.stroke();
+      g.setLineDash([]);
+      for (const [q, sgn] of opts.both ? [[e, 1], [s0, -1]] : [[e, 1]]) {
+        g.beginPath(); g.moveTo(q[0] - sgn * (ux * 7 - uy * 3.5), q[1] - sgn * (uy * 7 + ux * 3.5)); g.lineTo(q[0], q[1]); g.lineTo(q[0] - sgn * (ux * 7 + uy * 3.5), q[1] - sgn * (uy * 7 - ux * 3.5)); g.stroke();
+      }
+      tip = e;
+    }
+    g.setLineDash([]);
+    if (label) { g.fillStyle = "rgba(255,255,255,.85)"; const w = g.measureText(label).width; g.fillRect(tip[0] + 5, tip[1] - 13, w + 4, 14); g.fillStyle = colour; g.fillText(label, tip[0] + 7, tip[1] - 2); }
+  };
+  // Nodes (drawn last, over the rest: a bearing point is often where a constraint holds).
+  const drawNodes = () => { for (const n of S.nodes) {
+    const face = n.on_face.length > 0;
+    if (face ? !skel.face : !skel.axis) continue;
+    const p = P(n.pos), key = `n:${n.id}`, hot = hoverSkel === key;
+    if (hot) for (const a of n.on_face) {
+      // The face it is on (the box its two numbers are free in), and the two ways it may move there.
+      g.beginPath(); a.corners.forEach((c, k) => { const q = P(c); k ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]); }); g.closePath();
+      g.fillStyle = "rgba(234,88,12,.14)"; g.fill(); g.strokeStyle = "#ea580c"; g.lineWidth = 1.2; g.setLineDash([4, 3]); g.stroke(); g.setLineDash([]);
+      arrow(p, a.along_dir, 40, "#c2410c", "along", { both: true });
+      arrow(p, a.across_dir, 22, "#c2410c", "across", { both: true });
+      arrow(p, a.normal, 30, "#6b7280", a.side, { dash: [2, 3], width: 1.2 });
+    }
+    if (face) {
+      const k = hot ? 7 : 5;
+      g.beginPath(); g.moveTo(p[0], p[1] - k); g.lineTo(p[0] + k, p[1]); g.lineTo(p[0], p[1] + k); g.lineTo(p[0] - k, p[1]); g.closePath();
+      g.fillStyle = "#ea580c"; g.fill(); g.strokeStyle = "#fff"; g.lineWidth = 1; g.stroke();
+    } else {
+      g.beginPath(); g.arc(p[0], p[1], hot ? 4.5 : n.on_axis.length > 1 ? 2.6 : 1.8, 0, 7);
+      g.fillStyle = hot ? "#111" : n.on_axis.length > 1 ? "#444" : "#999"; g.fill();
+    }
+    skelItems.push({ x: p[0], y: p[1], key, tip: () => nodeTip(n), rank: face ? 1 : 3 });
+  } };
+  // Solves: constraints (rings where they hold points together), then variables.
+  S.solves.forEach((solve, si) => {
+    const hotVar = hoverSkel && hoverSkel.startsWith(`v:${si}:`) ? solve.variables[+hoverSkel.split(":")[2]] : null;
+    if (skel.cons) solve.constraints.forEach((c, ci) => {
+      if (!skel[c.tier] || !c.points.length) return;
+      const key = `c:${si}:${ci}`, hot = hoverSkel === key || (hotVar && c.touches.includes(hotVar.name));
+      const a = P(c.points[0]), b = P(c.points[c.points.length - 1]);
+      g.strokeStyle = TIER_COLOUR[c.tier]; g.lineWidth = hot ? 2.4 : 1.2; g.setLineDash(c.tier === "hint" ? [3, 3] : []);
+      if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 3) { g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); }
+      const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      g.beginPath(); g.arc(mid[0], mid[1], hot ? 10 : 8, 0, 7); g.stroke(); g.setLineDash([]);
+      if (hotVar && hot) { const q = P(hotVar.at); g.globalAlpha = 0.5; g.beginPath(); g.moveTo(q[0], q[1]); g.lineTo(mid[0], mid[1]); g.stroke(); g.globalAlpha = 1; }
+      skelItems.push({ x: mid[0], y: mid[1], key, tip: () => constraintTip(c, solve), rank: 2, ring: 8 });
+    });
+    if (skel.vars) solve.variables.forEach((v, vi) => {
+      const w = worstOf(v);
+      if (!v.freedoms.some((f) => skel[f.settled])) return;
+      const key = `v:${si}:${vi}`, hot = hoverSkel === key, p = P(v.at), col = TIER_COLOUR[w];
+      if (hot) v.freedoms.forEach((f) => {
+        // Each freedom, as the way it lets the thing move: along a direction, or (dashed) about an axis.
+        // (Labelled by its axis; the tip has it in words.)
+        const axis = f.what.split(" ").pop();
+        const label = `${f.turn ? "↻" : ""}${/^[xyz]$/.test(axis) ? axis : f.what}`;
+        if (v.kind === "scalar") arrow(p, f.dir, 30, TIER_COLOUR[f.settled], `${v.value.toFixed(4)} · ${f.settled}`, { both: true });
+        else arrow(p, f.dir, f.turn ? 58 : 34, TIER_COLOUR[f.settled], label, f.turn ? { dash: [5, 4], width: 1.4 } : {});
+      });
+      g.strokeStyle = col; g.fillStyle = "#fff"; g.lineWidth = hot ? 2.6 : 1.8;
+      if (v.kind === "scalar") {
+        // A number: a small bar along the way it moves its point.
+        const [dx, dy] = dir2(v.freedoms[0].dir), n = Math.hypot(dx, dy) || 1, k = 7;
+        g.beginPath(); g.moveTo(p[0] - dx / n * k, p[1] - dy / n * k); g.lineTo(p[0] + dx / n * k, p[1] + dy / n * k); g.stroke();
+        g.beginPath(); g.arc(p[0], p[1], 2.6, 0, 7); g.fillStyle = col; g.fill();
+      } else {
+        // A rigid thing free to move: a square at its origin.
+        g.beginPath(); g.rect(p[0] - 5.5, p[1] - 5.5, 11, 11); g.fill(); g.stroke();
+        g.fillStyle = col; g.fillRect(p[0] - 2, p[1] - 2, 4, 4);
+      }
+      skelItems.push({ x: p[0], y: p[1], key, tip: () => variableTip(v, solve), rank: 0 });
+    });
+  });
+  drawNodes();
+  g.restore();
+}
+/// The skeleton item under the cursor: the nearest, preferring variables, then bearing points, constraints, nodes.
+function pickSkel(x, y) {
+  let best = null;
+  for (const it of skelItems) {
+    const d = Math.hypot(it.x - x, it.y - y), reach = it.ring ? it.ring + 4 : 9;
+    if (d > reach) continue;
+    const score = it.rank * 100 + (it.ring ? Math.abs(d - it.ring) : d);
+    if (!best || score < best.score) best = { ...it, score };
+  }
+  return best;
+}
 
 function draw3d() {
   if (!shown("3d") || !mesh3d) return;
@@ -846,6 +1023,7 @@ function draw3d() {
     $("hint3d").textContent = "preview (hidden lines not removed) — release to render exactly";
     if (!drag3dActive) requestExact();
   }
+  drawSkeleton(g, P, r, u);
   drawCompass(r, u, t);
 }
 
@@ -1027,7 +1205,7 @@ function pick3d(x, y) {
   let drag = null;
   el.addEventListener("contextmenu", (e) => e.preventDefault());
   el.addEventListener("mousedown", (e) => {
-    if (e.target.closest("#compass .hot, #compass .link") || e.target.closest("#layers3d")) return;
+    if (e.target.closest("#compass .hot, #compass .link") || e.target.closest("#layers3d, #struct3d")) return;
     drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2, moved: false, az: cam.az, elv: cam.el, p: cam.pan.slice() };
     drag3dActive = !drag.pan;
     el.classList.add("dragging");
@@ -1052,9 +1230,21 @@ function pick3d(x, y) {
       draw3d();
       return;
     }
+    const tip = $("tip");
+    const sk = e.target.closest("#struct3d, #layers3d") ? null : pickSkel(e.clientX - rect.left, e.clientY - rect.top);
+    if (sk) {
+      tip.textContent = sk.tip(); tip.style.whiteSpace = "pre"; tip.style.display = "block";
+      // Beside the cursor, kept on the page.
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      tip.style.left = `${Math.max(4, Math.min(e.clientX + 16, window.innerWidth - tw - 6))}px`;
+      tip.style.top = `${e.clientY + 16 + th > window.innerHeight - 6 ? Math.max(4, e.clientY - th - 12) : e.clientY + 16}px`;
+      if (hoverSkel !== sk.key || hover3d) { hoverSkel = sk.key; hover3d = null; draw3d(); }
+      return;
+    }
+    tip.style.whiteSpace = "nowrap";
+    if (hoverSkel) { hoverSkel = null; draw3d(); }
     const m = pick3d(e.clientX - rect.left, e.clientY - rect.top);
     const path = m ? m.path : null;
-    const tip = $("tip");
     if (m) {
       const rt = ratios3d[m.path];
       tip.textContent = `${m.label}` + (rt ? ` · ${rt.ratio.toFixed(2)} ${rt.title.toLowerCase()} (${rt.combination})` : "") + " — click for checks";
@@ -1063,7 +1253,7 @@ function pick3d(x, y) {
     } else tip.style.display = "none";
     if (path !== hover3d) { hover3d = path; draw3d(); }
   });
-  el.addEventListener("mouseleave", () => { $("tip").style.display = "none"; if (hover3d) { hover3d = null; draw3d(); } });
+  el.addEventListener("mouseleave", () => { $("tip").style.display = "none"; if (hover3d || hoverSkel) { hover3d = null; hoverSkel = null; draw3d(); } });
   el.addEventListener("wheel", (e) => {
     e.preventDefault();
     const rect = $("canvas3d").getBoundingClientRect();
@@ -1074,7 +1264,15 @@ function pick3d(x, y) {
     cam.scale *= f;
     draw3d();
   }, { passive: false });
-  el.addEventListener("dblclick", (e) => { if (!e.target.closest("#compass .hot, #compass .link") && !e.target.closest("#layers3d")) { fit3d(); draw3d(); } });
+  el.addEventListener("dblclick", (e) => { if (!e.target.closest("#compass .hot, #compass .link") && !e.target.closest("#layers3d, #struct3d")) { fit3d(); draw3d(); } });
+  $("struct3d").addEventListener("change", (e) => {
+    const k = e.target.dataset.k;
+    if (!k) return;
+    skel[k] = e.target.checked;
+    try { localStorage.setItem(SKEL_KEY, JSON.stringify(skel)); } catch (_) {}
+    draw3d();
+  });
+  $("structToggle").onclick = () => { const b = $("structBody"); b.hidden = !b.hidden; $("structToggle").textContent = (b.hidden ? "▸" : "▾") + " Skeleton"; };
   el.addEventListener("wheel", (e) => { if (e.target.closest("#layers3d")) e.stopPropagation(); }, { capture: true });
   $("layersOn").onchange = () => draw3d();
   $("layersToggle").onclick = () => { const b = $("layersBody"); b.hidden = !b.hidden; $("layersToggle").textContent = (b.hidden ? "▸" : "▾") + " Roof layers"; };
