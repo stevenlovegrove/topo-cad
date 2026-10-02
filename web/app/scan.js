@@ -873,6 +873,14 @@ function showPlane(id) {
   choose(id ? "plane" : null, id);
 }
 
+/** Leaves a selection's points out of the scan for everyone (or puts them back): for points that are not of the building. */
+async function ignoreSelection(s) {
+  if (!s) return;
+  if (!s.ignored && !confirm(`Ignore the ${s.count.toLocaleString()} points of ${selName(s)}?\n\nThey are left out of the scan for everyone: not drawn, not picked, not counted as evidence. This is for points that are not of the building (reflections, something that was moved). The selection stays, marked ignored, and can be put back from its menu.\n\nThe scan is loaded again, which takes a little while.`)) return;
+  const r = await service.call("selections", { action: "ignore", id: s.id, ignore: !s.ignored });
+  if (r.error) alert(r.error);
+}
+
 /** The points seen through a member (their rays pass through it): a selection of them, shown with the rays. */
 async function seenThrough(path) {
   const r = await service.call("selections", { action: "through", member: path });
@@ -1035,6 +1043,8 @@ function objectMenu(kind, id) {
     add("Go to it", () => gotoSelection(id));
     add("Fit a plane to it", () => fitPlane({ selection: id }));
     add("Slab around it", () => slabFrom({ selection: id }));
+    const sl = st.selections.find((x) => x.id === id);
+    add(sl?.ignored ? "Use its points again" : "Ignore its points (leave them out of the scan)…", () => ignoreSelection(sl));
     showHide();
     items.push(null);
     add("Delete it", () => deleteSelection(id), "danger");
@@ -1134,7 +1144,7 @@ function renderChips() {
       body = evLine(c.id) + (sel.at ? `<br>clicked at ${f3(sel.at.model)}, ${(sel.at.member.distance * 1000).toFixed(0)} mm from its face <span title="Alt-click picks the point itself">(alt-click: the point)</span>` : "");
     } else if (c.kind === "selection") {
       head = `<b>Selection</b> ${esc(s.id)} ${nameField(s.label)}`;
-      body = `${s.count.toLocaleString()} points${vis("selections", `sel:${s.id}`) ? "" : " · hidden"}`;
+      body = `${s.count.toLocaleString()} points${vis("selections", `sel:${s.id}`) ? "" : " · hidden"}${s.ignored ? " · <b>ignored</b>: left out of the scan" : ""}`;
     } else if (c.kind === "plane") {
       head = `<b>Plane</b> ${esc(pn.id)} ${nameField(pn.name)}`;
       body = `facing ${f3(pn.normal)} · ${pn.count.toLocaleString()} points, rms ${(pn.rms * 1000).toFixed(1)} mm · ${(pn.ext[1] - pn.ext[0]).toFixed(2)} × ${(pn.ext[3] - pn.ext[2]).toFixed(2)} m` +
@@ -1309,7 +1319,7 @@ function renderTree() {
   html += row(0, "top", "issues", "Issues", { group: true, note: st.issues.filter((i) => i.status !== "done").length });
   if (open.has("issues")) for (const i of ordered()) html += row(1, "issue", `issue:${i.id}`, `#${i.id} ${i.title}`, { id: i.id, on: i.id === sel.issue && !chosen(), note: i.place ? "" : "not pinned", dot: i.status === "done" ? "unseen" : i.status === "waiting" ? "contradicted" : "" });
   html += row(0, "top", "selections", "Selections", { group: true, note: (st.selections || []).length || "shift-drag" });
-  if (open.has("selections")) for (const s of st.selections || []) html += row(1, "sel", `sel:${s.id}`, selName(s), { id: s.id, on: s.id === sel.selection, note: s.count.toLocaleString() });
+  if (open.has("selections")) for (const s of st.selections || []) html += row(1, "sel", `sel:${s.id}`, selName(s), { id: s.id, on: s.id === sel.selection, note: `${s.count.toLocaleString()}${s.ignored ? " · ignored" : ""}`, title: s.ignored ? `${selName(s)}: its points are left out of the scan (shown here in yellow while its eye is on)` : selName(s) });
   html += row(0, "top", "planes", "Planes", { group: true, note: (st.surfaces || []).length || "right-click: fit" });
   if (open.has("planes")) for (const s of st.surfaces || []) html += row(1, "plane", `plane:${s.id}`, planeName(s), { id: s.id, on: s.id === sel.plane, note: `${(s.rms * 1000).toFixed(0)} mm` });
   html += row(0, "top", "slabs", "Slabs", { group: true, note: slabs().length || "right-click: slab", title: "Slabs: boxes a 3D view can be clipped to, to see a section. Double-click one to look through it" });
@@ -1379,6 +1389,7 @@ function renderTools(v) {
   const s = v.state, sb = slabOf(v.slab);
   // Not while one of its fields is being typed in.
   if (v.tools.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
+  const wasOpen = v.tools.querySelector("details.more")?.open;
   const btn = (a, icon, title, on) => `<button data-a="${a}" class="${on ? "on" : ""}" title="${title}">${icon}</button>`;
   v.tools.innerHTML =
     `<select data-k="colour" title="Colour the points by">${COLOURS.map((c) => `<option ${c === s.colour ? "selected" : ""}>${c}</option>`).join("")}</select>` +
@@ -1390,8 +1401,9 @@ function renderTools(v) {
       : "") +
     `<span class="grp">${btn("line", ICON.line, "Draw a polyline: click its points (on the scan, or in the slab seen square on)", drawing?.view === v.name)}${btn("cut", ICON.cut, "Cut a slab: drag a line across the building, seen from above, to look at what it cuts through", v.tool === "line")}</span>` +
     `<span class="grp">${btn("noroof", ICON.noroof, "Cut away what is above 2.3 m (the roof)", s.zMax != null)}${btn("nofloor", ICON.nofloor, "Cut away what is below 0.1 m (the floor)", s.zMin != null)}</span>` +
-    `<span class="grp" title="Point size">${btn("smaller", "−", "Smaller points")}${btn("bigger", "+", "Larger points")}</span>` +
-    `<details class="more"><summary title="Height cut, exactly">⋯</summary><div>Show model z from <input type="number" step="0.1" placeholder="any" value="${s.zMin ?? ""}" data-z="zMin"> to <input type="number" step="0.1" placeholder="any" value="${s.zMax ?? ""}" data-z="zMax"> m</div></details>`;
+    `<details class="more" ${wasOpen ? "open" : ""}><summary title="Point size, and the height cut exactly">⋯</summary><div><label>Point size <input type="range" min="1" max="6" step="0.5" value="${s.pointSize}" data-a="size"></label><br>Show model z from <input type="number" step="0.1" placeholder="any" value="${s.zMin ?? ""}" data-z="zMin"> to <input type="number" step="0.1" placeholder="any" value="${s.zMax ?? ""}" data-z="zMax"> m</div></details>`;
+  const size = v.tools.querySelector("input[data-a=size]");
+  size.oninput = () => v.set({ pointSize: Number(size.value) }, true);
   const step = (g) => updateSlab(sb.id, { centre: vec.add(sb.centre, vec.scale(sb.axes[2], g * sb.half[2])) });
   const acts = {
     ortho: () => v.set({ ortho: !s.ortho }),
@@ -1402,7 +1414,6 @@ function renderTools(v) {
     top: () => v.animate({ az: (-pl.yaw * 180) / Math.PI + 180, el: 89.9, ortho: true }),
     fit: () => { const b = modelBounds(); if (b) v.frame(toScan(b.centre), b.radius); },
     noroof: () => v.set({ zMax: s.zMax != null ? null : 2.3 }), nofloor: () => v.set({ zMin: s.zMin != null ? null : 0.1 }),
-    smaller: () => v.set({ pointSize: Math.max(1, s.pointSize - 0.5) }), bigger: () => v.set({ pointSize: Math.min(6, s.pointSize + 0.5) }),
     back: () => step(-1),
     fwd: () => step(1),
   };
@@ -1758,7 +1769,7 @@ function onState(s) {
   if (live?.done) live = null;
   syncSlabs();
   for (const v of Object.values(views)) { v.zOffset = pl.t[2]; v.floorZ = s.scan.floor_z ?? 0; }
-  const cloudKey = `${s.scan.min_range}|${s.cloud}`;
+  const cloudKey = `${s.scan.min_range}|${s.cloud}|${(s.selections || []).filter((x) => x.ignored).map((x) => x.id).join()}`;
   if (s.cloud && cloudLoaded !== cloudKey) loadCloud(cloudKey);
   loadMembers();
   app.setStatus(s.loading ? `scan: ${s.loading}…` : !service.connected ? "the workspace service is not answering" : null);

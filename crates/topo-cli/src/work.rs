@@ -22,7 +22,6 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response};
 use topo_scan::cloud::ScanIndex;
-use topo_scan::scan::Scan;
 use topo_scan::workspace::Workspace;
 
 #[derive(Clone)]
@@ -70,7 +69,7 @@ impl Work {
     /// Loads the scan in the background, if it is not loaded and not being
     /// (at the start, and again when how it is filtered is changed).
     fn load(&self) {
-        let (path, min_range) = {
+        let (path, items) = {
             let ws = self.ws.lock().unwrap();
             let mut loading = self.loading.lock().unwrap();
             let Some(path) = ws.items.scan.clone() else { return };
@@ -78,7 +77,8 @@ impl Work {
                 return;
             }
             *loading = "loading the scan".into();
-            (path, ws.items.min_range())
+            // (How the project filters its points, as it is now.)
+            (path, ws.items.clone())
         };
         *self.index.lock().unwrap() = None;
         let w = self.clone();
@@ -90,7 +90,7 @@ impl Work {
                 w.ws.lock().unwrap().touch();
             };
             // Outside the lock: the app is usable meanwhile.
-            let scan = match Scan::load(&path, min_range) {
+            let scan = match items.load(&path) {
                 Ok(s) => Arc::new(s),
                 Err(e) => return say(&format!("the scan did not load: {e:#}")),
             };
@@ -98,7 +98,7 @@ impl Work {
             {
                 let mut ws = w.ws.lock().unwrap();
                 // (The filter was changed while it loaded: again, with the new one.)
-                if ws.items.min_range() != min_range {
+                if ws.items.scan_key() != items.scan_key() {
                     drop(ws);
                     w.loading.lock().unwrap().clear();
                     return w.load();

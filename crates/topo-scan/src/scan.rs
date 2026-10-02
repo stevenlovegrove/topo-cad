@@ -19,7 +19,10 @@ pub struct Scan {
     pub sensor: Option<Vec<V3>>,
     /// Points far enough from the sensor to trust (`min_range` or more, when
     /// ranges are known): nearer ones are of whoever carried it.
+    /// Less those of selections people set to be ignored (reflections, things that were moved).
     pub used: Vec<u32>,
+    /// The points far enough from the sensor, before any are ignored.
+    pub all: Vec<u32>,
     pub min_range: f32,
     /// Whether the points' ranges are known (given in the file, or from the trajectory).
     pub ranged: bool,
@@ -54,7 +57,23 @@ impl Scan {
         let thin: Vec<V3> = used.iter().step_by(7).map(|&i| xyz[i as usize]).collect();
         let floor_z = crate::axes::floor_z(&thin).context("no floor found in the scan")?;
         let wall_axis = crate::axes::wall_axis(&thin, floor_z);
-        Ok(Scan { path: path.to_string(), xyz, intensity, sensor, used, min_range, ranged: range.is_some(), sub, floor_z, wall_axis })
+        Ok(Scan { path: path.to_string(), xyz, intensity, sensor, all: used.clone(), used, min_range, ranged: range.is_some(), sub, floor_z, wall_axis })
+    }
+
+    /// Leaves the points selections take (of all of them, as `how` each was
+    /// made) out of those used. The floor and wall direction stay as found.
+    pub fn ignore(&mut self, hows: &[crate::selection::How]) {
+        if hows.is_empty() {
+            return;
+        }
+        let mut out = vec![false; self.xyz.len()];
+        for how in hows {
+            for i in crate::selection::select_from(self, &self.all, how) {
+                out[i as usize] = true;
+            }
+        }
+        self.used = self.all.iter().copied().filter(|&i| !out[i as usize]).collect();
+        self.sub = self.used.iter().step_by(60).map(|&i| self.xyz[i as usize]).collect();
     }
 
     /// The nearest scan point to a ray (the first surface it meets): of the

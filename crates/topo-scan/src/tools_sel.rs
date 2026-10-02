@@ -18,8 +18,10 @@ impl Workspace {
         if let Some(i) = self.sel_cache.get(id) {
             return Ok(i.clone());
         }
-        let how = self.items.selections.iter().find(|s| s.id == id).with_context(|| format!("no selection {id}"))?.how.clone();
-        let idx = Arc::new(select(self.scan()?, &how));
+        let (how, ignored) = self.items.selections.iter().find(|s| s.id == id).map(|s| (s.how.clone(), s.ignored)).with_context(|| format!("no selection {id}"))?;
+        let scan = self.scan()?;
+        // (One whose points are ignored: of all the points, since its own are not among those used.)
+        let idx = Arc::new(if ignored { crate::selection::select_from(scan, &scan.all, &how) } else { select(scan, &how) });
         self.sel_cache.insert(id.to_string(), idx.clone());
         Ok(idx)
     }
@@ -45,7 +47,7 @@ impl Workspace {
 
     fn selection_line(&self, s: &Selection) -> String {
         let pl = self.placement.unwrap_or_default();
-        let mut t = format!("{} {:?} by {}: {} points, centroid model {}", s.id, s.label, self.store.name_of(&s.by), s.count, f3(pl.inverse(s.centroid)));
+        let mut t = format!("{} {:?} by {}: {} points{}, centroid model {}", s.id, s.label, self.store.name_of(&s.by), s.count, if s.ignored { " (IGNORED: left out of the scan)" } else { "" }, f3(pl.inverse(s.centroid)));
         if let Some(p) = &s.plane {
             t += &format!("; plane normal {} (model), rms {:.1} mm", f3(pl.unrotate(p.normal)), p.rms * 1e3);
         }
@@ -69,10 +71,28 @@ impl Workspace {
             }
             "delete" => {
                 let id = id.context("id")?;
+                let was = self.items.selections.iter().any(|s| s.id == id && s.ignored);
                 self.items.selections.retain(|s| s.id != id);
                 self.sel_cache.remove(id);
                 self.save_items(who)?;
-                return text(format!("deleted {id}"));
+                if was {
+                    self.unload_scan();
+                }
+                return text(format!("deleted {id}{}", if was { " (its points are no longer ignored; the scan is being loaded again)" } else { "" }));
+            }
+            // Its points are left out of the scan (or, `ignore: false`, put back).
+            "ignore" => {
+                let id = id.context("id")?;
+                let on = args.get("ignore").and_then(|v| v.as_bool()).unwrap_or(true);
+                let s = self.items.selections.iter_mut().find(|s| s.id == id).with_context(|| format!("no selection {id}"))?;
+                if s.ignored == on {
+                    return text(format!("{id} is already {}", if on { "ignored" } else { "not ignored" }));
+                }
+                s.ignored = on;
+                let n = s.count;
+                self.save_items(who)?;
+                self.unload_scan();
+                return text(format!("the {n} points of {id} are now {}; the scan is being loaded again", if on { "ignored: not drawn, picked or counted as evidence" } else { "used again" }));
             }
             // A person's window in a view (the app sends its view).
             "window" => {
@@ -121,7 +141,7 @@ impl Workspace {
                 let pl = self.placement()?;
                 How::Box { min: std::array::from_fn(|a| lo[a].min(hi[a])), max: std::array::from_fn(|a| lo[a].max(hi[a])), frame: Self::frame_is_model(args)?.then_some((pl.yaw, pl.t)) }
             }
-            a => bail!("action must be list, create, through, label or delete, not {a:?}"),
+            a => bail!("action must be list, create, through, label, ignore or delete, not {a:?}"),
         };
         let idx = select(self.scan()?, &how);
         if idx.is_empty() {

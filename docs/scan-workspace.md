@@ -243,7 +243,8 @@ Details that were decided in the building:
 - **A scan view's own controls are in the view**: how the points are
   coloured, what it shows (the whole scan, or a slab), orthographic,
   top-down, fit, drawing a polyline, cutting a slab, cutting away the
-  roof or the floor, point size; clipped to a slab, looking square on,
+  roof or the floor, and under ⋯ the point size and the exact height
+  cut; clipped to a slab, looking square on,
   whether it is held so, and the slab's thickness and stepping. Each has
   a compass: click a letter to look from that side of the model, the
   middle to look straight down.
@@ -300,6 +301,16 @@ Details that were decided in the building:
   menu (or by `scan_filter`), is kept with the project
   (`<model>.scan.json`), and applies to everyone and everything made
   from the points; changing it loads the scan again in the background.
+- **A selection's points can be ignored**: left out of the scan for
+  everyone (not drawn, picked or counted as evidence), for points that
+  are not of the building as it is: reflections, something that was
+  moved. It is the selection's "Ignore its points" (`selections` with
+  `ignore` for agents). The selection stays, marked ignored, still shows
+  its points while its eye is on, and can be put back; deleting it puts
+  them back too. Like the distance from the sensor, it is kept with the
+  project and the scan is loaded again when it changes. Ignoring is for
+  what is not real, not for what disagrees with the model: the reason
+  belongs in an issue.
 - **What contradicts a member can be seen.** "Contradicted" is about
   rays, not points on the member: the scanner saw things along lines
   that pass through where it is. A member's menu has "Show the points

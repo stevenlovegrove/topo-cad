@@ -65,21 +65,30 @@ pub struct Selection {
     pub min: V3,
     pub max: V3,
     pub plane: Option<PlaneFit>,
+    /// Its points are left out of the scan: not drawn, picked or counted as evidence.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignored: bool,
 }
 
 /// The used points a selection takes.
 pub fn select(scan: &Scan, how: &How) -> Vec<u32> {
+    select_from(scan, &scan.used, how)
+}
+
+/// The points a selection takes, of `from` (the used ones; or all of them,
+/// for a selection whose points are ignored and so are not among the used).
+pub fn select_from(scan: &Scan, from: &[u32], how: &How) -> Vec<u32> {
     match how {
         How::Through { centre, axes, half, margin } => {
             let Some(sensor) = scan.sensor.as_deref() else { return Vec::new() };
-            scan.used.par_iter().copied().filter(|&i| {
+            from.par_iter().copied().filter(|&i| {
                 let s = sensor[i as usize];
                 s[0].is_finite() && crate::rays::ray_meets(*centre, axes, *half, *margin, s, scan.xyz[i as usize]) == Some(true)
             }).collect()
         }
         How::Box { min, max, frame } => {
             let pl = frame.map(|(yaw, t)| crate::Placement { yaw, t });
-            scan.used.par_iter().copied().filter(|&i| {
+            from.par_iter().copied().filter(|&i| {
                 let p = pl.map_or(scan.xyz[i as usize], |pl| pl.inverse(scan.xyz[i as usize]));
                 (0..3).all(|a| p[a] >= min[a] && p[a] <= max[a])
             }).collect()
@@ -87,8 +96,7 @@ pub fn select(scan: &Scan, how: &How) -> Vec<u32> {
         How::Window { vp, rect, eye, forward, z, slab, obb, front_only } => {
             let (x0, x1, y0, y1) = (rect[0].min(rect[2]), rect[0].max(rect[2]), rect[1].min(rect[3]), rect[1].max(rect[3]));
             // (index, x and y in the rectangle as 0..1, depth along the view).
-            let inside: Vec<(u32, f32, f32, f32)> = scan
-                .used
+            let inside: Vec<(u32, f32, f32, f32)> = from
                 .par_iter()
                 .filter_map(|&i| {
                     let p = scan.xyz[i as usize];
@@ -136,7 +144,7 @@ pub fn select(scan: &Scan, how: &How) -> Vec<u32> {
 impl Selection {
     pub fn new(id: String, by: &str, how: How, scan: &Scan, idx: &[u32]) -> Selection {
         let st = point_stats(idx.iter().map(|&i| scan.xyz[i as usize]));
-        Selection { id, label: String::new(), by: by.to_string(), time: crate::issues::now(), how, count: st.count, centroid: st.centroid, min: st.min, max: st.max, plane: st.plane }
+        Selection { id, label: String::new(), by: by.to_string(), time: crate::issues::now(), how, count: st.count, centroid: st.centroid, min: st.min, max: st.max, plane: st.plane, ignored: false }
     }
 }
 
@@ -175,5 +183,13 @@ mod tests {
         // As a box.
         let b = select(&scan, &How::Box { min: [1.9, -0.105, 0.995], max: [2.1, 0.105, 1.205], frame: None });
         assert_eq!(b.len(), 11 * 11);
+        // Ignored: its points are no longer among the used, but it still names them.
+        let how = How::Box { min: [1.9, -0.105, 0.995], max: [2.1, 0.105, 1.205], frame: None };
+        let mut scan = scan;
+        let before = scan.used.len();
+        scan.ignore(std::slice::from_ref(&how));
+        assert_eq!(scan.used.len(), before - 121);
+        assert!(select(&scan, &how).is_empty());
+        assert_eq!(select_from(&scan, &scan.all, &how).len(), 121);
     }
 }

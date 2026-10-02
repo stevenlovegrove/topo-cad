@@ -149,6 +149,23 @@ impl Items {
     pub fn min_range(&self) -> f32 {
         self.min_range.unwrap_or(1.0)
     }
+
+    /// How the selections whose points are ignored were made.
+    pub fn ignored(&self) -> Vec<crate::selection::How> {
+        self.selections.iter().filter(|s| s.ignored).map(|s| s.how.clone()).collect()
+    }
+
+    /// Which of the scan's points are used: changes when the filters do.
+    pub fn scan_key(&self) -> String {
+        format!("{}|{}", self.min_range(), serde_json::to_string(&self.ignored()).unwrap_or_default())
+    }
+
+    /// The scan as the project has it: read, and filtered.
+    pub fn load(&self, path: &str) -> Result<Scan> {
+        let mut scan = Scan::load(path, self.min_range())?;
+        scan.ignore(&self.ignored());
+        Ok(scan)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -345,10 +362,20 @@ impl Workspace {
     pub fn load_scan(&mut self) -> Result<()> {
         if self.scan.is_none() {
             let path = self.items.scan.clone().context("the project names no scan: start the service with one")?;
-            self.scan = Some(Arc::new(Scan::load(&path, self.items.min_range())?));
+            self.scan = Some(Arc::new(self.items.load(&path)?));
             self.touch();
         }
         Ok(())
+    }
+
+    /// Which points are used has changed: the scan is let go of, to be loaded
+    /// again (the service does that), and what was made from its points with it.
+    pub(crate) fn unload_scan(&mut self) {
+        self.scan = None;
+        self.index = None;
+        self.ev = None;
+        self.sel_cache.clear();
+        self.touch();
     }
 
     /// How the scan's points are filtered: `min_range` (m) leaves out those
@@ -368,11 +395,7 @@ impl Workspace {
         }
         self.items.min_range = Some(m as f32);
         self.save_items(who)?;
-        self.scan = None;
-        self.index = None;
-        self.ev = None;
-        self.sel_cache.clear();
-        self.touch();
+        self.unload_scan();
         text(format!("points nearer the sensor than {m:.2} m are now left out; the scan is being loaded again"))
     }
 
