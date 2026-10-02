@@ -189,6 +189,14 @@ impl Work {
                     Err(e) => respond_json(req, 404, &json!({"error": format!("{e:#}")})),
                 }
             }
+            // A selection's rays (for one of points seen through a member): [[sensor, point], …].
+            (Method::Get, "/api/rays") => {
+                let r = self.ws.lock().unwrap().selection_rays(q.get("id").map_or("", String::as_str), 400);
+                match r {
+                    Ok(rays) => respond_json(req, 200, &json!({"rays": rays.iter().map(|(s, p)| json!([s, p])).collect::<Vec<_>>()})),
+                    Err(e) => respond_json(req, 404, &json!({"error": format!("{e:#}")})),
+                }
+            }
             (Method::Get, "/api/slab") => {
                 let (ix, scan) = (self.index.lock().unwrap().clone(), self.ws.lock().unwrap().scan.clone());
                 let (Some(ix), Some(scan)) = (ix, scan) else { return respond_json(req, 503, &json!({"error": "the scan is still loading"})) };

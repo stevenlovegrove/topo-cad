@@ -300,6 +300,14 @@ Details that were decided in the building:
   menu (or by `scan_filter`), is kept with the project
   (`<model>.scan.json`), and applies to everyone and everything made
   from the points; changing it loads the scan again in the background.
+- **What contradicts a member can be seen.** "Contradicted" is about
+  rays, not points on the member: the scanner saw things along lines
+  that pass through where it is. A member's menu has "Show the points
+  seen through it" (`selections` with `through` for agents): a selection
+  of the points whose rays pass through the member and end beyond it.
+  While it is selected, a sample of those rays is drawn from the sensor
+  to the points. (The evidence counts every fourth ray; the selection
+  takes them all.)
 - **A click in a view selects what is drawn there**: a slab, plane or
   polyline by its lines (within a few pixels of its outline); a shown
   selection by its points; a shown member by a scan point on its faces,

@@ -44,6 +44,10 @@ pub enum How {
         #[serde(default)]
         frame: Option<(f32, V3)>,
     },
+    /// The points seen through a box (a member as it was placed: centre,
+    /// unit axes, half sizes; scan frame): their rays from the sensor pass
+    /// through it and end beyond. They are what says nothing solid is there.
+    Through { centre: V3, axes: [V3; 3], half: V3, margin: f32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +70,13 @@ pub struct Selection {
 /// The used points a selection takes.
 pub fn select(scan: &Scan, how: &How) -> Vec<u32> {
     match how {
+        How::Through { centre, axes, half, margin } => {
+            let Some(sensor) = scan.sensor.as_deref() else { return Vec::new() };
+            scan.used.par_iter().copied().filter(|&i| {
+                let s = sensor[i as usize];
+                s[0].is_finite() && crate::rays::ray_meets(*centre, axes, *half, *margin, s, scan.xyz[i as usize]) == Some(true)
+            }).collect()
+        }
         How::Box { min, max, frame } => {
             let pl = frame.map(|(yaw, t)| crate::Placement { yaw, t });
             scan.used.par_iter().copied().filter(|&i| {

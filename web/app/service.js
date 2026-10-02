@@ -118,6 +118,11 @@ export const service = {
     if (!r.ok) return null;
     return parseCloud(await r.arrayBuffer());
   },
+  /** A selection's rays, sampled: [[sensor, point], …] (scan frame). */
+  async selectionRays(id) {
+    const r = await fetch(`api/rays?id=${encodeURIComponent(id)}`);
+    return r.ok ? (await r.json()).rays ?? [] : [];
+  },
   /** What a ray meets (scan frame); `z` (model frame) and `slab` (a box, as above) are the view's cuts. */
   async pick(origin, dir, z, slab) {
     const r = await fetch("api/pick", { method: "POST", body: JSON.stringify({ origin, dir, z, slab }) });

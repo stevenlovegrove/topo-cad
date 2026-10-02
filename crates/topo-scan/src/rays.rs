@@ -23,6 +23,39 @@ impl RayStats {
     }
 }
 
+/// What the ray from the sensor `s` to its point `p` does at a box (centre,
+/// unit axes, half sizes): `Some(false)` ends in it (grown by `margin`),
+/// `Some(true)` passes through it (shrunk by `margin`) to end beyond, `None`
+/// misses it.
+pub fn ray_meets(centre: V3, axes: &[V3; 3], h: V3, margin: f32, s: V3, p: V3) -> Option<bool> {
+    // In the box frame.
+    let (ds, dp) = (sub(s, centre), sub(p, centre));
+    let a: [f32; 3] = std::array::from_fn(|x| dot(ds, axes[x]));
+    let e: [f32; 3] = std::array::from_fn(|x| dot(dp, axes[x]));
+    if (0..3).all(|x| e[x].abs() <= h[x] + margin) {
+        return Some(false);
+    }
+    // Slab test of the segment against the shrunk box.
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for x in 0..3 {
+        let hs = (h[x] - margin).max(0.5 * h[x]);
+        let d = e[x] - a[x];
+        if d.abs() < 1e-9 {
+            if a[x].abs() > hs {
+                return None;
+            }
+        } else {
+            let (u0, u1) = ((-hs - a[x]) / d, (hs - a[x]) / d);
+            t0 = t0.max(u0.min(u1));
+            t1 = t1.min(u0.max(u1));
+            if t0 > t1 {
+                return None;
+            }
+        }
+    }
+    Some(true)
+}
+
 /// Ray statistics of `boxes` over every `stride`-th point of `used`.
 pub fn ray_stats(boxes: &[Obb], xyz: &[V3], sensor: &[V3], used: &[u32], stride: usize, margin: f32) -> Vec<RayStats> {
     if boxes.is_empty() {
@@ -54,38 +87,10 @@ pub fn ray_stats(boxes: &[Obb], xyz: &[V3], sensor: &[V3], used: &[u32], stride:
                     if (0..3).any(|a| rhi[a] < lo[a] || rlo[a] > hi[a]) {
                         continue;
                     }
-                    // In the box frame.
-                    let (ds, dp) = (sub(s, b.centre), sub(p, b.centre));
-                    let a: [f32; 3] = std::array::from_fn(|x| dot(ds, b.axes[x]));
-                    let e: [f32; 3] = std::array::from_fn(|x| dot(dp, b.axes[x]));
-                    let h = half[k];
-                    if (0..3).all(|x| e[x].abs() <= h[x] + margin) {
-                        acc[k].ended += 1;
-                        continue;
-                    }
-                    // Slab test of the segment against the shrunk box.
-                    let (mut t0, mut t1) = (0.0f32, 1.0f32);
-                    let mut hit = true;
-                    for x in 0..3 {
-                        let hs = (h[x] - margin).max(0.5 * h[x]);
-                        let d = e[x] - a[x];
-                        if d.abs() < 1e-9 {
-                            if a[x].abs() > hs {
-                                hit = false;
-                                break;
-                            }
-                        } else {
-                            let (u0, u1) = ((-hs - a[x]) / d, (hs - a[x]) / d);
-                            t0 = t0.max(u0.min(u1));
-                            t1 = t1.min(u0.max(u1));
-                            if t0 > t1 {
-                                hit = false;
-                                break;
-                            }
-                        }
-                    }
-                    if hit {
-                        acc[k].pierced += 1;
+                    match ray_meets(b.centre, &b.axes, half[k], margin, s, p) {
+                        Some(true) => acc[k].pierced += 1,
+                        Some(false) => acc[k].ended += 1,
+                        None => {}
                     }
                 }
                 acc

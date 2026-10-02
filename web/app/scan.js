@@ -300,7 +300,7 @@ async function loadCloud(key) {
   if (!c) { cloudLoaded = false; return; }
   for (const v of Object.values(views)) { v.setCloud("thin", c); v.slabWant = null; requestSlab(v); }
   // (Selections' points are found again in it.)
-  selClouds.clear();
+  selClouds.clear(); selRays.clear();
   for (const v of Object.values(views)) for (const k of [...v.highlights.keys()]) v.setHighlight(k, null);
   syncHighlights();
 }
@@ -449,6 +449,12 @@ function rebuildMarks() {
     const on = s.id === sel.slab, c = slabCorners(s);
     boxLines(c, on ? [255, 205, 120] : [205, 120, 30], segs);
     if (on) for (const f of [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]]) quad(f.map((k) => c[k]), [255, 160, 50, grab?.s ? 54 : 26], s.id);
+  }
+  // The selected selection, if it is of points seen through a member: their rays from the sensor.
+  const thr = theSelection();
+  if (thr?.how === "through" && vis("selections", `sel:${thr.id}`)) {
+    if (!selRays.has(thr.id)) { selRays.set(thr.id, []); service.selectionRays(thr.id).then((r) => { selRays.set(thr.id, r); rebuildMarks(); }); }
+    for (const [a, b] of selRays.get(thr.id)) segs.push([a, b, [255, 110, 80]]);
   }
   const pn = thePlane();
   if (pn && vis("planes", `plane:${pn.id}`)) quad(planeCorners(pn), [60, 230, 215, 56]);
@@ -867,6 +873,16 @@ function showPlane(id) {
   choose(id ? "plane" : null, id);
 }
 
+/** The points seen through a member (their rays pass through it): a selection of them, shown with the rays. */
+async function seenThrough(path) {
+  const r = await service.call("selections", { action: "through", member: path });
+  if (r.error) return alert(r.error === "no scan points there" ? "No rays pass through this member." : r.error);
+  const id = r.text.match(/selected (s\d+)/)?.[1];
+  if (!id) return;
+  await until(() => st?.selections?.some((s) => s.id === id));
+  await showSelection(id);
+}
+
 /** Where a new issue can go, given what is selected: [{ key, label }], the likeliest first. */
 function whereOptions() {
   const out = [], p = sel.pick, s = theSelection(), pn = thePlane();
@@ -998,6 +1014,7 @@ function objectMenu(kind, id) {
     add("New issue on this member", () => { selectMember(id); startDraft("member"); });
     add("Go to it", () => gotoMembers(id));
     add("Its checks", () => { selectMember(id); app.showTab("member"); });
+    if (st.scan.rays) add("Show the points seen through it (what contradicts it)", () => seenThrough(id));
     showHide();
   } else if (kind === "group" || kind === "top") {
     showHide();
@@ -1211,7 +1228,7 @@ function toggleVis(key) {
 }
 
 // Selections shown (their eye is on) are drawn as highlighted points; loaded once each.
-const selClouds = new Map();
+const selClouds = new Map(), selRays = new Map();
 async function syncHighlights() {
   const want = (st?.selections || []).filter((s) => vis("selections", `sel:${s.id}`)).map((s) => s.id);
   for (const v of Object.values(views)) for (const key of [...v.highlights.keys()]) if (!want.includes(key)) v.setHighlight(key, null);

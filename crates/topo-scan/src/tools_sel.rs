@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use crate::cloud::Cloud;
 use crate::selection::{select, How, Selection};
 use crate::workspace::{arr3, f3, Workspace};
+use crate::V3;
 
 impl Workspace {
     /// A selection's points (found again from how it was made, once).
@@ -32,6 +33,14 @@ impl Workspace {
             c.push(scan.xyz[i as usize], 255, [0; 3]);
         }
         Ok(c)
+    }
+
+    /// A selection's rays (sensor, point), thinned evenly to `max`: for one made of points seen through a member.
+    pub fn selection_rays(&mut self, id: &str, max: usize) -> Result<Vec<(V3, V3)>> {
+        let idx = self.selection_indices(id)?;
+        let scan = self.scan()?;
+        let Some(sensor) = scan.sensor.as_deref() else { return Ok(Vec::new()) };
+        Ok(idx.iter().step_by(idx.len().div_ceil(max.max(1)).max(1)).map(|&i| (sensor[i as usize], scan.xyz[i as usize])).collect())
     }
 
     fn selection_line(&self, s: &Selection) -> String {
@@ -90,13 +99,29 @@ impl Workspace {
                     front_only: args.get("front_only").and_then(|v| v.as_bool()).unwrap_or(true),
                 }
             }
+            // The points seen through a member: the rays that say it is not there.
+            "through" => {
+                let m = args.get("member").and_then(|v| v.as_str()).context("member: its path, or the end of it")?;
+                let pl = self.placement()?;
+                if self.scan()?.sensor.is_none() {
+                    bail!("this scan has no trajectory: where each point was seen from is not known");
+                }
+                let found: Vec<_> = self.model()?.pred.members.iter().filter(|x| x.path == m || x.path.ends_with(&format!("/{m}"))).collect();
+                let [one] = found[..] else { bail!("{} members match {m:?}: give more of its path", found.len()) };
+                let b = pl.obb(&one.obb);
+                if args.get("label").is_none() {
+                    let short = one.path.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+                    return self.selections(who, &json!({"action": "through", "member": one.path, "label": format!("seen through {short}")}));
+                }
+                How::Through { centre: b.centre, axes: b.axes, half: [b.length / 2.0, b.width / 2.0, b.depth / 2.0], margin: 0.01 }
+            }
             "create" => {
                 let b = args.get("box").context("box: {min, max}")?;
                 let (lo, hi) = (arr3(&b["min"]).context("box.min")?, arr3(&b["max"]).context("box.max")?);
                 let pl = self.placement()?;
                 How::Box { min: std::array::from_fn(|a| lo[a].min(hi[a])), max: std::array::from_fn(|a| lo[a].max(hi[a])), frame: Self::frame_is_model(args)?.then_some((pl.yaw, pl.t)) }
             }
-            a => bail!("action must be list, create, label or delete, not {a:?}"),
+            a => bail!("action must be list, create, through, label or delete, not {a:?}"),
         };
         let idx = select(self.scan()?, &how);
         if idx.is_empty() {
