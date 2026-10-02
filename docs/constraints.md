@@ -77,15 +77,59 @@ outside a bearing) settles the slide. With the plates at different heights
 the truss tilts in its plane as the bearings say, the hint gives way by
 exactly that angle, and that gap is reported. These are the crate's tests.
 
+## The structure of the problem
+
+Everything is a block, one to a frame (or to a scalar, or to a
+constraint), and a few sparse operators between them
+(`crates/topo-solve/src/blocks.rs`). The conventions are the `robot`
+crate's, so the two can share one implementation:
+
+- **Blocks are not matrices.** A block says how it multiplies and how its
+  transpose does (`BlockAct`, `BlockActTranspose`), and is stored however
+  suits it. A frame's pose is a rotation and a translation, and
+  "multiplying" by it is a composition; a step along a joint is a
+  retraction, so a pose stays a pose.
+- **The topology is a matrix, not a walk of a tree** (`ParentChild`): unit
+  lower triangular, with one block per frame in its parent's column.
+  Frames are numbered parents first. Solving with it is a forward
+  substitution, and with its transpose a back substitution.
+- An absent block is zero.
+
+| What | Shape | Block |
+| --- | --- | --- |
+| Where each frame is in its parent | topology | a pose; world poses are its products from the root |
+| How motions carry | the same topology | the pose as it carries a twist to the child's axes |
+| Joints | block diagonal | the open freedoms, as unit twists |
+| A constraint on frames | a sparse row | per frame touched: each residual against that frame's twist |
+| A constraint on scalars | a sparse row | per scalar touched: each residual against it |
+
+A twist is a frame's small motion in its own axes, turn first. The
+unknowns are a block per frame (its joint's coordinates) and a number per
+scalar; a change of them is a `Step`, not a place.
+
+The derivative of a tier's residuals is never formed. It is the product
+
+    J = on_frames · carry⁻¹ · joints + on_scalars
+
+applied either way (`Linearised::apply`, `apply_transpose`): joint
+coordinates become twists, each frame's twist gathers its ancestors' by
+substitution through the topology, and each constraint reads the twists of
+the frames it touches. Each constraint's blocks are written out
+analytically. Two tests hold this up: the operator against central
+differences taken along the retraction, and `<y, J x> = <Jᵀ y, x>`.
+
+A constraint's **scope** is the nearest frame that holds every frame it
+touches (`System::scope`). That is what scoped solving will cut along.
+
 ## How it solves
 
-Gauss-Newton on the frames' own motions and the scalars, tier by tier,
+Gauss-Newton on the joints' coordinates and the scalars, tier by tier,
 each tier's least-squares step taken within the space the tiers above
-leave free. Derivatives are by differences and the linear algebra is small
-and dense: a scope's unknowns are tens, not thousands. Ideas are taken
-from articulated-body formulations (the frame tree, joints as the open
-freedoms, constraints between points of two frames, dropping what is
-redundant); no outside solver is used.
+leave free. The step itself is still small and dense: the operator is
+applied to each unknown in turn to write the matrix out, and the
+rank-revealing solve (what is settled, what is left free) is by
+eigenvectors. Ideas are taken from articulated-body formulations; no
+outside solver is used.
 
 ## Not yet
 
@@ -97,5 +141,11 @@ redundant); no outside solver is used.
 - **Bounds** on scalars (a point between a member's ends).
 - **Conflict feedback beyond the list**: the subgraph in conflict drawn,
   one gap per suspect.
-- **Sparsity.** Dense is enough for now; the structure (each constraint
-  touches only the frames between its two ends) is there to use later.
+- **A block-structured step.** The structure and the operator are sparse;
+  the tiered step still writes the matrix out. It should work on the
+  operator (and scope by scope), with `sparten` for the large
+  least-squares problems.
+- **Sharing the blocks with `robot`.** `blocks.rs` repeats the traits and
+  the parent-child matrix of `robot/src/block_matrix.rs`, which depends on
+  nothing but the standard library. Split out as its own crate, both
+  would use it.
