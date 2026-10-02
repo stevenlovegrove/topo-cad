@@ -85,39 +85,69 @@ impl Workspace {
             describe(&before), Self::tally(&ev_before), describe(&p), Self::tally(&ev_after))})])
     }
     pub(crate) fn members(&mut self, args: &Value) -> Result<Vec<Value>> {
-        let ks = self.members_matching(args.get("filter").and_then(|v| v.as_str()))?;
-        let ev = self.evidence()?;
+        // The model as it is, or as a proposal or a trial of some edits would have it.
+        let alt = self.alternative(args)?;
+        let ev = match &alt {
+            Some((e, _)) => e.ev.clone(),
+            None => self.evidence()?,
+        };
         let pl = self.placement()?;
-        let m = self.model()?;
-        let mut ks = ks;
+        let pred = match &alt {
+            Some((e, _)) => &e.pred,
+            None => &self.model()?.pred,
+        };
+        let filter = args.get("filter").and_then(|v| v.as_str());
+        let mut ks: Vec<usize> = (0..pred.members.len()).filter(|&k| filter.is_none_or(|f| pred.members[k].path.contains(f) || pred.members[k].role == f)).collect();
         match args.get("sort").and_then(|v| v.as_str()).unwrap_or("path") {
             "contradicted" => ks.sort_by(|&a, &b| ev[b].rays.pierce_frac().total_cmp(&ev[a].rays.pierce_frac())),
             "support" => ks.sort_by(|&a, &b| ev[b].density.total_cmp(&ev[a].density)),
             _ => {}
         }
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(60) as usize;
-        let mut s = format!("{} members match; model frame; size = length × width × depth (m)\n", ks.len());
-        s += &format!("{:<52} {:<10} {:>26} {:>20} {:>7} {:>7} {:>8} {:>13}\n", "path", "role", "centre", "size", "points", "pts/m²", "off mm", "rays through");
+        let mut s = format!("{} members match{}; model frame; size = length × width × depth (m); x, y, z: its extent along each model axis\n", ks.len(), alt.as_ref().map_or(String::new(), |(_, l)| format!(", {l}")));
+        s += &format!("{:<52} {:<10} {:>26} {:>20} {:>7} {:>7} {:>8} {:>13}  {}\n", "path", "role", "centre", "size", "points", "pts/m²", "off mm", "rays through", "x, y, z extents");
         for &k in ks.iter().take(limit) {
-            let x = &m.pred.members[k];
+            let x = &pred.members[k];
             let e = &ev[k];
-            s += &format!("{:<52} {:<10} {:>26} {:>20} {:>7} {:>7.0} {:>8.1} {:>5.0}% of {:<5}\n", x.path, x.role, f3(x.obb.centre), format!("{:.3}×{:.3}×{:.3}", x.obb.length, x.obb.width, x.obb.depth), e.points, e.density, e.mean_offset * 1e3, 100.0 * e.rays.pierce_frac(), e.rays.pierced + e.rays.ended);
+            // Where it is, in plain numbers: what a face measured in the scan is compared with.
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for p in x.faces.iter().flat_map(|f| f.poly.iter()) {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(p[a]);
+                    hi[a] = hi[a].max(p[a]);
+                }
+            }
+            s += &format!("{:<52} {:<10} {:>26} {:>20} {:>7} {:>7.0} {:>8.1} {:>5.0}% of {:<5}  x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}\n", x.path, x.role, f3(x.obb.centre), format!("{:.3}×{:.3}×{:.3}", x.obb.length, x.obb.width, x.obb.depth), e.points, e.density, e.mean_offset * 1e3, 100.0 * e.rays.pierce_frac(), e.rays.pierced + e.rays.ended, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
         }
         if ks.len() == 1 {
-            let x = &m.pred.members[ks[0]];
+            let x = &pred.members[ks[0]];
             s += &format!("axes (along, u, v): {}, {}, {}\ncentre in the scan: {}\n{} faces\n", f3(x.obb.axes[0]), f3(x.obb.axes[1]), f3(x.obb.axes[2]), f3(pl.apply(x.obb.centre)), x.faces.len());
         }
         Ok(vec![json!({"type": "text", "text": s})])
     }
     pub(crate) fn render(&mut self, who: &str, args: &Value) -> Result<Vec<Value>> {
-        let model = Self::frame_is_model(args)?;
+        // A kept slab: the section people see when they look through it (model frame).
+        let slab = match args.get("slab").and_then(|v| v.as_str()) {
+            Some(id) => Some(self.items.slabs.iter().find(|s| s.id == id || s.name == id).cloned().with_context(|| format!("no slab {id:?}"))?),
+            None => None,
+        };
+        let model = slab.is_some() || Self::frame_is_model(args)?;
         let pl = self.placement()?;
-        let ev = self.evidence()?;
+        // The model as it is, or as a proposal or a trial of some edits would have it.
+        let alt = self.alternative(args)?;
+        let ev = match &alt {
+            Some((e, _)) => e.ev.clone(),
+            None => self.evidence()?,
+        };
         let floor = if model { 0.0 } else { self.scan()?.floor_z };
-        let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("plan");
+        let view = if slab.is_some() { "slab" } else { args.get("view").and_then(|v| v.as_str()).unwrap_or("plan") };
         let at = args.get("at").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
         let thick = args.get("thickness").and_then(|v| v.as_f64()).map(|x| x as f32);
         let section = match view {
+            "slab" => {
+                let s = slab.as_ref().unwrap();
+                Section::new(s.centre, s.axes[2], s.axes[1], 2.0 * s.half[2])
+            }
             "plan" => {
                 let z = args.get("z").and_then(|v| v.as_array()).map(|a| [a[0].as_f64().unwrap_or(0.1) as f32, a[1].as_f64().unwrap_or(2.4) as f32]).unwrap_or([floor + 0.1, floor + 2.4]);
                 Section::new([0.0, 0.0, 0.5 * (z[0] + z[1])], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], (z[1] - z[0]).abs())
@@ -132,14 +162,21 @@ impl Workspace {
             ),
             v => bail!("view must be plan, x, y or custom, not {v:?}"),
         };
-        let bounds = args.get("bounds").and_then(|v| v.as_array()).and_then(|a| (a.len() == 4).then(|| std::array::from_fn(|k| a[k].as_f64().unwrap_or(0.0) as f32)));
+        let bounds = args.get("bounds").and_then(|v| v.as_array()).and_then(|a| (a.len() == 4).then(|| std::array::from_fn(|k| a[k].as_f64().unwrap_or(0.0) as f32)))
+            // (A slab's own width and height, unless a part of it is asked for.)
+            .or(slab.as_ref().map(|s| [-s.half[0], s.half[0], -s.half[1], s.half[1]]));
         let highlight: Vec<String> = args.get("highlight").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         let show_members = args.get("members").and_then(|v| v.as_bool()).unwrap_or(true);
+        let free = args.get("free").and_then(|v| v.as_bool()).unwrap_or(false);
         let tf = move |p: V3| if model { pl.inverse(p) } else { p };
-        let m = self.model()?;
+        self.scan()?;
+        let pred = match &alt {
+            Some((e, _)) => &e.pred,
+            None => &self.model()?.pred,
+        };
         let mut drawn = Vec::new();
         let members: Vec<MemberLayer> = if show_members {
-            m.pred.members.iter().enumerate().map(|(k, x)| {
+            pred.members.iter().enumerate().map(|(k, x)| {
                 drawn.push(k);
                 let c = evidence_colour(&ev[k], 0.5, 100);
                 MemberLayer {
@@ -171,10 +208,21 @@ impl Workspace {
             layers: Vec::new(),
             marks: Vec::new(),
             eye: None,
+            sensor: if free { Some(scan.sensor.as_deref().context("free: this scan has no trajectory, so where each point was seen from is not known")?) } else { None },
         };
         let img = render_section(&req);
         let b = img.bounds;
-        let mut s = format!(
+        let mut s = String::new();
+        if let Some(sl) = &slab {
+            s += &format!("Slab {} {:?}: what people see looking through it (name it in a comment and it is a link).\n", sl.id, sl.name);
+        }
+        if let Some((_, label)) = &alt {
+            s += &format!("THE MODEL {}, not as it is on disk.\n", label.to_uppercase());
+        }
+        if free {
+            s += "Free space: the blue tint is where the scanner's rays pass inside the slab (stronger: more rays). Where a member is drawn over blue, rays went through it; a real member has none behind its face.\n";
+        }
+        s += &format!(
             "{view} section, {} frame: image {}×{} px. Right = u = {}, up = v = {}; looking along −n = {}.\n\
              Slab: points within ±{:.3} m of the plane through {}.\n\
              Bounds: u ∈ [{:.3}, {:.3}], v ∈ [{:.3}, {:.3}] m (u, v measured from that point along those axes).\n\
@@ -190,11 +238,12 @@ impl Workspace {
                 PointColour::Intensity => "; colour = lidar intensity (dark blue low, through magenta, yellow high), stretched to this slab",
             },
             if highlight.is_empty() { String::new() } else { format!("; magenta = highlighted ({})", highlight.join(", ")) });
-        let mut cut: Vec<(usize, [f32; 4])> = drawn.iter().zip(&img.cuts).filter_map(|(&k, c)| c.map(|c| (k, c))).collect();
+        // (Those in the picture: the plane cuts many more outside it.)
+        let mut cut: Vec<(usize, [f32; 4])> = drawn.iter().zip(&img.cuts).filter_map(|(&k, c)| c.map(|c| (k, c))).filter(|(_, c)| c[1] >= b[0] && c[0] <= b[1] && c[3] >= b[2] && c[2] <= b[3]).collect();
         cut.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]));
-        s += &format!("\nMembers cut by the plane ({}):", cut.len());
+        s += &format!("\nMembers cut by the plane, in the picture ({}):", cut.len());
         for (k, c) in cut.iter().take(80) {
-            s += &format!("\n  {:<52} u [{:.3}, {:.3}] v [{:.3}, {:.3}]", m.pred.members[*k].path, c[0], c[1], c[2], c[3]);
+            s += &format!("\n  {:<52} u [{:.3}, {:.3}] v [{:.3}, {:.3}]", pred.members[*k].path, c[0], c[1], c[2], c[3]);
         }
         if cut.len() > 80 {
             s += "\n  …";

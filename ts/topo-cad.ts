@@ -473,6 +473,7 @@ interface WallSpec {
   readonly studs: Nominal;
   readonly spacing: Length;
   readonly layout_from?: readonly Length[];
+  readonly studs_at?: readonly Length[];
   readonly grade: Grade;
   readonly header_grade?: Grade;
   readonly justify: "exterior" | "center";
@@ -513,14 +514,32 @@ export class Wall {
     return this.with({ studs: size, spacing: spacing ?? this.spec.spacing });
   }
   /**
-   * As built: the stud layout is set out from a stud whose centre is `x`
-   * along the wall from its start (the others follow at the spacing, either
-   * way), not from the wall's start. Further studs set out the stretch
-   * between openings each is in, where that is framed on its own (a pier
-   * between two doors).
+   * As built: the stud layout is ONE grid at the wall's spacing, set out so
+   * that a stud's centre is `x` along the wall from its start (the others
+   * follow at the spacing, either way), not from the wall's start. It moves
+   * every stud of the wall together.
+   *
+   * Further arguments do NOT place further studs. Each names a stud in a
+   * stretch between two openings (or an opening and an end) and re-sets the
+   * grid of that stretch alone, where it is framed on its own (a pier between
+   * two doors). In a wall without openings a further argument therefore
+   * replaces the grid of the whole wall.
+   *
+   * Where the studs are not at one spacing, give the wall its spacing
+   * (`studs(size, spacing)`) or place them one by one with `studsAt`.
    */
   studsFrom(x: Length, ...stretches: Length[]): Wall {
     return this.with({ layout_from: [x, ...stretches] });
+  }
+  /**
+   * As built, where the studs are not on one grid: studs with their centres
+   * exactly at these distances along the wall from its start (as measured).
+   * There are no other studs between the first and the last of them; beyond
+   * them the layout carries on at the wall's spacing from the outermost
+   * (`studsFrom` is then not used). Framing at openings and ends is as ever.
+   */
+  studsAt(...xs: Length[]): Wall {
+    return this.with({ studs_at: xs });
   }
   grade(g: Grade): Wall {
     return this.with({ grade: g });

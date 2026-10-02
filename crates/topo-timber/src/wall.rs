@@ -86,6 +86,10 @@ pub struct Wall {
     /// others follow at `spacing` either way); each further one sets out the stretch between openings it is in.
     /// Empty: the layout runs from the start (studs at spacing, 2·spacing, …).
     pub layout_from: Vec<f64>,
+    /// As built, where the studs are not on one grid: these studs' centres along the wall from its start,
+    /// exactly. Between the first and last of them there are no others; beyond them the layout carries on at
+    /// `spacing` from the outermost. (Then `layout_from` is not used.)
+    pub studs_at: Vec<f64>,
     /// Interior on the left of the start→end direction (CCW plan loops).
     pub interior_left: bool,
     pub justify: Justify,
@@ -181,6 +185,7 @@ impl Wall {
             header_material: None,
             spacing: inch(16.0),
             layout_from: vec![],
+            studs_at: vec![],
             interior_left: true,
             justify: Justify::Exterior,
             openings: vec![],
@@ -214,6 +219,12 @@ impl Wall {
     /// wall's start: the first for the wall, each further one for the stretch between openings it is in.
     pub fn layout_from(mut self, xs: &[f64]) -> Wall {
         self.layout_from = xs.to_vec();
+        self
+    }
+    /// Puts studs exactly at `xs` (centres along the wall from its start, as measured), where they are not on
+    /// one grid. Beyond the outermost of them the layout carries on at the spacing.
+    pub fn studs_at(mut self, xs: &[f64]) -> Wall {
+        self.studs_at = xs.to_vec();
         self
     }
     pub fn justify(mut self, j: Justify) -> Wall {
@@ -302,6 +313,13 @@ impl Wall {
             let hi = openings.iter().map(|o| o.center - o.width / 2.0).filter(|&x| x >= a).fold(len, f64::min);
             layout.retain(|&x| x <= lo || x >= hi);
             layout.extend(grid(a, lo, hi));
+        }
+        // Studs given one by one: those, and the spacing carried on outward from the outermost.
+        if !self.studs_at.is_empty() {
+            let (lo, hi) = self.studs_at.iter().fold((f64::MAX, f64::MIN), |(l, h), &x| (l.min(x), h.max(x)));
+            layout = self.studs_at.iter().copied().filter(|&x| x > 1e-9 && x < len).collect();
+            layout.extend((1..).map(|k| lo - k as f64 * self.spacing).take_while(|&x| x > 1e-9));
+            layout.extend((1..).map(|k| hi + k as f64 * self.spacing).take_while(|&x| x < len));
         }
         layout.sort_by(|a, b| a.total_cmp(b));
         for o in &openings {

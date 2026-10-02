@@ -251,6 +251,8 @@ pub struct WallSpec {
     pub spacing: f64,
     #[serde(default)]
     pub layout_from: Vec<f64>,
+    #[serde(default)]
+    pub studs_at: Vec<f64>,
     pub grade: GradeSpec,
     pub header_grade: Option<GradeSpec>,
     pub justify: String,
@@ -397,6 +399,9 @@ impl Builder {
         let mut wall = Wall::template(w.height, mat).named(&w.name).studs(w.studs.0, w.studs.1, w.spacing);
         if !w.layout_from.is_empty() {
             wall = wall.layout_from(&w.layout_from);
+        }
+        if !w.studs_at.is_empty() {
+            wall = wall.studs_at(&w.studs_at);
         }
         if let Some(h) = &w.header_grade {
             wall = wall.header_material(self.material(h)?);

@@ -171,6 +171,36 @@ The exact hidden-line drawings stay as they are, as the drawing pane. The
 3D pane with the scan is a new WebGL2 view beside them, until it can
 match their quality.
 
+## How an agent changes the model
+
+A proposal is read by people the moment it is posted, so it is posted at
+the end of a loop, not the start. The tools are shaped for that loop, and
+the server's instructions to agents say it:
+
+1. **Look.** Make a slab through the place (`slabs`), and render it:
+   `render_section` with `slab`, `free: true` and `color: "depth"`. That
+   is one picture of the points, of where the rays pass (a blue tint),
+   and of the members as the slab cuts them; and it is the picture people
+   get by looking through the same slab in the app.
+2. **Measure** what the scan has there, in numbers, and read where the
+   model has it: `members` ends each line with the member's extent along
+   x, y and z.
+3. **Try the change without posting.** `propose` with `dry: true` gives
+   its scores. The same `edits` given to `render_section` (the same slab)
+   and to `members` show the model as the change would have it. Compare
+   where things landed with what was measured, member by member: scores
+   can improve while a member lands in the wrong place, and an edit can
+   do something other than was meant. Change the edits and try again.
+4. **Post, and confirm.** `propose` without `dry`, then `render_section`
+   with `proposal: {issue, n}` once more. The thread says what was
+   measured and where each member now is, and names the slab (a link), or
+   carries a `view` with `slab`, `free` and `proposal`, so people check
+   the same thing in the same view.
+
+Found the hard way: a stud set-out was proposed four times on its scores
+alone, each time landing studs somewhere other than intended, before the
+positions were read back and looked at.
+
 ## What an agent sees
 
 - Sections, rendered in the service (`topo_scan::render`).

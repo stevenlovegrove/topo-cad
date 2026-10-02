@@ -313,6 +313,7 @@ function followLink(link) {
   }
   const patch = {};
   if (link.flat != null) patch.flat = !!link.flat;
+  if (link.free != null) patch.free = !!link.free;
   if (link.camera) {
     // (A camera of its own: no longer held square on, unless the link says so.)
     if (slab && link.flat == null && (link.camera.eye || link.camera.top_down)) patch.flat = false;
@@ -354,6 +355,7 @@ function linkOfView() {
     link.section = { view: "custom", origin: round(slab.centre), normal: round(slab.axes[2]), up: round(slab.axes[1]), thickness: Math.round(2000 * slab.half[2]) / 1000, bounds: round([-slab.half[0], slab.half[0], -slab.half[1], slab.half[1]], 100) };
     if (slab.temp) delete link.slab;
     link.flat = s.flat;
+    if (s.free) link.free = true;
   }
   link.camera = { eye: round(toModel(s.ortho ? vec.add(s.target, vec.scale(cam.forward, -s.dist)) : cam.eye), 100), target: round(toModel(s.target), 100) };
   link.projection = s.ortho ? "ortho" : "perspective";

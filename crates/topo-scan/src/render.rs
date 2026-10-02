@@ -228,6 +228,9 @@ pub struct SectionRequest<'a> {
     pub marks: Vec<V3>,
     /// A viewer's eye and view direction.
     pub eye: Option<(V3, V3)>,
+    /// Where each point was seen from (by point index): free space is then
+    /// drawn under the points, a blue tint where rays pass inside the slab.
+    pub sensor: Option<&'a [V3]>,
 }
 
 pub struct SectionImage {
@@ -334,6 +337,75 @@ pub fn render_section(r: &SectionRequest) -> SectionImage {
         let s = format!("{g:.decimals$}");
         c.text(left as i32 - 4 - 8 * s.len() as i32, y as i32 - 5, 2, &s, [90, 90, 100]);
         g += grid_step;
+    }
+
+    // Free space, under the points: per pixel, how many rays pass over it inside the slab.
+    if let Some(sensor) = r.sensor {
+        let (x_lo, x_hi, y_lo, y_hi) = (left, w as f32 - right, top, h as f32 - bottom);
+        let grid = r
+            .used
+            .par_iter()
+            .fold(
+                || vec![0u32; w * h],
+                |mut g, &i| {
+                    let s0 = sensor[i as usize];
+                    if !s0[0].is_finite() {
+                        return g;
+                    }
+                    let (a, e) = (sec.project((r.to_frame)(s0)), sec.project((r.to_frame)(r.xyz[i as usize])));
+                    let (pa, pe) = (to_px(a.1, a.2), to_px(e.1, e.2));
+                    // The part of the ray inside the slab and inside the picture.
+                    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+                    for (p0, d, lo, hi) in [(a.0, e.0 - a.0, -sec.half, sec.half), (pa.0, pe.0 - pa.0, x_lo, x_hi), (pa.1, pe.1 - pa.1, y_lo, y_hi)] {
+                        if d.abs() < 1e-9 {
+                            if p0 < lo || p0 > hi {
+                                return g;
+                            }
+                        } else {
+                            let (u0, u1) = ((lo - p0) / d, (hi - p0) / d);
+                            t0 = t0.max(u0.min(u1));
+                            t1 = t1.min(u0.max(u1));
+                            if t0 >= t1 {
+                                return g;
+                            }
+                        }
+                    }
+                    let at = |t: f32| (pa.0 + t * (pe.0 - pa.0), pa.1 + t * (pe.1 - pa.1));
+                    let ((x0, y0), (x1, y1)) = (at(t0), at(t1));
+                    let n = (x1 - x0).abs().max((y1 - y0).abs()).ceil().max(1.0) as usize;
+                    let mut last = usize::MAX;
+                    for k in 0..=n {
+                        let f = k as f32 / n as f32;
+                        let (x, y) = ((x0 + f * (x1 - x0)) as usize, (y0 + f * (y1 - y0)) as usize);
+                        let c = x.min(w - 1) + w * y.min(h - 1);
+                        if c != last {
+                            g[c] += 1;
+                            last = c;
+                        }
+                    }
+                    g
+                },
+            )
+            .reduce(
+                || vec![0u32; w * h],
+                |mut a, b| {
+                    for (x, y) in a.iter_mut().zip(b) {
+                        *x += y;
+                    }
+                    a
+                },
+            );
+        let most = (1.0 + grid.iter().copied().max().unwrap_or(0) as f32).ln().max(1e-6);
+        for (k, &n) in grid.iter().enumerate() {
+            if n > 0 {
+                // A few rays: a pale blue; many: a stronger one.
+                let a = 0.18 + 0.5 * (1.0 + n as f32).ln() / most;
+                for (ch, tint) in [150.0f32, 200.0, 255.0].into_iter().enumerate() {
+                    let px = &mut c.rgb[3 * k + ch];
+                    *px = (*px as f32 * (1.0 - a) + tint * a) as u8;
+                }
+            }
+        }
     }
 
     // Points: per pixel, how many, and the one nearest the viewer (greatest s).
@@ -531,6 +603,7 @@ mod tests {
             layers: vec![],
             marks: vec![],
             eye: None,
+            sensor: None,
         };
         let img = render_section(&req);
         assert_eq!(img.points, 1000);

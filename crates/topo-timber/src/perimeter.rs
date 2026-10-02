@@ -299,6 +299,20 @@ mod tests {
     }
 
     #[test]
+    fn studs_placed_one_by_one() {
+        // Three measured studs, not at the wall's spacing: those exactly, none between, the spacing carried on beyond.
+        let mut m = Model::new("studs-at");
+        let w = template(&mut m).named("W").between(Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0)).studs_at(&[1.0, 1.36, 1.72]);
+        w.build(&mut m);
+        let xs: Vec<f64> = m.members.iter().filter(|x| x.role == "stud").map(|x| m.node(x.start()).pos.x).collect();
+        let has = |x: f64| xs.iter().any(|&s| (s - x).abs() < 1e-6);
+        let s = inch(16.0);
+        assert!(has(1.0) && has(1.36) && has(1.72), "the studs given: {xs:?}");
+        assert!(has(1.0 - s) && has(1.0 - 2.0 * s) && has(1.72 + s) && has(1.72 + 2.0 * s), "the spacing beyond them: {xs:?}");
+        assert_eq!(xs.iter().filter(|&&x| x > 1.0 + 1e-6 && x < 1.72 - 1e-6).count(), 1, "one between the outer two, the one given: {xs:?}");
+    }
+
+    #[test]
     fn stud_layout_set_out_as_built() {
         // A wall with two doors: the layout from a stud 0.1 m along, the pier between the doors from one at 3.0 m.
         let mut m = Model::new("set-out");

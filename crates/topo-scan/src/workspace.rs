@@ -43,7 +43,20 @@ The scan is evidence with noise, never the truth: a surface in it may be a stud'
 studs, a finish, insulation or clutter, and which model face it should be compared with is a judgement. To pin a \
 dimension down: someone says what a surface is; fit it with `fit_surface`, choosing the support (box, thickness, \
 expected normal, the normal filter); check the fit's spread, coverage and neighbours; compare it with the model \
-face it corresponds to; only then propose an edit.";
+face it corresponds to; only then propose an edit.\n\
+Changing the model goes in a loop, and a proposal is posted only at the end of it, because people read it at once:\n\
+1. Look. Make a slab through the place (`slabs` create: a plan for studs in a wall, a section across a plate or a \
+header), and render it: `render_section` with `slab`, `free: true` and `color: \"depth\"`. That shows the points, \
+where the rays pass, and the members as they are, in the picture people get by looking through the same slab.\n\
+2. Measure what the scan has there, in numbers (the picture's grid, `fit_surface`, `measure`), and read where the \
+model has it (`members`: each line ends with the member's extents).\n\
+3. Try the change without posting: `propose` with `dry: true` for the scores, and the same `edits` in \
+`render_section` (same slab) and in `members`. Compare where things landed with what you measured, member by member. \
+Scores can improve while a member lands in the wrong place, and an edit can do something other than you meant \
+(read the script's own documentation of the method you are changing). Change the edits and try again until it is right.\n\
+4. Post: `propose` without `dry`, then `render_section` with `proposal` once more to confirm. In the thread say what \
+you measured, where each member now is, and name the slab (its id becomes a link) so people check the same view; \
+a `view` with `slab` and `proposal` opens it for them with the change shown.";
 
 pub struct Model {
     /// The entry file, absolute.
@@ -676,11 +689,27 @@ impl Workspace {
         }).with_context(|| format!("issue #{issue} has no proposal {n}"))
     }
 
-    fn propose(&mut self, who: &str, args: &Value) -> Result<Vec<Value>> {
-        let issue = args.get("issue").and_then(|v| v.as_u64()).context("issue: the id of the issue this settles")? as u32;
-        self.store.get(issue)?;
-        let title = args.get("title").and_then(|v| v.as_str()).context("title: a line saying what changes")?.to_string();
-        // The new text of each file touched: exact replacements, or whole contents.
+    /// The model a tool is to look at instead of the one on disk, if it is
+    /// asked to: as a proposal would make it (`proposal: {issue, n}`), or as
+    /// some edits would (`edits` / `files`, as `propose` takes them; nothing
+    /// is kept or posted). With what to call it.
+    pub(crate) fn alternative(&mut self, args: &Value) -> Result<Option<(Arc<Evaluated>, String)>> {
+        if let Some(p) = args.get("proposal").filter(|p| p.is_object()) {
+            let (issue, n) = (p["issue"].as_u64().context("proposal.issue")? as u32, p["n"].as_u64().context("proposal.n")? as u32);
+            let (_, commit, state, _) = self.find_proposal(issue, n)?;
+            return Ok(Some((self.proposal_evaluated(&commit)?, format!("as proposal {n} of #{issue} ({state}) has it"))));
+        }
+        if args.get("edits").is_some() || args.get("files").is_some() {
+            let texts = self.texts_from(args)?;
+            let overlay: HashMap<String, String> = texts.iter().map(|(p, t)| (p.display().to_string(), t.clone())).collect();
+            let e = self.evaluate(&overlay).context("the model with these edits does not evaluate")?;
+            return Ok(Some((Arc::new(e), "as these edits would have it (a trial: nothing is posted or kept)".into())));
+        }
+        Ok(None)
+    }
+
+    /// The new text of each file a change touches: exact replacements (`edits`), or whole contents (`files`).
+    fn texts_from(&self, args: &Value) -> Result<Vec<(PathBuf, String)>> {
         let mut texts: Vec<(PathBuf, String)> = Vec::new();
         let slot = |texts: &mut Vec<(PathBuf, String)>, p: PathBuf| -> Result<usize> {
             Ok(match texts.iter().position(|t| t.0 == p) {
@@ -711,8 +740,16 @@ impl Workspace {
             }
         }
         if texts.is_empty() {
-            bail!("nothing to propose: give edits [{{file?, old, new}}] or files [{{file, text}}]");
+            bail!("no change: give edits [{{file?, old, new}}] or files [{{file, text}}]");
         }
+        Ok(texts)
+    }
+
+    fn propose(&mut self, who: &str, args: &Value) -> Result<Vec<Value>> {
+        let issue = args.get("issue").and_then(|v| v.as_u64()).context("issue: the id of the issue this settles")? as u32;
+        self.store.get(issue)?;
+        let title = args.get("title").and_then(|v| v.as_str()).context("title: a line saying what changes")?.to_string();
+        let texts = self.texts_from(args)?;
         let overlay: HashMap<String, String> = texts.iter().map(|(p, t)| (p.display().to_string(), t.clone())).collect();
         let after = match self.evaluate(&overlay) {
             Ok(e) => e,
@@ -724,6 +761,14 @@ impl Workspace {
         let after_paths: std::collections::BTreeSet<&str> = after.pred.members.iter().map(|m| m.path.as_str()).collect();
         let added: Vec<String> = after_paths.difference(&before_paths).map(|s| s.to_string()).collect();
         let removed: Vec<String> = before_paths.difference(&after_paths).map(|s| s.to_string()).collect();
+        // A trial: what it would do, without posting it.
+        if args.get("dry").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let list = |v: &[String]| v.iter().take(12).map(String::as_str).collect::<Vec<_>>().join(", ");
+            return Ok(text(format!(
+                "TRIAL (nothing posted): {title}\nmembers: {} → {} (added: {}; removed: {})\nbefore: {}\nafter:  {}\n\n{}\nThe scores do not say where things landed: look, with the same edits, in render_section (a slab or section through the place) and members (their extents), and compare with what you measured. Post it (without dry) when it is right.\n",
+                before_paths.len(), after_paths.len(), if added.is_empty() { "none".into() } else { list(&added) }, if removed.is_empty() { "none".into() } else { list(&removed) },
+                Self::tally(&ev_before), Self::tally(&after.ev), group_table(&after.pred, &after.ev))));
+        }
         let n = self.store.get(issue)?.entries.iter().filter(|e| matches!(e.body, Body::Proposal { .. })).count() as u32 + 1;
         let rels: Vec<(String, String)> = texts.iter().map(|(p, t)| Ok((self.repo.rel(p)?, t.clone()))).collect::<Result<_>>()?;
         let commit = self.repo.propose(&format!("{issue}-{n}"), &rels, &format!("{title}\n\nProposal {n} of issue #{issue}."), &self.store.name_of(who))?;
