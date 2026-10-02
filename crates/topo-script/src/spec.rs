@@ -340,6 +340,15 @@ pub struct TrussRoofSpec {
     /// Trusses as built off the layout: further along the ridge by `along`.
     #[serde(default)]
     pub shifts: Vec<TrussShiftSpec>,
+    /// Trusses as built off the bearing height: higher by `by`.
+    #[serde(default)]
+    pub raises: Vec<TrussRaiseSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrussRaiseSpec {
+    pub trusses: Vec<usize>,
+    pub by: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -499,6 +508,9 @@ impl Builder {
         }
         for s in &r.shifts {
             roof.shifts.push((s.trusses.clone(), s.along));
+        }
+        for s in &r.raises {
+            roof.raises.push((s.trusses.clone(), s.by));
         }
         r.shape.validate()?;
         let roof = roof

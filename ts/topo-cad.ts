@@ -899,6 +899,7 @@ export class TrussRoof {
     readonly loads: readonly AreaLoad[];
     readonly overrides?: readonly { readonly trusses: readonly number[]; readonly shape: TrussShape }[];
     readonly shifts?: readonly { readonly trusses: readonly number[]; readonly along: Length }[];
+    readonly raises?: readonly { readonly trusses: readonly number[]; readonly by: Length }[];
   }) {}
 
   /**
@@ -940,6 +941,17 @@ export class TrussRoof {
    */
   shifted(trusses: readonly number[], along: Length): TrussRoof {
     return new TrussRoof({ ...this.spec, shifts: [...(this.spec.shifts ?? []), { trusses, along }] });
+  }
+  /**
+   * Trusses as built off the bearing height (1-based numbers, T1 at the
+   * origin): each sits `by` higher than the roof's bearing height (negative:
+   * lower), whole and level: on a plate laid on a header, a shim, a taller
+   * wall. What they bear on has to be modelled at that height too, or they
+   * stand clear of it. The roof's surfaces are set out from the roof as a
+   * whole and do not follow them.
+   */
+  raised(trusses: readonly number[], by: Length): TrussRoof {
+    return new TrussRoof({ ...this.spec, raises: [...(this.spec.raises ?? []), { trusses, by }] });
   }
   /** Fink trusses (shorthand for `TrussRoof.of(TrussShape.fink(...), ...)`). */
   static fink(o: {

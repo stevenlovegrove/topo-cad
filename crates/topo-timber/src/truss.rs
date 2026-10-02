@@ -572,6 +572,10 @@ pub struct TrussRoof {
     /// Trusses as built off the layout (1-based numbers): further along the
     /// ridge by this much than their place at the spacing.
     pub shifts: Vec<(Vec<usize>, f64)>,
+    /// Trusses as built off the bearing height (1-based numbers): higher by
+    /// this much than the roof's (they sit on something more: a plate on a
+    /// header, a shim).
+    pub raises: Vec<(Vec<usize>, f64)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -595,7 +599,7 @@ impl TrussRoof {
     pub fn new(name: &str, origin: Vec3, span_dir: Vec3, shape: TrussShape, length: f64, spacing: f64, material: MaterialId) -> TrussRoof {
         let span_dir = span_dir.normalized();
         let run_dir = v3(span_dir.y, -span_dir.x, 0.0);
-        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material, overrides: vec![], shifts: vec![] }
+        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material, overrides: vec![], shifts: vec![], raises: vec![] }
     }
 
     pub fn build(&self, m: &mut Model) -> RoofParts {
@@ -617,7 +621,8 @@ impl TrussRoof {
         for (i, (r, face)) in stations.into_iter().enumerate() {
             let shape = self.overrides.iter().find(|(ns, _)| ns.contains(&(i + 1))).map(|(_, s)| s).unwrap_or(&self.shape);
             let r = r + self.shifts.iter().filter(|(ns, _)| ns.contains(&(i + 1))).map(|(_, d)| d).sum::<f64>();
-            let mut t = Truss::new(&format!("T{}", i + 1), self.origin + run * r, self.span_dir, shape.clone(), self.material);
+            let up = self.raises.iter().filter(|(ns, _)| ns.contains(&(i + 1))).map(|(_, d)| d).sum::<f64>();
+            let mut t = Truss::new(&format!("T{}", i + 1), self.origin + run * r + Vec3::Z * up, self.span_dir, shape.clone(), self.material);
             t.chord = self.chord;
             t.web = self.web;
             t.face = face;
@@ -644,6 +649,20 @@ mod tests {
     use crate::lumber::graded;
     use topo_core::units::ft;
     use topo_geom::Geometry;
+
+    #[test]
+    fn some_trusses_sit_higher() {
+        // Five trusses on a bearing height of 2.4 m; the second and third on something 38 mm thicker.
+        let mut m = Model::new("raised");
+        let mat = m.add_material(graded("DFL", "No.2"));
+        let shape = TrussShape::standard(StandardTruss::Fink, ft(20.0), 4.0 / 12.0, 0.0).unwrap();
+        let mut roof = TrussRoof::new("Roof", v3(0.0, 0.0, 2.4), Vec3::Y, shape, 4.0 * inch(24.0), inch(24.0), mat);
+        roof.raises.push((vec![2, 3], 0.038));
+        let parts = roof.build(&mut m);
+        let low = |k: usize| parts.trusses[k].all().iter().flat_map(|&id| [m.pos(m.member(id).start()).z, m.pos(m.member(id).end()).z]).fold(f64::MAX, f64::min);
+        assert!((low(1) - low(0) - 0.038).abs() < 1e-9 && (low(2) - low(0) - 0.038).abs() < 1e-9, "T2 and T3 up by 38 mm");
+        assert!((low(3) - low(0)).abs() < 1e-9 && (low(4) - low(0)).abs() < 1e-9, "the others where they were");
+    }
 
     fn all_standard() -> Vec<StandardTruss> {
         vec![
