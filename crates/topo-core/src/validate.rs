@@ -141,7 +141,7 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
         let off = model.pos(a.node).distance(f.point(a.along, a.across));
         if off > LEN_TOL {
             out.push(Issue::new(Severity::Error, "attachment-off-face", format!("{} is {off:.4} m from where it is on the {:?} face of {}", a.node, a.face, a.member)).nodes([a.node]).members([a.member]));
-        } else if a.along < -LEN_TOL || a.along > f.length + LEN_TOL || a.across.abs() > f.half_width + LEN_TOL {
+        } else if a.along < -model.face_reach(a.member) - LEN_TOL || a.along > f.length + model.face_reach(a.member) + LEN_TOL || a.across.abs() > f.half_width + LEN_TOL {
             out.push(Issue::new(Severity::Error, "attachment-outside-face", format!("{} is outside the {:?} face of {}", a.node, a.face, a.member)).nodes([a.node]).members([a.member]));
         }
     }

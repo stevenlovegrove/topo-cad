@@ -141,7 +141,10 @@ fn standard_shapes_come_from_the_rust_generators() {
 
 #[test]
 fn the_primitives_examples_show_what_they_say() {
-    let sound = |m: &topo_core::Model| assert!(topo_core::validate(m, &Topology::build(m)).iter().all(|i| i.severity < topo_core::Severity::Error) && m.issues.is_empty());
+    let sound = |m: &topo_core::Model| {
+        let v = topo_core::validate(m, &Topology::build(m));
+        assert!(v.iter().all(|i| i.severity < topo_core::Severity::Error) && m.issues.is_empty(), "{} {v:#?} {:#?}", m.info.name, m.issues);
+    };
     // Beam on beam: two bearing points. The first joist's axis is on its underside, so its bearing
     // point is in its path and on the beam's top face; the second's is on its own underside face too.
     let m = run(include_str!("../../../examples/primitives/01-beam-on-beam.ts"), "01-beam-on-beam.ts").unwrap();
@@ -269,8 +272,9 @@ fn the_primitives_examples_show_what_they_say() {
     let m = run(src, "07-walls-on-readings.ts").unwrap();
     sound(&m);
     let inch = topo_core::units::inch;
-    let corners = m.solves.iter().find(|s| s.name == "Corners of the walls").unwrap();
-    let at = |k: usize| corners.nodes.iter().find(|n| n.name == format!("Walls/corner {k}")).unwrap().at;
+    // (In the one solve, with everything else: each corner a node of three numbers of the walls.)
+    assert_eq!(m.solves.len(), 1);
+    let at = |k: usize| m.solves[0].nodes.iter().find(|n| n.name == format!("Walls/corner {k}")).unwrap().at;
     assert!(at(1).norm() < 1e-9 && (at(2).x - (ft(20.0) + inch(1.0))).abs() < 1e-9 && (at(3).y - (ft(12.0) + inch(0.75))).abs() < 1e-9, "{:?} {:?} {:?}", at(1), at(2), at(3));
     // Corner 3 kept its x (as drawn, a hint), and corner 4 is where it was drawn.
     assert!((at(3).x - ft(20.0)).abs() < 1e-9 && (at(4) - topo_core::v3(0.0, ft(12.0), 0.0)).norm() < 1e-9);
@@ -283,7 +287,7 @@ fn the_primitives_examples_show_what_they_say() {
     // (both readings, to the same tolerance) share the inch between them.
     let fought = src.replace("survey(walls.corner(1), { x: 0, y: 0 }),", "survey(walls.corner(1), { x: 0, y: 0 }),\n  datum(walls.corner(2), [ft(20), 0, 0]),").replace("import { Building,", "import { Building, datum,");
     let m = run(&fought, "fought.ts").unwrap();
-    let c = m.solves.iter().find(|s| s.name == "Corners of the walls").unwrap();
+    let c = &m.solves[0];
     let tape_gap = c.constraints.iter().find(|x| x.name.starts_with("Walls/corner 1 to Walls/corner 2")).unwrap();
     let survey_gap = c.constraints.iter().find(|x| x.name == "Walls/corner 1 surveyed: x = 0.0000").unwrap();
     assert!(tape_gap.tier == "measured" && (tape_gap.gap + survey_gap.gap - inch(1.0)).abs() < 1e-6 && (tape_gap.gap - survey_gap.gap).abs() < 1e-6, "{tape_gap:?} {survey_gap:?}");
@@ -302,9 +306,15 @@ fn the_primitives_examples_show_what_they_say() {
     // The survey: the 4th is at 5 ft; the others are where the layout puts them.
     assert!((stud_x(&m, 4) - ft(5.0)).abs() < 1e-9);
     assert!((stud_x(&m, 5) - stud_x(&plain, 5)).abs() < 1e-9 && (stud_x(&m, 1) - stud_x(&plain, 1)).abs() < 1e-9);
-    // (In the one solve with everything else.)
+    // (In the one solve with everything else: made of the stud's number and of the numbers of the wall's corners it
+    // moves with. The reading fixes the stud and corner 1 together; corner 1's hint (where it is drawn) settles
+    // which: so both are settled by a hint, and the stud is 5 ft along.)
     let n = m.solves.iter().flat_map(|s| &s.nodes).find(|n| n.name == "Walls/Front/stud#4:bottom").unwrap();
-    assert_eq!((n.kind.as_str(), n.numbers[0].settled.as_str()), ("on a line", "measured"));
+    let number = |name: &str| n.numbers.iter().find(|x| x.name == name).unwrap();
+    assert!((number("Walls/Front/stud#4").value - ft(5.0)).abs() < 1e-9 && number("Walls/corner 1: x").value.abs() < 1e-9, "{n:#?}");
+    assert_eq!((number("Walls/Front/stud#4").settled.as_str(), number("Walls/corner 1: x").settled.as_str()), ("hint", "hint"));
+    let survey = m.solves[0].constraints.iter().find(|c| c.name.starts_with("Walls/Front/stud#4:bottom surveyed")).unwrap();
+    assert!(survey.gap.abs() < 1e-9 && survey.tier == "measured");
     // A stud's end is a node to other things too, as built: a free post's top made one with the top of the 2nd.
     let post = src.replace("import { Building,", "import { Assembly, Building, coincide,").replace(
         "  survey(walls.stud(\"Front\", 4, \"bottom\"), { x: ft(5) }),\n",
@@ -324,9 +334,14 @@ fn the_primitives_examples_show_what_they_say() {
         "export default Building.named(\"Studs on readings\").add(",
         &format!("const p = Assembly.named(\"Post\").point(\"foot\", [{x}, -0.3, 0]).point(\"top\", [{x}, -0.3, ft(8) - inch(1.5)]).member(\"post\", [\"foot\", \"top\"], {{ size: [4, 4], grade: DFL.No2 }});\nexport default Building.named(\"Studs on readings\").add(\n  p,", x = x2 + inch(2.0)),
     ).replace("  tape(walls.stud", "  coincide(p.node(\"top\"), walls.stud(\"Front\", 2, \"top\")),\n  tape(walls.stud");
-    let e = run(&pulled, "pulled.ts").map(|_| ()).unwrap_err().to_string();
-    // (The post stands 0.3 m off the wall's line, so its top cannot be the stud's: refused, and said.)
-    assert!(e.contains("Post/top is Walls/Front/stud#2:top"), "{e}");
+    // (The post stands 0.3 m off the wall's line. Where the wall's corners are drawn is a hint: the front wall goes
+    // to the post, its stud's top is the post's, and the wall is built there.)
+    let off = run(&pulled, "pulled.ts").unwrap();
+    sound(&off);
+    let p = off.members.iter().find(|x| x.role == "post").unwrap();
+    let stud = off.member(off.find_member("Walls/Front/stud#2").unwrap());
+    assert_eq!(p.end(), stud.end(), "the post's top is the stud's top node");
+    assert!((off.pos(stud.start()).y - off.pos(p.start()).y).abs() < 1e-6, "{:?} {:?}", off.pos(stud.start()), off.pos(p.start()));
     let pulled = pulled.replace("-0.3, 0]", "0, 0]").replace("-0.3, ft(8)", "0, ft(8)");
     let m3 = run(&pulled, "pulled.ts").unwrap();
     sound(&m3);
@@ -343,6 +358,31 @@ fn the_primitives_examples_show_what_they_say() {
     sound(&m);
     // (Two solves: the walls' studs, in the building's solve; then the roof's.)
     assert!(m.attachments.is_empty() && m.solves.len() == 2 && m.solves.iter().any(|s| s.name.ends_with("trusses on what is under them")));
+
+    // Walls that slope: built from numbers of the one solve, and built again at the solved ones until they settle.
+    let src = include_str!("../../../examples/primitives/09-walls-that-slope.ts");
+    let m = run(src, "09-walls-that-slope.ts").unwrap();
+    let v = topo_core::validate(&m, &Topology::build(&m));
+    assert!(v.iter().all(|i| i.severity < topo_core::Severity::Error), "{v:#?}");
+    // (Said: the corners where a wall slopes are butted, not lapped; nothing else.)
+    assert!(m.issues.iter().all(|i| i.code == "corner-sloped"), "{:#?}", m.issues);
+    let end = |path: &str| m.pos(m.member(m.find_member(path).unwrap()).end());
+    let start = |path: &str| m.pos(m.member(m.find_member(path).unwrap()).start());
+    // The survey: the right wall's cap plate ends half an inch higher than drawn; the back wall's start with it.
+    assert!((end("Lean-to/Right/cap_plate").z - (ft(10.0) + inch(0.5))).abs() < 1e-6, "{:?}", end("Lean-to/Right/cap_plate"));
+    assert!((start("Lean-to/Back/cap_plate").z - (ft(10.0) + inch(0.5))).abs() < 1e-6);
+    // The back wall's far end stays as drawn, and the front wall is level at 8 ft above its bottom.
+    assert!((end("Lean-to/Back/cap_plate").z - ft(10.0)).abs() < 1e-6, "{:?}", end("Lean-to/Back/cap_plate"));
+    // The base: the front's bottom plate slopes down 4" to its east end.
+    assert!((end("Lean-to/Front/bottom_plate").z + inch(4.0)).abs() < 1e-9 && start("Lean-to/Front/bottom_plate").z.abs() < 1e-9);
+    // And no clashes. KNOWN LIMITATION: where sloping plates butt at a corner, their square-cut end faces rise or
+    // fall past the plate they are cut against (a sloping cap past a level one by its slope over the wall's
+    // thickness), and an end stud under a sloping plate reaches a millimetre past its square end: all reported as
+    // partial bearing. Accepted here for plates on plates, and a stud by no more than 2 mm.
+    let g = topo_geom::Geometry::build(&m, &Topology::build(&m));
+    assert!(g.clashes().is_empty(), "{:?}", g.clashes());
+    let plate = |id: topo_core::MemberId| m.member(id).role.ends_with("_plate");
+    assert!(g.bearing_overhangs().iter().all(|&(a, b, d)| plate(b) && (plate(a) || d < 0.002)), "{:?}", g.bearing_overhangs());
 }
 
 fn roof_on_beams(far: Option<f64>) -> topo_core::Model {

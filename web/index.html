@@ -381,6 +381,7 @@
             <label title="Things come to rest, as low as the hard constraints let them, on what holds them up"><input type="checkbox" data-k="weight"><span class="sw" style="background:#b45309"></span>weight</label>
             <label title="Should hold, to a tolerance: readings"><input type="checkbox" data-k="measured"><span class="sw" style="background:#7c3aed"></span>measured</label>
             <label title="A generator's hint: decides only what nothing above does"><input type="checkbox" data-k="hint"><span class="sw" style="background:#15803d"></span>hint</label>
+            <label title="A hint that gives way to the hints (a stud's place in its wall's layout, to the wall's corners)"><input type="checkbox" data-k="fallback"><span class="sw" style="background:#65a30d"></span>fallback</label>
             <label title="Nothing settles it: it stays where it was put"><input type="checkbox" data-k="open"><span class="sw" style="background:#dc2626"></span>open</label>
           </div>
         </div>
@@ -824,11 +825,11 @@ let drag3dActive = false;
 // A solve's unknowns are rigid things free to move and numbers; each freedom
 // is coloured by what settled it.
 const SKEL_KEY = "topo.skeleton";
-const TIER_COLOUR = { hard: "#1d4ed8", weight: "#b45309", measured: "#7c3aed", hint: "#15803d", open: "#dc2626" };
-let skel = { on: true, axis: true, face: true, snodes: true, vars: true, cons: true, hard: true, weight: true, measured: true, hint: true, open: true };
+const TIER_COLOUR = { hard: "#1d4ed8", weight: "#b45309", measured: "#7c3aed", hint: "#15803d", fallback: "#65a30d", open: "#dc2626" };
+let skel = { on: true, axis: true, face: true, snodes: true, vars: true, cons: true, hard: true, weight: true, measured: true, hint: true, fallback: true, open: true };
 try { Object.assign(skel, JSON.parse(localStorage.getItem(SKEL_KEY) || "{}")); } catch (_) {}
 let skelItems = [], hoverSkel = null;
-const worstOf = (v) => ["open", "hint", "measured", "weight", "hard"].find((k) => v.freedoms.some((f) => f.settled === k)) || "hard";
+const worstOf = (v) => ["open", "fallback", "hint", "measured", "weight", "hard"].find((k) => v.freedoms.some((f) => f.settled === k)) || "hard";
 const mm = (x) => `${(x * 1000).toFixed(1)} mm`;
 
 function renderSkeletonPanel() {
@@ -939,7 +940,7 @@ function drawSkeleton(g, P, r, u) {
       const a = P(c.points[0]), b = P(c.points[c.points.length - 1]);
       // (A one-sided one that is not touching is faint and dotted: it is there, and not acting.)
       const clear = c.room != null && c.room > 1e-7;
-      g.strokeStyle = TIER_COLOUR[c.tier]; g.lineWidth = hot ? 2.4 : 1.2; g.setLineDash(c.tier === "hint" ? [3, 3] : clear ? [1, 3] : []);
+      g.strokeStyle = TIER_COLOUR[c.tier]; g.lineWidth = hot ? 2.4 : 1.2; g.setLineDash(c.tier === "hint" || c.tier === "fallback" ? [3, 3] : clear ? [1, 3] : []);
       g.globalAlpha = clear && !hot ? 0.45 : 1;
       if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 3) { g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); }
       const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -948,7 +949,7 @@ function drawSkeleton(g, P, r, u) {
       skelItems.push({ x: mid[0], y: mid[1], key, tip: () => constraintTip(c, solve), rank: 2, ring: 8 });
     });
     if (skel.snodes) solve.nodes.forEach((n, ni) => {
-      const settled = n.numbers.length ? (["open", "hint", "measured", "weight", "hard"].find((k) => n.numbers.some((x) => x.settled === k)) || "hard") : null;
+      const settled = n.numbers.length ? (["open", "fallback", "hint", "measured", "weight", "hard"].find((k) => n.numbers.some((x) => x.settled === k)) || "hard") : null;
       if (settled && !skel[settled]) return;
       const key = `s:${si}:${ni}`, hot = hoverSkel === key, p = P(n.at), col = "#0f766e";
       if (hot) for (const x of n.numbers) {

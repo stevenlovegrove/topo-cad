@@ -25,7 +25,7 @@ use crate::ids::{GroupId, MemberId, NodeId};
 use crate::math::{Frame, Vec3};
 use crate::model::{face_plane, Face, MemberAxes, MemberSpec, Model, Solved, SolvedConstraint, SolvedFreedom, SolvedNode, SolvedNumber, SolvedVariable};
 use topo_solve as ts;
-pub use topo_solve::ScalarId;
+pub use topo_solve::{Num, ScalarId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyRef(pub usize);
@@ -92,6 +92,8 @@ pub struct Written {
     pub names: Vec<String>,
     pub members: Vec<MemberId>,
     pub open: Vec<String>,
+    /// Each number (`Scene::number`) as solved.
+    pub values: Vec<(ScalarId, f64)>,
 }
 
 /// How firmly a number is held to a value.
@@ -101,6 +103,8 @@ pub enum Tier {
     /// A reading, to about this tolerance.
     Reading(f64),
     Hint,
+    /// A hint that gives way to the hints (a stud's place in its wall's layout, to the wall's corners).
+    Fallback,
 }
 
 pub struct Scene {
@@ -113,9 +117,6 @@ pub struct Scene {
     same: Vec<usize>,
     /// The `rest` relations: upper member, lower member, their node, and its name.
     rests: Vec<(usize, usize, usize, String)>,
-    /// Numbers of what a generator built: a number, nodes of the model it placed (as built,
-    /// at the number's starting value), and the way they move with it, in its body.
-    moves: Vec<(ScalarId, usize, Vec<NodeId>, Vec3)>,
     /// Each number's starting value.
     starts: Vec<(ScalarId, f64)>,
 }
@@ -137,7 +138,7 @@ fn frame(p: &ts::Pose) -> Frame {
 impl Scene {
     /// A scene; `name` names its solve.
     pub fn new(name: &str) -> Scene {
-        Scene { name: name.into(), sys: ts::System::new(), bodies: vec![], nodes: vec![], members: vec![], same: vec![], rests: vec![], moves: vec![], starts: vec![] }
+        Scene { name: name.into(), sys: ts::System::new(), bodies: vec![], nodes: vec![], members: vec![], same: vec![], rests: vec![], starts: vec![] }
     }
 
     /// A body (written as a group named `name`, of `kind`, in `parent`), put at `start`: fixed
@@ -230,6 +231,7 @@ impl Scene {
             Tier::Hard => ts::Tier::Hard,
             Tier::Reading(tolerance) => ts::Tier::Measured { sigma: tolerance },
             Tier::Hint => ts::Tier::Default,
+            Tier::Fallback => ts::Tier::Fallback,
         };
         self.sys.constrain(name, tier, ts::Kind::equal(s, value));
     }
@@ -237,6 +239,17 @@ impl Scene {
     /// A number is kept between two values.
     pub fn bound(&mut self, s: ScalarId, lo: f64, hi: f64) {
         self.sys.bound(s, lo, hi);
+    }
+
+    /// Two sums of numbers are equal: `hard`, a reading (to about a tolerance), or a hint.
+    pub fn equal(&mut self, name: &str, a: Num, b: Num, how: Tier) {
+        let tier = match how {
+            Tier::Hard => ts::Tier::Hard,
+            Tier::Reading(tolerance) => ts::Tier::Measured { sigma: tolerance },
+            Tier::Hint => ts::Tier::Default,
+            Tier::Fallback => ts::Tier::Fallback,
+        };
+        self.sys.constrain(name, tier, ts::Kind::equal(a, b));
     }
 
     /// One number is at least `gap` more than another.
@@ -256,19 +269,20 @@ impl Scene {
         Ok(NodeRef(self.nodes.len() - 1))
     }
 
-    /// A number of what a generator built (in a body with written content): the model's nodes
-    /// it placed were built at its starting value, and are moved along `dir` (in the body) by as
-    /// much as it changes. A node made of it (`node_built`) is such a node.
-    pub fn moves_nodes(&mut self, s: ScalarId, body: BodyRef, nodes: Vec<NodeId>, dir: Vec3) {
-        self.moves.push((s, body.0, nodes, dir));
-    }
-
     /// A node that a generator built, whose place is a point of its body plus so much of some of
-    /// its numbers (that move it: `moves_nodes`): relations to it join to the built node, and move it.
+    /// the numbers it was built from (as it moves with them, about where it was built): relations
+    /// to it join to the built node. (A generator built at numbers the solve then changes is built
+    /// again at the solved ones: see the script's perimeters.)
+    /// (`at` is where it was built, the numbers at their starting values.)
     pub fn node_built(&mut self, name: &str, body: BodyRef, at: Vec3, along: &[(ScalarId, Vec3)], built: NodeId) -> Result<NodeRef, String> {
-        let n = self.node_with(name, body, at, along)?;
+        let n = self.node_with(name, body, self.about_start(at, along), along)?;
         self.nodes[n.0].model = Some(built);
         Ok(n)
+    }
+
+    /// Where a point that is `at` with numbers at their starting values is with them at zero.
+    fn about_start(&self, at: Vec3, along: &[(ScalarId, Vec3)]) -> Vec3 {
+        along.iter().fold(at, |p, &(s, d)| p - d * self.starts.iter().find(|(x, _)| *x == s).map_or(0.0, |(_, v)| *v))
     }
 
     /// The body whose written content has this member of the model.
@@ -285,8 +299,9 @@ impl Scene {
     }
 
     /// A point of a member of the model, `at` along it from its start, as a node (fixed in the
-    /// member's body, if it is in one): written as a node in the member's path.
-    pub fn node_along(&mut self, name: &str, model: &Model, m: MemberId, at: f64) -> Result<NodeRef, String> {
+    /// member's body, if it is in one; plus so much of some numbers, as `node_built`): written as
+    /// a node in the member's path.
+    pub fn node_along(&mut self, name: &str, model: &Model, m: MemberId, at: f64, along: &[(ScalarId, Vec3)]) -> Result<NodeRef, String> {
         if self.node_named(name).is_some() {
             return Err(format!("two nodes named {name}"));
         }
@@ -296,7 +311,7 @@ impl Scene {
         }
         let body = self.body_with(m);
         let (frame, local) = self.local(body, axes.origin + axes.x * at);
-        let id = self.sys.node(name, ts::Point::at(frame, arr(local)));
+        let id = self.sys.node(name, along.iter().fold(ts::Point::at(frame, arr(self.about_start(local, along))), |p, &(s, d)| p.plus(s, arr(d))));
         self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: body.map(|b| (b.0, local)), faces: vec![], along: Some((m, at)) });
         self.same.push(self.nodes.len() - 1);
         Ok(NodeRef(self.nodes.len() - 1))
@@ -445,11 +460,6 @@ impl Scene {
         Ok(NodeRef(n))
     }
 
-    /// Where a number started (as what it placed was built).
-    fn start_of(&self, s: ScalarId) -> f64 {
-        self.starts.iter().find(|(x, _)| *x == s).map_or(0.0, |(_, v)| *v)
-    }
-
     /// Solves, and writes the result into `model`. Hard relations that cannot all hold are
     /// refused: nothing is written, and the error names them.
     pub fn write(mut self, model: &mut Model) -> Result<Written, String> {
@@ -496,28 +506,6 @@ impl Scene {
                     groups.push(c.group);
                 }
                 None => groups.push(model.add_group(&b.name, &b.kind, at, b.parent)),
-            }
-        }
-        // What a generator built is moved by its numbers' changes: those nodes along their
-        // directions, and the members they are in put back in order.
-        let mut touched = vec![];
-        for (s, body, nodes, dir) in &self.moves {
-            let b = &self.bodies[*body];
-            let at = frame(&self.sys.in_world(b.frame));
-            let change = self.sys.value(*s) - self.start_of(*s);
-            if change.abs() > 1e-12 {
-                let d = at.dir_to_world(*dir) * change;
-                for &n in nodes {
-                    model.nodes[n.idx()].pos = model.nodes[n.idx()].pos + d;
-                    touched.push(n);
-                }
-            }
-        }
-        if !touched.is_empty() {
-            model.reset_index();
-            let members: Vec<MemberId> = model.members.iter().filter(|m| m.path.iter().any(|n| touched.contains(n))).map(|m| m.id).collect();
-            for m in members {
-                model.sort_path(m);
             }
         }
         // A model node for each node, one for nodes made one (a node brought in is itself; nodes
@@ -577,13 +565,14 @@ impl Scene {
             model.solves.push(solved(&self.name, &self.sys.explain(&report)));
         }
         let names = self.nodes.iter().map(|n| n.name.clone()).collect();
-        Ok(Written { groups, nodes, names, members, open: report.open })
+        let values = self.starts.iter().map(|&(s, _)| (s, self.sys.value(s))).collect();
+        Ok(Written { groups, nodes, names, members, open: report.open, values })
     }
 }
 
 /// A solve, as the model keeps it to be shown.
 pub fn solved(name: &str, e: &ts::Explained) -> Solved {
-    let tier = |t: usize| ["hard", "measured", "hint", "weight"][t].to_string();
+    let tier = |t: usize| ["hard", "measured", "hint", "fallback", "weight"][t].to_string();
     Solved {
         name: name.into(),
         nodes: (e.nodes.iter())

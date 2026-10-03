@@ -178,7 +178,7 @@ impl Perimeter {
                 w.end = v3(p1.x, p1.y, base(i + 1));
                 if let Some((h0, h1)) = self.heights.get(i).copied().flatten() {
                     w.height = h0;
-                    w.height_end = (h1 != h0).then_some(h1);
+                    w.height_end = ((h1 - h0).abs() > 1e-9).then_some(h1);
                 }
                 w.interior_left = interior_left;
                 w.start_inset = start_inset[i];
@@ -204,7 +204,7 @@ impl Perimeter {
     pub fn try_build_walls(&self, m: &mut Model, planned: Vec<Option<Wall>>) -> Result<PerimeterParts, String> {
         let g = m.add_group(&self.name, "perimeter", Frame::WORLD, None);
         let wall_corners = self.wall_corners();
-        let sloped: Vec<bool> = planned.iter().map(|w| w.as_ref().is_some_and(|w| w.height_end.is_some_and(|h| h != w.height) || w.start.z != w.end.z)).collect();
+        let sloped: Vec<bool> = planned.iter().map(|w| w.as_ref().is_some_and(|w| w.height_end.is_some_and(|h| (h - w.height).abs() > 1e-9) || (w.start.z - w.end.z).abs() > 1e-9)).collect();
         let mut walls = vec![];
         for w in planned {
             let Some(mut w) = w else {
@@ -297,7 +297,8 @@ fn butt_plates(m: &mut Model, through: &WallParts, butting: &WallParts, corner: 
                 let t = (f.origin - o).dot(f.normal) / towards;
                 let x = o + d * t;
                 let (along, across) = ((x - f.origin).dot(f.along), (x - f.origin).dot(f.across));
-                let inside = along >= -1e-6 && along <= f.length + 1e-6 && across.abs() <= f.half_width + 1e-6;
+                let past = m.face_reach(q);
+                let inside = along >= -past && along <= f.length + past && across.abs() <= f.half_width + 1e-6;
                 if inside && t > 0.0 && hit.is_none_or(|h| t < h.0) {
                     hit = Some((t, q, face, x));
                 }

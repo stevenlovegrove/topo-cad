@@ -313,7 +313,10 @@ pub struct OpeningSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WallSpec {
     pub name: String,
+    /// Its height at its start; and at its end, if that is another (its top slopes).
     pub height: f64,
+    #[serde(default)]
+    pub height_end: Option<f64>,
     pub studs: (u32, u32),
     pub spacing: f64,
     #[serde(default)]
@@ -346,6 +349,71 @@ pub struct PerimeterSpec {
     /// Free: placed by relations to its nodes, not where it is drawn.
     #[serde(default)]
     pub free: bool,
+    /// The bottom of the walls at each corner (from the start), where it is not `z`.
+    #[serde(default)]
+    pub bases: Vec<Option<f64>>,
+}
+
+/// The numbers a perimeter is built from: where its corners are (each at the bottom of the walls
+/// there), each wall's height at its start and its end, and each wall's common studs (along it
+/// from its start; none: where the layout puts them).
+#[derive(Clone, Debug, PartialEq)]
+struct PerimeterParams {
+    corners: Vec<Vec3>,
+    heights: Vec<Option<(f64, f64)>>,
+    studs: Vec<Option<Vec<f64>>>,
+}
+
+impl PerimeterParams {
+    /// As the script draws it.
+    fn drawn(p: &PerimeterSpec) -> PerimeterParams {
+        let n = if p.closed { p.segments.len() } else { p.segments.len() + 1 };
+        let corners = (0..n)
+            .map(|k| {
+                let (x, y) = if k == 0 { p.start } else { p.segments[k - 1].to };
+                v3(x, y, p.bases.get(k).copied().flatten().unwrap_or(p.z))
+            })
+            .collect();
+        let heights = p.segments.iter().map(|s| s.side.as_ref().map(|w| (w.height, w.height_end.unwrap_or(w.height)))).collect();
+        PerimeterParams { corners, heights, studs: vec![None; p.segments.len()] }
+    }
+
+    /// The numbers as solved.
+    fn solved(n: &PerimeterNumbers, values: &HashMap<scene::ScalarId, f64>, origin: Vec3) -> PerimeterParams {
+        let v = |s: &scene::ScalarId| values[s];
+        PerimeterParams {
+            corners: n.corners.iter().map(|c| v3(v(&c[0]), v(&c[1]), v(&c[2])) + origin).collect(),
+            heights: n.heights.iter().map(|h| h.map(|(a, b)| (v(&a), v(&b)))).collect(),
+            studs: n.studs.iter().map(|ss| ss.as_ref().map(|ss| ss.iter().map(v).collect())).collect(),
+        }
+    }
+
+    /// How far apart two sets of numbers are (the most any one differs; studs that are not
+    /// given in both differ).
+    fn distance(&self, o: &PerimeterParams) -> f64 {
+        let mut d = self.corners.iter().zip(&o.corners).map(|(a, b)| a.distance(*b)).fold(0.0, f64::max);
+        for (a, b) in self.heights.iter().zip(&o.heights) {
+            if let (Some(a), Some(b)) = (a, b) {
+                d = d.max((a.0 - b.0).abs()).max((a.1 - b.1).abs());
+            }
+        }
+        for (a, b) in self.studs.iter().zip(&o.studs) {
+            match (a, b) {
+                (Some(a), Some(b)) if a.len() == b.len() => d = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(d, f64::max),
+                (None, None) => {}
+                _ => d = f64::INFINITY,
+            }
+        }
+        d
+    }
+}
+
+/// A perimeter's numbers in the scene (as `PerimeterParams`; corners in its body).
+#[derive(Clone, Debug, Default)]
+struct PerimeterNumbers {
+    corners: Vec<[scene::ScalarId; 3]>,
+    heights: Vec<Option<(scene::ScalarId, scene::ScalarId)>>,
+    studs: Vec<Option<Vec<scene::ScalarId>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,8 +495,12 @@ pub struct ShapeOverrideSpec {
     pub shape: TrussShape,
 }
 
+#[derive(Clone)]
 struct Builder {
     m: Model,
+    /// Nodes a generator built that move with numbers of the scene: its body, where that was
+    /// put, and how much each number moves it (`bind`).
+    moving: HashMap<NodeId, (scene::BodyRef, Vec3, Vec<(scene::ScalarId, Vec3)>)>,
     grades: HashMap<GradeSpec, MaterialId>,
     perimeters: HashMap<String, (PerimeterParts, f64)>,
     /// Assembly members by assembly name (roofs may bear on them).
@@ -512,28 +584,57 @@ impl Builder {
 
     /// A perimeter: written by its generator where it is drawn, and a body of the scene (fixed
     /// there, or free and moved to where the relations to its nodes put it).
-    fn perimeter(&mut self, p: &PerimeterSpec, sc: &mut scene::Scene) -> Result<(), String> {
-        let before = (self.m.nodes.len(), self.m.members.len(), self.m.groups.len());
-        let mut per = Perimeter::start(&p.name, Vec2::new(p.start.0, p.start.1));
-        per.z = p.z;
+    /// Builds a perimeter's walls into the model at these numbers: on its corners, each wall at
+    /// its heights, its common studs where they are given (else where the layout puts them).
+    fn build_perimeter(&mut self, p: &PerimeterSpec, at: &PerimeterParams) -> Result<(PerimeterParts, Vec<Option<Wall>>), String> {
+        let c = &at.corners;
+        let mut per = Perimeter::start(&p.name, Vec2::new(c[0].x, c[0].y));
+        per.z = c[0].z;
         let n = p.segments.len();
-        let mut top: f64 = p.z;
         for (i, s) in p.segments.iter().enumerate() {
             let side = match &s.side {
-                Some(w) => {
-                    top = top.max(p.z + w.height);
-                    Side::Wall(self.wall(w)?)
-                }
+                Some(w) => Side::Wall(self.wall(w)?),
                 None => Side::Open,
             };
             if p.closed && i == n - 1 {
                 per = per.close(side);
             } else {
-                per = per.to(Vec2::new(s.to.0, s.to.1), side);
+                per = per.to(Vec2::new(c[i + 1].x, c[i + 1].y), side);
             }
         }
-        let walls = per.walls();
+        per.bases = c.iter().map(|c| Some(c.z)).collect();
+        per.heights = at.heights.clone();
+        let mut walls = per.walls();
+        for (w, studs) in walls.iter_mut().zip(&at.studs) {
+            if let (Some(w), Some(studs)) = (w.as_mut(), studs) {
+                if w.survey.is_none() && w.common_studs().len() == studs.len() {
+                    w.studs_solved = Some(studs.clone());
+                }
+            }
+        }
         let parts = per.try_build_walls(&mut self.m, walls.clone())?;
+        Ok((parts, walls))
+    }
+
+    /// A perimeter, as a body of the scene, built by its generator at numbers of the scene:
+    ///
+    /// - its corners (`Perimeter/corner 1`, from its start), nodes of three numbers each (where it
+    ///   is in the body: where it is drawn a hint), at the bottom of the walls there;
+    /// - each wall's height at its ends (as drawn a hint; where two walls meet at one height as
+    ///   drawn, held so: a wall meeting another at a different height is a step);
+    /// - each wall's common studs, along it from its start: where the layout puts one a hint (one
+    ///   that gives way to the corners' and heights': a reading on a stud moves it, not them), one
+    ///   given by `studsAt` a reading, one against the wall at an end held there; in order (and
+    ///   so in the wall).
+    ///
+    /// It is built at `at` (numbers as the solve last put them, or as drawn). Any node it built
+    /// that a relation names is a node of the scene that moves with the numbers as the built one
+    /// would (found by building it again with each moved a little). Once solved, it is built
+    /// again at the solved numbers, until they do not change (`build_building`).
+    fn perimeter(&mut self, p: &PerimeterSpec, sc: &mut scene::Scene, at: &PerimeterParams, drawn: &PerimeterParams, named: bool) -> Result<PerimeterNumbers, String> {
+        let before = (self.m.nodes.len(), self.m.members.len(), self.m.groups.len());
+        let snapshot = named.then(|| self.clone());
+        let (parts, walls) = self.build_perimeter(p, at)?;
         self.m.group_mut(parts.group).parent = Some(self.root);
         // Every bottom plate bears on the foundation.
         let mut nodes: Vec<NodeId> = parts.bottom_plates().iter().flat_map(|&b| self.m.member(b).path.clone()).collect();
@@ -548,48 +649,187 @@ impl Builder {
             nodes: (before.0..self.m.nodes.len()).map(|n| NodeId(n as u32)).collect(),
             members: (before.1..self.m.members.len()).map(|m| MemberId(m as u32)).collect(),
         };
-        let origin = v3(p.start.0, p.start.1, p.z);
-        let body = sc.body_written(&p.name, Frame { origin, ..Frame::WORLD }, p.free, content);
-        // A wall's common studs are numbers of the wall, in the one solve: where the layout puts
-        // each is a hint, a stud given by `studsAt` a reading, one against the wall at an end
-        // fixed; they keep their order and stay in the wall. Their ends are the built studs' end
-        // nodes (`Walls/Front/stud#3:bottom`, `:top`): anything related to them can move them, and
-        // the studs are moved (along their plates) to where the solve puts them.
-        for (w, wp) in walls.iter().zip(&parts.walls) {
-            let (Some(w), Some(wp)) = (w.as_ref().filter(|w| w.survey.is_none()), wp) else { continue };
-            let commons: Vec<MemberId> = wp.studs.iter().copied().filter(|&id| self.m.member(id).role == "stud").collect();
-            let planned = w.common_studs();
-            if commons.len() != planned.len() {
-                continue;
+        // (Its body is where it is drawn from: the numbers are in it.)
+        let origin = drawn.corners[0];
+        let body = sc.body_written(&p.name, Frame { origin, ..Frame::WORLD }, p.free, content.clone());
+        let mut numbers = PerimeterNumbers::default();
+        // Corners.
+        for (k, (c, d)) in at.corners.iter().zip(&drawn.corners).enumerate() {
+            let name = format!("{}/corner {}", p.name, k + 1);
+            let xyz: [scene::ScalarId; 3] = std::array::from_fn(|i| sc.number(&format!("{name}: {}", ["x", "y", "z"][i]), body, [c.x, c.y, c.z][i] - [origin.x, origin.y, origin.z][i]));
+            for (i, &s) in xyz.iter().enumerate() {
+                let axis = ["x", "y", "z"][i];
+                sc.number_is(&format!("{name} where it is drawn: {axis}"), s, [d.x, d.y, d.z][i] - [origin.x, origin.y, origin.z][i], scene::Tier::Hint);
             }
-            let (len, dir) = (w.start.distance(w.end), (w.end - w.start).normalized());
-            let b = topo_core::units::inch(topo_timber::lumber::dressed_in(w.stud.0));
-            let mut before: Option<scene::ScalarId> = None;
-            for (k, (&id, &(at, from))) in commons.iter().zip(&planned).enumerate() {
-                let name = format!("{}/{}/stud#{}", p.name, w.name, k + 1);
-                let (bottom, top) = (self.m.member(id).start(), self.m.member(id).end());
-                let s = sc.number(&name, body, at);
-                match from {
-                    topo_timber::StudFrom::End => sc.number_is(&format!("{name} at the end of the wall"), s, at, scene::Tier::Hard),
-                    topo_timber::StudFrom::Layout => sc.number_is(&format!("{name} where the layout puts it"), s, at, scene::Tier::Hint),
-                    topo_timber::StudFrom::Read => {
-                        sc.number_is(&format!("{name} where the layout puts it"), s, at, scene::Tier::Hint);
-                        sc.number_is(&format!("{name} where it was read to be"), s, at, scene::Tier::Reading(0.001));
-                    }
-                }
-                sc.bound(s, b / 2.0, len - b / 2.0);
-                if let Some(before) = before {
-                    sc.at_least(&format!("{name} clear of the stud before it"), s, before, b);
-                }
-                before = Some(s);
-                let base = w.start - origin;
-                sc.node_built(&format!("{name}:bottom"), body, base, &[(s, dir)], bottom)?;
-                sc.node_built(&format!("{name}:top"), body, base + (self.m.pos(top) - self.m.pos(bottom)), &[(s, dir)], top)?;
-                sc.moves_nodes(s, body, vec![bottom, top], dir);
+            let terms = [(xyz[0], Vec3::X), (xyz[1], Vec3::Y), (xyz[2], Vec3::Z)];
+            let at_corner = content.nodes.iter().copied().find(|&n| self.m.pos(n).distance(*c) < 1e-9);
+            match at_corner {
+                Some(n) => sc.node_built(&name, body, *c - origin, &terms, n)?,
+                None => sc.node_with(&name, body, Vec3::ZERO, &terms)?,
+            };
+            numbers.corners.push(xyz);
+        }
+        // Heights at each wall's ends; one at a corner where they are one as drawn.
+        for (i, w) in walls.iter().enumerate() {
+            let Some(w) = w else {
+                numbers.heights.push(None);
+                continue;
+            };
+            let (h0, h1) = at.heights[i].unwrap_or((w.height, w.height_end.unwrap_or(w.height)));
+            let (d0, d1) = drawn.heights[i].unwrap_or((h0, h1));
+            let name = format!("{}/{}", p.name, w.name);
+            let s0 = sc.number(&format!("{name}: height at its start"), body, h0);
+            let s1 = sc.number(&format!("{name}: height at its end"), body, h1);
+            sc.number_is(&format!("{name}: height at its start as drawn"), s0, d0, scene::Tier::Hint);
+            sc.number_is(&format!("{name}: height at its end as drawn"), s1, d1, scene::Tier::Hint);
+            numbers.heights.push(Some((s0, s1)));
+        }
+        let nc = at.corners.len();
+        for (a, b) in self.wall_corners(p) {
+            let (Some(ha), Some(hb), Some(da), Some(db)) = (numbers.heights[a], numbers.heights[b], drawn.heights[a], drawn.heights[b]) else { continue };
+            if (da.1 - db.0).abs() < 1e-9 {
+                sc.equal(&format!("{}/corner {}: the walls are one height there", p.name, b % nc + 1), ha.1.into(), hb.0.into(), scene::Tier::Hard);
             }
         }
+        // Studs.
+        for (i, (w, wp)) in walls.iter().zip(&parts.walls).enumerate() {
+            let (Some(w), Some(wp)) = (w.as_ref().filter(|w| w.survey.is_none()), wp) else {
+                numbers.studs.push(None);
+                continue;
+            };
+            let commons: Vec<MemberId> = wp.studs.iter().copied().filter(|&id| self.m.member(id).role == "stud").collect();
+            let planned = Wall { studs_solved: None, ..w.clone() }.common_studs();
+            if commons.len() != planned.len() {
+                numbers.studs.push(None);
+                continue;
+            }
+            let len = w.length();
+            // (Along the wall on plan, from its start corner to its end corner.)
+            let u = Vec2::new(w.end.x - w.start.x, w.end.y - w.start.y) / len;
+            let (ca, cb) = (numbers.corners[i], numbers.corners[(i + 1) % nc]);
+            let b = topo_core::units::inch(topo_timber::lumber::dressed_in(w.stud.0));
+            let built: Vec<f64> = w.studs_solved.clone().unwrap_or_else(|| planned.iter().map(|x| x.0).collect());
+            let mut ss = vec![];
+            for (k, (&(layout, from), &x)) in planned.iter().zip(&built).enumerate() {
+                let name = format!("{}/{}/stud#{}", p.name, w.name, k + 1);
+                let s = sc.number(&name, body, x);
+                match from {
+                    topo_timber::StudFrom::End if k == 0 => sc.number_is(&format!("{name} at the start of the wall"), s, layout, scene::Tier::Hard),
+                    topo_timber::StudFrom::End => {
+                        // As far from the end corner as the layout has it, wherever the corners are.
+                        let from_end = scene::Num::from(s).plus(cb[0], -u.x).plus(cb[1], -u.y).plus(ca[0], u.x).plus(ca[1], u.y);
+                        sc.equal(&format!("{name} at the end of the wall"), from_end, (layout - len).into(), scene::Tier::Hard);
+                    }
+                    topo_timber::StudFrom::Layout => sc.number_is(&format!("{name} where the layout puts it"), s, layout, scene::Tier::Fallback),
+                    topo_timber::StudFrom::Read => {
+                        sc.number_is(&format!("{name} where the layout puts it"), s, layout, scene::Tier::Fallback);
+                        sc.number_is(&format!("{name} where it was read to be"), s, layout, scene::Tier::Reading(0.001));
+                    }
+                }
+                // (In order, from the one at the start to the one at the end: so in the wall,
+                // wherever its corners are.)
+                if let Some(&before) = ss.last() {
+                    sc.at_least(&format!("{name} clear of the stud before it"), s, before, b);
+                }
+                ss.push(s);
+            }
+            numbers.studs.push(Some(ss));
+        }
+        // Nodes it built, as they move with the numbers: built again with each moved a little
+        // (its studs all at once: each stud's ends move with its own number only).
+        if let Some(snapshot) = snapshot {
+            const EPS: f64 = 1e-4;
+            let built: Vec<Vec3> = content.nodes.iter().map(|&n| self.m.pos(n)).collect();
+            let again = |moved: &PerimeterParams| -> Option<Vec<Vec3>> {
+                let mut b2 = snapshot.clone();
+                b2.build_perimeter(p, moved).ok()?;
+                // (Built the same way: the same nodes, in the same order.)
+                (b2.m.nodes.len() == before.0 + built.len()).then(|| content.nodes.iter().map(|&n| b2.m.pos(n)).collect())
+            };
+            let mut terms: HashMap<NodeId, Vec<(scene::ScalarId, Vec3)>> = HashMap::new();
+            let mut column = |moved: &PerimeterParams, who: &dyn Fn(NodeId) -> Option<scene::ScalarId>| {
+                let Some(now) = again(moved) else { return };
+                for (k, &n) in content.nodes.iter().enumerate() {
+                    let d = (now[k] - built[k]) / EPS;
+                    if d.norm() > 1e-6 {
+                        if let Some(s) = who(n) {
+                            terms.entry(n).or_default().push((s, d));
+                        }
+                    }
+                }
+            };
+            for k in 0..nc {
+                for i in 0..3 {
+                    let mut moved = at.clone();
+                    let c = &mut moved.corners[k];
+                    *[&mut c.x, &mut c.y, &mut c.z][i] += EPS;
+                    column(&moved, &|_| Some(numbers.corners[k][i]));
+                }
+            }
+            for (w, h) in numbers.heights.iter().enumerate() {
+                let Some((s0, s1)) = *h else { continue };
+                let wall = walls[w].as_ref().unwrap();
+                let now = at.heights[w].unwrap_or((wall.height, wall.height_end.unwrap_or(wall.height)));
+                for (end, s) in [(0, s0), (1, s1)] {
+                    let mut moved = at.clone();
+                    let mut hh = now;
+                    if end == 0 { hh.0 += EPS } else { hh.1 += EPS }
+                    moved.heights[w] = Some(hh);
+                    column(&moved, &|_| Some(s));
+                }
+            }
+            let mut moved = at.clone();
+            let mut stud_of: HashMap<NodeId, scene::ScalarId> = HashMap::new();
+            for (w, (ss, wp)) in numbers.studs.iter().zip(&parts.walls).enumerate() {
+                let (Some(ss), Some(wp)) = (ss, wp) else { continue };
+                let commons: Vec<MemberId> = wp.studs.iter().copied().filter(|&id| self.m.member(id).role == "stud").collect();
+                let mut xs = vec![];
+                for (&id, &s) in commons.iter().zip(ss) {
+                    for n in [self.m.member(id).start(), self.m.member(id).end()] {
+                        stud_of.insert(n, s);
+                    }
+                    xs.push(sc.value(s) + EPS);
+                }
+                moved.studs[w] = Some(xs);
+            }
+            column(&moved, &|n| stud_of.get(&n).copied());
+            for (n, t) in terms {
+                self.moving.insert(n, (body, origin, t));
+            }
+        }
+        let top = walls.iter().flatten().map(|w| w.start.z + w.height.max(w.height_end.unwrap_or(w.height))).fold(drawn.corners[0].z, f64::max);
         self.perimeters.insert(p.name.clone(), (parts, top));
-        Ok(())
+        Ok(numbers)
+    }
+
+    /// The corners where two walls of a perimeter meet: (incoming side, outgoing side).
+    fn wall_corners(&self, p: &PerimeterSpec) -> Vec<(usize, usize)> {
+        let ns = p.segments.len();
+        let corners: Vec<(usize, usize)> = if p.closed { (0..ns).map(|k| ((k + ns - 1) % ns, k)).collect() } else { (1..ns).map(|k| (k - 1, k)).collect() };
+        corners.into_iter().filter(|&(a, b)| p.segments[a].side.is_some() && p.segments[b].side.is_some()).collect()
+    }
+
+    /// A node a generator built, as a node of the scene (`name`): if it moves with numbers of
+    /// the scene, made of them; else fixed in the body it is in (or the world).
+    fn bind(&self, sc: &mut scene::Scene, name: &str, n: NodeId) -> Result<scene::NodeRef, String> {
+        match self.moving.get(&n) {
+            Some((body, origin, terms)) => sc.node_built(name, *body, self.m.pos(n) - *origin, terms, n),
+            None => sc.import_node(name, &self.m, n),
+        }
+    }
+
+    /// A point `at` along a member a generator built, as `bind` (moving as its ends do).
+    fn bind_along(&self, sc: &mut scene::Scene, name: &str, id: MemberId, at: f64) -> Result<scene::NodeRef, String> {
+        let mm = self.m.member(id);
+        let (a, b) = (mm.start(), mm.end());
+        let f = at / self.m.member_length(id).max(1e-12);
+        let mut terms: Vec<(scene::ScalarId, Vec3)> = vec![];
+        for (n, k) in [(a, 1.0 - f), (b, f)] {
+            if let Some((_, _, t)) = self.moving.get(&n) {
+                terms.extend(t.iter().map(|&(s, d)| (s, d * k)));
+            }
+        }
+        sc.node_along(name, &self.m, id, at, &terms)
     }
 
     /// The top of a member: the line along the middle of its highest face, and half that face's width.
@@ -998,89 +1238,37 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
 }
 
 fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
-    let mut m = Model::new(&spec.name);
-    let root = m.add_group(&spec.name, "building", Frame::WORLD, None);
-    for (name, v) in &spec.directions {
-        let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
-        m.name_direction(root, name, d);
-    }
-    let mut b = Builder { m, grades: HashMap::new(), perimeters: HashMap::new(), assemblies: HashMap::new(), root };
-    // One scene: perimeters (written by their generator, as bodies of it), assemblies, and the
-    // relations between their nodes; solved, then written into the model. Then roofs, on what it placed.
-    // A perimeter's corners are nodes (`Perimeter/corner 1`, from its start): where it is drawn,
-    // unless relations among corners (datums, readings) say otherwise. Those are solved first, on
-    // their own; the perimeter is then built on the corners where they are.
-    let is_corner = |name: &str| spec.items.iter().any(|i| matches!(i, ItemSpec::Perimeter(p) if name.strip_prefix(&format!("{}/corner ", p.name)).is_some_and(|k| k.parse::<usize>().is_ok())));
-    let on_corners: Vec<&ItemSpec> = spec.items.iter().filter(|i| !i.nodes().is_empty() && i.nodes().iter().all(|n| is_corner(n))).collect();
-    let mut perimeters: Vec<PerimeterSpec> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(p.clone()) } else { None }).collect();
-    if !on_corners.is_empty() {
-        let mut cs = scene::Scene::new("Corners of the walls");
-        let mut corners: Vec<Vec<scene::NodeRef>> = vec![];
-        for p in &perimeters {
-            let n = if p.closed { p.segments.len() } else { p.segments.len() + 1 };
-            let at = |k: usize| if k == 0 { p.start } else { p.segments[k - 1].to };
-            corners.push((0..n).map(|k| cs.point(&format!("{}/corner {}", p.name, k + 1), v3(at(k).0, at(k).1, p.z))).collect::<Result<_, _>>()?);
-        }
-        for item in &on_corners {
-            relate(&mut cs, item, &mut |sc: &mut scene::Scene, name: &str| sc.node_named(name).ok_or_else(|| format!("no corner {name}")))?;
-        }
-        let report = cs.solve()?;
-        b.m.solves.push(cs.solved(&report));
-        for (p, cs_nodes) in perimeters.iter_mut().zip(&corners) {
-            let at: Vec<Vec3> = cs_nodes.iter().map(|&n| cs.position(n)).collect();
-            p.start = (at[0].x, at[0].y);
-            p.z = at[0].z;
-            for (k, seg) in p.segments.iter_mut().enumerate() {
-                if k + 1 < at.len() {
-                    seg.to = (at[k + 1].x, at[k + 1].y);
-                }
+    // Perimeters are built at numbers of the one solve: as drawn first; then again at the
+    // numbers as solved, and solved again, until they do not change.
+    let drawn: Vec<PerimeterParams> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(PerimeterParams::drawn(p)) } else { None }).collect();
+    let mut at = drawn.clone();
+    const PASSES: usize = 8;
+    for pass in 1..=PASSES {
+        let mut built = build_pass(spec, &at, &drawn)?;
+        let moved = built.solved.iter().zip(&at).map(|(a, b)| a.distance(b)).fold(0.0, f64::max);
+        if moved < 1e-7 || pass == PASSES {
+            if moved >= 1e-7 {
+                built.b.m.issues.push(Issue::new(Severity::Warning, "unsettled", format!("the perimeters' numbers still moved {:.2} mm when built again at them for the {PASSES}th time", moved * 1000.0)));
             }
+            return finish(spec, built);
         }
+        at = built.solved;
     }
-    let mut sc = scene::Scene::new("The building's parts and the relations between them");
-    for p in &perimeters {
-        b.perimeter(p, &mut sc)?;
-    }
-    let mut declared = vec![];
-    for item in &spec.items {
-        if let ItemSpec::Assembly(a) = item {
-            declared.push((a, b.declare(&mut sc, a)?));
-        }
-    }
-    // A node by name: one of the scene's; or a point of a member a generator wrote, brought
-    // in: an end (`Walls/Front/cap_plate:start`) or so far along it (`Walls/Front/cap_plate@1.2`).
-    let node = |sc: &mut scene::Scene, m: &Model, name: &str| -> Result<scene::NodeRef, String> {
-        if let Some(n) = sc.node_named(name) {
-            return Ok(n);
-        }
-        if let Some((path, at)) = name.rsplit_once('@') {
-            let at: f64 = at.parse().map_err(|_| format!("{name}: not a distance along {path}"))?;
-            return sc.node_along(name, m, m.find_member(path)?, at);
-        }
-        let end = name.rsplit_once(':').and_then(|(path, end)| {
-            let id = m.find_member(path).ok()?;
-            match end {
-                // (A stud's bottom is its start, its top its end.)
-                "start" | "bottom" => Some(m.member(id).start()),
-                "end" | "top" => Some(m.member(id).end()),
-                _ => None,
-            }
-        });
-        match end {
-            Some(n) => sc.import_node(name, m, n),
-            None => Err(format!("no node named {name} (an assembly's point, as `Assembly/point`; or a point of a member, as `Perimeter/Wall/cap_plate:start`, `:end` or `@1.2`)")),
-        }
-    };
-    // (Nodes a roof is set out from are brought in too.)
-    for item in &spec.items {
-        if let ItemSpec::TrussRoof(TrussRoofSpec { at: Some(at), .. }) = item {
-            node(&mut sc, &b.m, at)?;
-        }
-    }
-    for item in spec.items.iter().filter(|i| !on_corners.iter().any(|c| std::ptr::eq(*c, *i))) {
-        relate(&mut sc, item, &mut |sc: &mut scene::Scene, name: &str| node(sc, &b.m, name))?;
-    }
-    let written = sc.write(&mut b.m)?;
+    unreachable!()
+}
+
+/// A building built once (its perimeters at some numbers), solved and written.
+struct Pass<'a> {
+    b: Builder,
+    written: scene::Written,
+    declared: Vec<(&'a AssemblySpec, Declared)>,
+    /// The perimeters' numbers as solved.
+    solved: Vec<PerimeterParams>,
+}
+
+/// Its assemblies and roofs, on what the solve placed.
+fn finish(spec: &BuildingSpec, pass: Pass) -> Result<Model, String> {
+    let Pass { mut b, written, declared, .. } = pass;
     for open in &written.open {
         b.m.issues.push(Issue::new(Severity::Warning, "open", format!("nothing places this: {open}")));
     }
@@ -1093,4 +1281,72 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
         }
     }
     Ok(b.m)
+}
+
+/// Builds the building once, its perimeters at `at` (drawn as `drawn`), and solves and writes it.
+fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[PerimeterParams]) -> Result<Pass<'a>, String> {
+    let mut m = Model::new(&spec.name);
+    let root = m.add_group(&spec.name, "building", Frame::WORLD, None);
+    for (name, v) in &spec.directions {
+        let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
+        m.name_direction(root, name, d);
+    }
+    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), assemblies: HashMap::new(), root };
+    // One scene: perimeters (written by their generator, as bodies of it, at numbers of it),
+    // assemblies, and the relations between their nodes; solved, then written into the model.
+    // Then roofs, on what it placed.
+    let mut sc = scene::Scene::new("The building's parts and the relations between them");
+    let perimeters: Vec<&PerimeterSpec> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(p) } else { None }).collect();
+    let mut numbers = vec![];
+    for (k, p) in perimeters.iter().enumerate() {
+        // (Its built nodes are found as they move with its numbers if a relation names one.)
+        let prefix = format!("{}/", p.name);
+        let named = spec.items.iter().flat_map(|i| i.nodes()).any(|n| n.starts_with(&prefix) && !n[prefix.len()..].starts_with("corner "))
+            || spec.items.iter().any(|i| matches!(i, ItemSpec::TrussRoof(TrussRoofSpec { at: Some(n), .. }) if n.starts_with(&prefix)));
+        numbers.push(b.perimeter(p, &mut sc, &at[k], &drawn[k], named)?);
+    }
+    let mut declared = vec![];
+    for item in &spec.items {
+        if let ItemSpec::Assembly(a) = item {
+            declared.push((a, b.declare(&mut sc, a)?));
+        }
+    }
+    // A node by name: one of the scene's; or a point of a member a generator wrote, brought
+    // in: an end (`Walls/Front/cap_plate:start`) or so far along it (`Walls/Front/cap_plate@1.2`).
+    let node = |sc: &mut scene::Scene, b: &Builder, name: &str| -> Result<scene::NodeRef, String> {
+        if let Some(n) = sc.node_named(name) {
+            return Ok(n);
+        }
+        let m = &b.m;
+        if let Some((path, at)) = name.rsplit_once('@') {
+            let at: f64 = at.parse().map_err(|_| format!("{name}: not a distance along {path}"))?;
+            return b.bind_along(sc, name, m.find_member(path)?, at);
+        }
+        let end = name.rsplit_once(':').and_then(|(path, end)| {
+            let id = m.find_member(path).ok()?;
+            match end {
+                // (A stud's bottom is its start, its top its end.)
+                "start" | "bottom" => Some(m.member(id).start()),
+                "end" | "top" => Some(m.member(id).end()),
+                _ => None,
+            }
+        });
+        match end {
+            Some(n) => b.bind(sc, name, n),
+            None => Err(format!("no node named {name} (an assembly's point, as `Assembly/point`; or a point of a member, as `Perimeter/Wall/cap_plate:start`, `:end` or `@1.2`)")),
+        }
+    };
+    // (Nodes a roof is set out from are brought in too.)
+    for item in &spec.items {
+        if let ItemSpec::TrussRoof(TrussRoofSpec { at: Some(at), .. }) = item {
+            node(&mut sc, &b, at)?;
+        }
+    }
+    for item in &spec.items {
+        relate(&mut sc, item, &mut |sc: &mut scene::Scene, name: &str| node(sc, &b, name))?;
+    }
+    let written = sc.write(&mut b.m)?;
+    let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
+    let solved = numbers.iter().zip(drawn).map(|(n, d)| PerimeterParams::solved(n, &values, d.corners[0])).collect();
+    Ok(Pass { b, written, declared, solved })
 }

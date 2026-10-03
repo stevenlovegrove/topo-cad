@@ -470,6 +470,7 @@ export class Survey {
 interface WallSpec {
   readonly name: string;
   readonly height: Length;
+  readonly height_end?: Length;
   readonly studs: Nominal;
   readonly spacing: Length;
   readonly layout_from?: readonly Length[];
@@ -508,7 +509,16 @@ export class Wall {
     return this.with({ name });
   }
   height(h: Length): Wall {
-    return this.with({ height: h });
+    return this.with({ height: h, height_end: undefined });
+  }
+  /**
+   * Its height (to the top of the double top plate, above its bottom) at its
+   * start and at its end: its top slopes between them. Where two walls meet
+   * at one height they are held at one height there (as the solve moves
+   * them); where they meet at different heights, that corner is a step.
+   */
+  heights(start: Length, end: Length): Wall {
+    return this.with({ height: start, height_end: end });
   }
   studs(size: Nominal, spacing?: Length): Wall {
     return this.with({ studs: size, spacing: spacing ?? this.spec.spacing });
@@ -591,37 +601,56 @@ export class Perimeter {
     readonly segments: readonly Segment[],
     readonly closed: boolean,
     readonly free_: boolean = false,
+    /** The bottom of the walls at each corner (from 1, the start), where it is not `z`. */
+    readonly bases: readonly (Length | null)[] = [],
   ) {}
 
   static start(name: string, at: Point, opts: { z?: Length } = {}): Perimeter {
     return new Perimeter(name, at, opts.z ?? 0, [], false);
+  }
+  private with(p: { name?: string; start?: Point; z?: Length; segments?: readonly Segment[]; closed?: boolean; free?: boolean; bases?: readonly (Length | null)[] }): Perimeter {
+    return new Perimeter(p.name ?? this.name, p.start ?? this.start, p.z ?? this.z, p.segments ?? this.segments, p.closed ?? this.closed, p.free ?? this.free_, p.bases ?? this.bases);
+  }
+  /**
+   * A corner, as a node (1 is its start, then each corner it turns, in
+   * order), at the bottom of the walls there. A corner is three numbers of
+   * the one solve, where it is drawn a hint: relations to it (a datum, a
+   * `survey` of it, a `tape` to it), or to anything the walls are built with,
+   * move it, and the walls are built on the corners where they then are.
+   */
+  corner(i: number): NodeHandle {
+    return new NodeHandle(`${this.name}/corner ${i}`);
+  }
+  /**
+   * The bottom of the walls at a corner (1 is its start), where it is not the
+   * perimeter's `z`: a wall between corners at different heights has a
+   * bottom plate that slopes.
+   */
+  base(corner: number, z: Length): Perimeter {
+    const bases = [...this.bases];
+    while (bases.length < corner) bases.push(null);
+    bases[corner - 1] = z;
+    return this.with({ bases });
+  }
+  /**
+   * An end of a common stud of one of its walls, as a node (`walls.stud("Front", 3, "bottom")`):
+   * studs are numbered along each wall from its start. A wall's studs are
+   * numbers of it: where the layout puts them is a hint (one that gives way
+   * to where the corners are drawn), `studsAt` a reading. Readings and datums
+   * on stud ends (`tape`, `survey`) move them, and the wall is built with its
+   * studs there.
+   */
+  stud(wall: string, k: number, end: "bottom" | "top"): NodeHandle {
+    return new NodeHandle(`${this.name}/${wall}/stud#${k}:${end}`);
   }
   /**
    * A point of one of its members, as a node to relate others to: an end
    * (`walls.node("Front/cap_plate", "start")`), or a distance along it from
    * its start (`walls.node("Front/cap_plate", 1.2)`). The member is named by
    * its path within the perimeter (`cap_plate#2` where a wall's cap is in
-   * pieces).
+   * pieces). It moves with the perimeter's numbers (its corners, its walls'
+   * heights and studs) as the member would.
    */
-  /**
-   * A corner, as a node (1 is its start, then each corner it turns, in
-   * order). Corners are where they are drawn, unless relations among
-   * corners say otherwise: a datum, a `survey` of one, a `tape` between two.
-   * The walls are built on the corners where they then are.
-   */
-  corner(i: number): NodeHandle {
-    return new NodeHandle(`${this.name}/corner ${i}`);
-  }
-  /**
-   * An end of a common stud of one of its walls, as a node (`walls.stud("Front", 3, "bottom")`):
-   * studs are numbered along each wall from its start. A wall's studs are
-   * numbers of it: where the layout puts them is a hint, `studsAt` a reading.
-   * Readings and datums on stud ends (`tape`, `survey`) move them, and the
-   * wall is built with its studs there.
-   */
-  stud(wall: string, k: number, end: "bottom" | "top"): NodeHandle {
-    return new NodeHandle(`${this.name}/${wall}/stud#${k}:${end}`);
-  }
   node(member: string, at: "start" | "end" | Length): NodeHandle {
     return new NodeHandle(typeof at === "number" ? `${this.name}/${member}@${at}` : `${this.name}/${member}:${at}`);
   }
@@ -632,7 +661,7 @@ export class Perimeter {
   private push(to: Point, side: Side): Perimeter {
     if (this.closed) throw new Error(`perimeter ${this.name} is already closed`);
     const spec = side === "open" ? null : side.spec;
-    return new Perimeter(this.name, this.start, this.z, [...this.segments, { to, side: spec }], false, this.free_);
+    return this.with({ segments: [...this.segments, { to, side: spec }] });
   }
   /** Straight segment to an absolute point. */
   to(p: Point, side: Side): Perimeter {
@@ -650,8 +679,7 @@ export class Perimeter {
   }
   /** Final segment back to the start. */
   close(side: Side): Perimeter {
-    const p = this.push(this.start, side);
-    return new Perimeter(p.name, p.start, p.z, p.segments, true, p.free_);
+    return this.push(this.start, side).with({ closed: true });
   }
   /** One of this perimeter's walls as a drawing target, e.g. `elevation(p.wall("Wall A"))`. */
   wall(name: string): string {
@@ -665,10 +693,10 @@ export class Perimeter {
   moved(d: Point | Point3): Perimeter {
     const mv = (p: Point): Point => [p[0] + d[0], p[1] + d[1]];
     const dz = (d as readonly number[])[2] ?? 0;
-    return new Perimeter(this.name, mv(this.start), this.z + dz, this.segments.map((g) => ({ ...g, to: mv(g.to) })), this.closed, this.free_);
+    return this.with({ start: mv(this.start), z: this.z + dz, segments: this.segments.map((g) => ({ ...g, to: mv(g.to) })), bases: this.bases.map((b) => (b === null ? null : b + dz)) });
   }
   named(name: string): Perimeter {
-    return new Perimeter(name, this.start, this.z, this.segments, this.closed, this.free_);
+    return this.with({ name });
   }
   /**
    * Free: where it is drawn is only where the solve starts; relations to its
@@ -676,10 +704,10 @@ export class Perimeter {
    * turned as drawn where they leave it free.
    */
   free(): Perimeter {
-    return new Perimeter(this.name, this.start, this.z, this.segments, this.closed, true);
+    return this.with({ free: true });
   }
   toJSON() {
-    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed, free: this.free_ };
+    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed, free: this.free_, bases: this.bases };
   }
 }
 

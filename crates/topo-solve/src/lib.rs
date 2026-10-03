@@ -323,6 +323,9 @@ pub enum Tier {
     Measured { sigma: f64 },
     /// A hint: it decides only what nothing above it does.
     Default,
+    /// A hint below the hints: it decides only what they leave (a stud's place in the layout of
+    /// its wall, which a reading on the stud moves rather than the wall).
+    Fallback,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,6 +374,7 @@ pub struct Report {
     pub by_weight: usize,
     pub by_measured: usize,
     pub by_default: usize,
+    pub by_fallback: usize,
     /// What is still open: each a freedom nothing settles, in words.
     pub open: Vec<String>,
     /// The one-sided constraints that are met exactly (a bound reached, a contact touching).
@@ -378,7 +382,7 @@ pub struct Report {
     /// Things their weight carries off without limit: nothing holds them up.
     pub falls: Vec<String>,
     /// For each frame, for each of its joint's freedoms: what settled it (0 hard,
-    /// 1 measured, 2 default, 3 weight), or none if it is open (alone, or together with others).
+    /// 1 measured, 2 default, 3 fallback, 4 weight), or none if it is open (alone, or together with others).
     pub frames: Vec<Vec<Option<usize>>>,
     /// The same for each scalar.
     pub scalars: Vec<Option<usize>>,
@@ -725,7 +729,7 @@ struct Stepped {
     /// The weights are still carrying things down.
     descending: bool,
     /// How many freedoms each settled: 0 hard, 1 measured, 2 default, 3 weight.
-    ranks: [usize; 4],
+    ranks: [usize; 5],
     /// What is left free (a basis, as columns).
     free: Mat,
     /// For each unknown, what settled it.
@@ -735,7 +739,7 @@ struct Stepped {
 /// What solving a part found.
 struct Solved {
     passes: usize,
-    ranks: [usize; 4],
+    ranks: [usize; 5],
     open: Vec<String>,
     settled: Vec<Option<usize>>,
     /// Its weights were still carrying it down when the solve gave up: nothing holds it.
@@ -1206,7 +1210,7 @@ impl System {
         let hard = |i: usize| tier_of(self.constraints[i].tier) == 0 && (!one_sided(i) || active.contains(&i));
         let (r, j, _) = self.dense_where(part, &rows, &hard);
         let (mut dx, mut free, rank) = lsq_null(&j, &r, n);
-        let mut out = Stepped { dx: vec![], add: vec![], release: None, descending: false, ranks: [rank, 0, 0, 0], free: vec![], settled: vec![None; n] };
+        let mut out = Stepped { dx: vec![], add: vec![], release: None, descending: false, ranks: [rank, 0, 0, 0, 0], free: vec![], settled: vec![None; n] };
         let cols = |m: &Mat| m.first().map_or(0, Vec::len);
         let mark = |free: &Mat, settled: &mut [Option<usize>], by: usize| {
             for (j, s) in settled.iter_mut().enumerate() {
@@ -1284,10 +1288,10 @@ impl System {
                 let (_, across, _) = lsq_null(&vec![pull], &[0.0], k);
                 free = if cols(&across) == 0 { zeros(n, 0) } else { mul(&free, &across) };
             }
-            mark(&free, &mut out.settled, 3);
-            out.ranks[3] = n - cols(&free) - out.ranks[0];
+            mark(&free, &mut out.settled, WEIGHT);
+            out.ranks[WEIGHT] = n - cols(&free) - out.ranks[0];
         }
-        for tier in 1..3 {
+        for tier in 1..WEIGHT {
             let (r, j) = self.dense(part, &rows, tier);
             let k = cols(&free);
             if r.is_empty() || k == 0 {
@@ -1349,7 +1353,7 @@ impl System {
     /// What the lower tiers cost: the measured, then (far behind) the hints.
     fn soft_cost(&self, constraints: &[usize]) -> f64 {
         let sq = |t: usize| self.tier_residual(constraints, t).iter().map(|x| x * x).sum::<f64>();
-        sq(1) + 1e-8 * sq(2)
+        sq(1) + 1e-8 * sq(2) + 1e-16 * sq(3)
     }
 
     /// Whether going from `self` to `next` is no worse for a part. Without weights: judged on
@@ -1376,7 +1380,7 @@ impl System {
         let world = self.world();
         let one_sided: Vec<usize> = part.constraints.iter().copied().filter(|&i| self.constraints[i].kind.one_sided()).collect();
         let weights = self.weights_of(part);
-        let mut out = Solved { passes: 0, ranks: [0; 4], open: vec![], settled: vec![], falls: false };
+        let mut out = Solved { passes: 0, ranks: [0; 5], open: vec![], settled: vec![], falls: false };
         if n == 0 {
             return out;
         }
@@ -1457,7 +1461,7 @@ impl System {
     }
 
     /// The same, with the parts and how many of each one's freedoms each tier settled.
-    fn solve_parts(&mut self) -> (Report, Vec<Component>, Vec<[usize; 4]>) {
+    fn solve_parts(&mut self) -> (Report, Vec<Component>, Vec<[usize; 5]>) {
         let parts = self.components();
         let mut settled = vec![];
         let mut report = Report {
@@ -1471,6 +1475,7 @@ impl System {
             by_weight: 0,
             by_measured: 0,
             by_default: 0,
+            by_fallback: 0,
             open: vec![],
             touching: vec![],
             falls: vec![],
@@ -1496,7 +1501,8 @@ impl System {
             report.by_hard += solved.ranks[0];
             report.by_measured += solved.ranks[1];
             report.by_default += solved.ranks[2];
-            report.by_weight += solved.ranks[3];
+            report.by_fallback += solved.ranks[3];
+            report.by_weight += solved.ranks[WEIGHT];
             report.open.extend(solved.open);
         }
         let world = self.world();
@@ -1759,8 +1765,12 @@ fn tier_of(t: Tier) -> usize {
         Tier::Hard => 0,
         Tier::Measured { .. } => 1,
         Tier::Default => 2,
+        Tier::Fallback => 3,
     }
 }
+
+/// What things settling under their weight is, among the tiers (what settled a freedom).
+const WEIGHT: usize = 4;
 
 /// What a tier's residuals are multiplied by: a measurement is in units of its tolerance.
 fn weight(t: Tier) -> f64 {
@@ -1845,7 +1855,7 @@ mod tests {
         assert_eq!(n, 6 + 1 + 1 + 3 + 6 + 6 + 4);
         let rows = s.linearised(&all.constraints).rows();
         const H: f64 = 1e-6;
-        for tier in 0..3 {
+        for tier in 0..WEIGHT {
             let (r, j) = s.dense(&all, &rows, tier);
             assert_eq!(r, s.tier_residual(&all.constraints, tier));
             for k in 0..n {
@@ -2226,7 +2236,7 @@ mod tests {
         // so none of them is the world's x alone.)
         assert_eq!((r.by_hard, r.by_weight), (4, 2), "{r:#?}");
         let e = s.explain(&r);
-        assert!(e.variables[0].freedoms.iter().all(|f| f.settled == Some(3)), "{:#?}", e.variables[0]);
+        assert!(e.variables[0].freedoms.iter().all(|f| f.settled == Some(WEIGHT)), "{:#?}", e.variables[0]);
         let clear = e.constraints.iter().find(|c| c.name == "on the support at 2").unwrap();
         assert!((clear.room.unwrap() - 0.6).abs() < 1e-6 && clear.gap == 0.0, "{clear:?}");
 

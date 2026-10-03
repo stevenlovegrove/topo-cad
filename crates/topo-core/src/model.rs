@@ -866,8 +866,10 @@ impl Model {
     }
 
     /// Joins an existing node to a member at one of its faces: the node has to be on that
-    /// face. Where the node is on the member's axis (the axis being in that face), it goes
-    /// into the member's path instead, as any node on an axis does, and `None` is returned.
+    /// face (which reaches past the member's end nodes as far as its section is big: as far as
+    /// a joint there may run it past them). Where the node is on the member's axis (the axis
+    /// being in that face), it goes into the member's path instead, as any node on an axis
+    /// does, and `None` is returned.
     pub fn attach(&mut self, node: NodeId, member: MemberId, face: Face) -> Result<Option<Attachment>, ModelError> {
         if self.member(member).path.contains(&node) {
             return Ok(None);
@@ -881,7 +883,8 @@ impl Model {
         if off.abs() > LEN_TOL {
             return Err(ModelError::NotOnFace { member, face, distance: off.abs() });
         }
-        if along < -LEN_TOL || along > f.length + LEN_TOL || across.abs() > f.half_width + LEN_TOL {
+        let past = self.face_reach(member);
+        if along < -past - LEN_TOL || along > f.length + past + LEN_TOL || across.abs() > f.half_width + LEN_TOL {
             return Err(ModelError::OutsideFace { member, face, along, across });
         }
         if self.insert_node_on(member, node).is_ok() {
@@ -890,6 +893,12 @@ impl Model {
         let a = Attachment { node, member, face, along, across };
         self.attachments.push(a);
         Ok(Some(a))
+    }
+
+    /// How far a member's faces reach past its end nodes: its section's larger size.
+    pub fn face_reach(&self, member: MemberId) -> f64 {
+        let bb = self.section(self.member(member).section).bbox();
+        bb.width().max(bb.height())
     }
 
     /// A node on a member's face, `along` it from its first node and `across` it from its middle.
