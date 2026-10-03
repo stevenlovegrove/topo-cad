@@ -1,13 +1,17 @@
 //! Fits a script's `unknown(...)` parameters to its field measurements.
 //!
-//! The script is the model: for trial parameter values it is re-evaluated,
-//! built, and each measurement is evaluated on the resulting geometry.
-//! Levenberg–Marquardt minimises the tolerance-weighted residuals. The report
-//! gives fitted values with 1σ uncertainties (assuming each measurement is
-//! good to its tolerance), per-measurement misfits, and which unknowns the
-//! measurements leave undetermined.
+//! The script is the model, and a generator of numbers like any other: its
+//! unknowns are numbers of the building's one solve, and each measurement a
+//! reading of them, as it is about their values now (the script evaluated,
+//! built and measured again with each moved a little). Once solved, it is
+//! evaluated again at the solved values, until they settle. So the fit is
+//! the same solve as everything else: readings to their tolerances, bounds
+//! held, what nothing settles left open. The report gives fitted values with
+//! 1σ uncertainties (assuming each measurement is good to its tolerance),
+//! per-measurement misfits, and which unknowns the measurements leave
+//! undetermined.
 
-use crate::spec::{build_scene, SceneSpec, UnknownSpec};
+use crate::spec::{build_scene, build_scene_fitted, Fit, FitReading, SceneSpec, UnknownSpec};
 use crate::{parse_spec, Evaluate, ScriptError};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -80,15 +84,12 @@ impl Problem<'_> {
     fn params(&self, x: &[f64]) -> BTreeMap<String, f64> {
         self.unknowns.iter().zip(x).map(|(u, &v)| (u.name.clone(), v)).collect()
     }
-    fn clamp(&self, x: &mut [f64]) {
-        for (u, v) in self.unknowns.iter().zip(x.iter_mut()) {
-            if let Some(lo) = u.min {
-                *v = v.max(lo);
-            }
-            if let Some(hi) = u.max {
-                *v = v.min(hi);
-            }
-        }
+    /// What each measurement is at these values, or `None` if the model fails to build or a
+    /// measurement cannot be evaluated there.
+    fn values(&self, x: &[f64]) -> Option<Vec<f64>> {
+        let spec = parse_spec(&self.script.eval(Some(&self.params(x))).ok()?).ok()?;
+        let (model, geom) = build(&spec).ok()?;
+        self.measurements.iter().map(|m| evaluate(&model, &geom, &m.quantity).ok()).collect()
     }
     /// Weighted residual vector, or `None` if the model fails to build or a
     /// measurement cannot be evaluated at these parameters.
@@ -161,45 +162,43 @@ pub fn solve(script: &dyn Evaluate) -> Result<(Model, Option<SolveReport>), Scri
     for (m, r) in prob.measurements.iter().zip(residuals(&m0, &g0, &prob.measurements)) {
         r.map_err(|e| ScriptError::Spec(format!("measurement \"{}\": {e}", m.name)))?;
     }
-    let mut r = prob.eval(&x).ok_or_else(|| ScriptError::Spec("model does not build at the initial guesses".into()))?;
+    prob.eval(&x).ok_or_else(|| ScriptError::Spec("model does not build at the initial guesses".into()))?;
     let mut iterations = 0;
     let n = x.len();
-    if n > 0 {
-        let mut lambda = 1e-3;
-        for it in 0..100 {
-            iterations = it + 1;
-            let Some(cols) = prob.jacobian(&x, &r) else { break };
-            let (a, g) = normal_equations(&cols, &r);
-            let c0 = cost(&r);
-            let mut improved = false;
-            while lambda < 1e12 {
-                let mut damped = a.clone();
-                for (i, row) in damped.iter_mut().enumerate() {
-                    row[i] += lambda * (a[i][i] + 1e-12);
-                }
-                let Some(dx) = solve_linear(damped, g.iter().map(|v| -v).collect()) else {
-                    lambda *= 10.0;
-                    continue;
-                };
-                let mut xn: Vec<f64> = x.iter().zip(&dx).map(|(a, b)| a + b).collect();
-                prob.clamp(&mut xn);
-                match prob.eval(&xn) {
-                    Some(rn) if cost(&rn) < c0 => {
-                        let step: f64 = dx.iter().zip(&x).map(|(d, v)| (d / v.abs().max(1e-2)).abs()).fold(0.0, f64::max);
-                        x = xn;
-                        r = rn;
-                        lambda = (lambda / 10.0).max(1e-12);
-                        improved = step > 1e-12;
-                        break;
-                    }
-                    _ => lambda *= 10.0,
-                }
-            }
-            if !improved || cost(&r) < 1e-20 {
-                break;
-            }
+    for _ in 0..50 {
+        iterations += 1;
+        // Each measurement as it is about the unknowns now.
+        let now = prob.values(&x).ok_or_else(|| ScriptError::Spec("model does not build at the unknowns' values".into()))?;
+        let mut cols = vec![];
+        for j in 0..n {
+            let h = 1e-6 * x[j].abs().max(1e-2);
+            let mut xp = x.clone();
+            xp[j] += h;
+            let Some(vp) = prob.values(&xp) else {
+                cols.push(vec![0.0; now.len()]);
+                continue;
+            };
+            cols.push(vp.iter().zip(&now).map(|(a, b)| (a - b) / h).collect::<Vec<f64>>());
+        }
+        let fit = Fit {
+            unknowns: prob.unknowns.iter().zip(&x).map(|(u, &v)| (u.name.clone(), v, u.min, u.max)).collect(),
+            readings: (prob.measurements.iter().enumerate())
+                .map(|(i, m)| {
+                    let terms: Vec<(usize, f64)> = (0..n).map(|j| (j, cols[j][i])).filter(|t| t.1 != 0.0).collect();
+                    FitReading { name: m.name.clone(), constant: now[i] - terms.iter().map(|&(j, k)| k * x[j]).sum::<f64>(), terms, measured: m.value, tolerance: m.tolerance }
+                })
+                .collect(),
+        };
+        let spec = parse_spec(&script.eval(Some(&prob.params(&x)))?)?;
+        let (_, solved) = build_scene_fitted(&spec, Some(&fit)).map_err(ScriptError::Spec)?;
+        let next = solved.unwrap_or_else(|| x.clone());
+        let step: f64 = next.iter().zip(&x).map(|(a, b)| ((a - b) / b.abs().max(1e-2)).abs()).fold(0.0, f64::max);
+        x = next;
+        if step < 1e-10 {
+            break;
         }
     }
+    let r = prob.eval(&x).ok_or_else(|| ScriptError::Spec("model does not build at the fitted values".into()))?;
 
     // Final model and report.
     let spec = parse_spec(&script.eval(Some(&prob.params(&x)))?)?;

@@ -1191,7 +1191,31 @@ fn crosses_on_plan(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
 
 /// Expands a scene spec into a model. Each building is built in its own
 /// frame (under a root group named after it) and then placed in the world.
+/// A script's unknowns, as numbers of the one solve, and its measurements as readings of them:
+/// each as it is about the unknowns' values now (`constant + Σ k u`), to its tolerance.
+#[derive(Clone, Debug, Default)]
+pub struct Fit {
+    pub unknowns: Vec<(String, f64, Option<f64>, Option<f64>)>,
+    pub readings: Vec<FitReading>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FitReading {
+    pub name: String,
+    pub terms: Vec<(usize, f64)>,
+    pub constant: f64,
+    pub measured: f64,
+    pub tolerance: f64,
+}
+
 pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
+    build_scene_fitted(spec, None).map(|(m, _)| m)
+}
+
+/// Builds the scene, with a fit's unknowns and readings in the first building's solve; and the
+/// unknowns as solved.
+pub fn build_scene_fitted(spec: &SceneSpec, fit: Option<&Fit>) -> Result<(Model, Option<Vec<f64>>), String> {
+    let mut fitted = None;
     let mut m = Model::new(&spec.name);
     let i = &spec.info;
     m.info.number = i.number.clone();
@@ -1205,7 +1229,8 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
     // sheets), otherwise the buildings' lists merged.
     let mut sheets = spec.sheets.clone();
     for (i, bs) in spec.buildings.iter().enumerate() {
-        let mut local = build_building(bs)?;
+        let (mut local, f) = build_building(bs, if i == 0 { fit } else { None })?;
+        fitted = fitted.or(f);
         if let Some(p) = &bs.placement {
             local.transform(&p.frame());
         }
@@ -1247,17 +1272,17 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
             c.self_weight = false;
         }
     }
-    Ok(m)
+    Ok((m, fitted))
 }
 
-fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
+fn build_building(spec: &BuildingSpec, fit: Option<&Fit>) -> Result<(Model, Option<Vec<f64>>), String> {
     // Perimeters are built at numbers of the one solve: as drawn first; then again at the
     // numbers as solved, and solved again, until they do not change.
     let drawn: Vec<PerimeterParams> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(PerimeterParams::drawn(p)) } else { None }).collect();
     let mut at = drawn.clone();
     const PASSES: usize = 8;
     for pass in 1..=PASSES {
-        let mut built = build_pass(spec, &at, &drawn)?;
+        let mut built = build_pass(spec, &at, &drawn, fit)?;
         let moved = built.solved.iter().zip(&at).map(|(a, b)| a.distance(b)).fold(0.0, f64::max);
         if moved < 1e-7 || pass == PASSES {
             if moved >= 1e-7 {
@@ -1278,16 +1303,20 @@ struct Pass<'a> {
     roofs: Vec<(&'a TrussRoofSpec, topo_timber::truss::PlacedRoof)>,
     /// The perimeters' numbers as solved.
     solved: Vec<PerimeterParams>,
+    /// A fit's unknowns: their numbers.
+    fit: Option<Vec<scene::ScalarId>>,
 }
 
-/// Its assemblies and roofs, on what the solve placed.
-fn finish(pass: Pass) -> Result<Model, String> {
-    let Pass { mut b, written, declared, roofs, .. } = pass;
+/// Its assemblies and roofs, on what the solve placed; and a fit's unknowns as solved.
+fn finish(pass: Pass) -> Result<(Model, Option<Vec<f64>>), String> {
+    let Pass { mut b, written, declared, roofs, fit, .. } = pass;
+    let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
+    let fitted = fit.map(|ss| ss.iter().map(|s| values[s]).collect());
     for open in &written.open {
         b.m.issues.push(Issue::new(Severity::Warning, "open", format!("nothing places this: {open}")));
     }
     for (what, off, tolerance) in &written.off {
-        b.m.issues.push(Issue::new(Severity::Warning, "reading-off", format!("{what}: off by {:.1} mm (read to about {:.1} mm): it does not agree with the rest", off.abs() * 1000.0, tolerance * 1000.0)));
+        b.m.issues.push(Issue::new(Severity::Warning, "reading-off", format!("{what}: off by {:.1} times what it was read to: it does not agree with the rest", off.abs() / tolerance)));
     }
     for (a, d) in &declared {
         b.finish(a, d, &written)?;
@@ -1296,11 +1325,11 @@ fn finish(pass: Pass) -> Result<Model, String> {
         b.finish_roof(r, placed, &written)?;
     }
     b.m.compact_nodes();
-    Ok(b.m)
+    Ok((b.m, fitted))
 }
 
 /// Builds the building once, its perimeters at `at` (drawn as `drawn`), and solves and writes it.
-fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[PerimeterParams]) -> Result<Pass<'a>, String> {
+fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[PerimeterParams], fit: Option<&Fit>) -> Result<Pass<'a>, String> {
     let mut m = Model::new(&spec.name);
     let root = m.add_group(&spec.name, "building", Frame::WORLD, None);
     for (name, v) in &spec.directions {
@@ -1364,8 +1393,23 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     for item in &spec.items {
         relate(&mut sc, item, &mut |sc: &mut scene::Scene, name: &str| node(sc, &b, name))?;
     }
+    // A script's unknowns and its measurements of them.
+    let fit = fit.map(|f| {
+        let us: Vec<scene::ScalarId> = f.unknowns.iter().map(|(name, value, lo, hi)| {
+            let u = sc.parameter(name, *value);
+            if lo.is_some() || hi.is_some() {
+                sc.bound(u, lo.unwrap_or(-1e12), hi.unwrap_or(1e12));
+            }
+            u
+        }).collect();
+        for r in &f.readings {
+            let num = r.terms.iter().fold(scene::Num::from(r.constant), |n, &(k, c)| n.plus(us[k], c));
+            sc.equal(&format!("measured {}", r.name), num, r.measured.into(), scene::Tier::Reading(r.tolerance));
+        }
+        us
+    });
     let written = sc.write(&mut b.m)?;
     let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
     let solved = numbers.iter().zip(drawn).map(|(n, d)| PerimeterParams::solved(n, &values, d.corners[0])).collect();
-    Ok(Pass { b, written, declared, roofs, solved })
+    Ok(Pass { b, written, declared, roofs, solved, fit })
 }

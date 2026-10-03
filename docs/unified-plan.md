@@ -63,7 +63,6 @@ positions because the solve found them.
 | --- | --- |
 | (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
 | Where a wall slopes, or two meet at a step, plates butt with square-cut ends (partial bearing reported; no backing at a step) | Plate ends cut to what they meet; corner framing for steps |
-| The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier (needs generators inside the solve: the fit re-runs the script) |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
 | Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
 | The scan is compared with the model after the fact | Scan evidence is measured constraints |
@@ -108,7 +107,7 @@ Each step leaves everything working and removes one row above.
    *Decided:* walls are not each a body: at a corner the plates lap and
    share nodes, so a wall cannot move alone; a wall moves by its corners.
    `TrussRoof.origin` stays, as a datum.
-6. **Readings as measured constraints.** *Done, but for the truss-shape fit.*
+6. **Readings as measured constraints.** *Done.*
    `tape(a, b, distance)` and `survey(node, {x, y, z})` are measured
    constraints on any nodes (corners, assemblies' points). A truss's
    `shifted` is a reading of where it is along the ridge from its station,
@@ -122,8 +121,12 @@ Each step leaves everything working and removes one row above.
    from another post's face), and so is each check, so a tape between
    corners that disagrees with the drawing moves the corners, and the
    posts read from them. A reading the solve leaves off by more than three
-   times its tolerance is said (`reading-off`). *Not yet:* the truss-shape
-   fit (it re-runs the whole script for each unknown).
+   times its tolerance is said (`reading-off`). A script's `unknown(...)`
+   parameters (the truss-shape fit) are numbers of the one solve too, and
+   its measurements readings of them: the script is a generator like any
+   other, evaluated again with each unknown moved a little to find how each
+   measurement moves with it, and again at the solved values until they
+   settle. No least-squares code of its own.
 6½. **Generators of numbers, in one solve.** *Done for perimeters.* A
    perimeter's corners (three numbers each), its walls' heights at their
    ends and its walls' studs are numbers in the one solve with everything
@@ -142,9 +145,7 @@ Each step leaves everything working and removes one row above.
    states each contact (`rest_on_lines`), and the bearing points are those
    nodes. The solve goes through the structure of a part (the trusses are
    blocks, isolated from each other, eliminated against what they share),
-   so this costs little more than solving them apart. *Not yet:* a truss's
-   shape as numbers (the shape fit); the same "build again until settled"
-   for it.
+   so this costs little more than solving them apart.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them.

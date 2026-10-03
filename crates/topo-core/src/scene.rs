@@ -248,6 +248,13 @@ impl Scene {
         s
     }
 
+    /// A number of no body: a parameter (of a script, say), starting at `value`.
+    pub fn parameter(&mut self, name: &str, value: f64) -> ScalarId {
+        let s = self.sys.scalar(ts::WORLD, name, value);
+        self.starts.push((s, value));
+        s
+    }
+
     pub fn value(&self, s: ScalarId) -> f64 {
         self.sys.value(s)
     }
