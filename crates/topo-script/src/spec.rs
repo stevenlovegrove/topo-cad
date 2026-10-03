@@ -158,10 +158,11 @@ pub enum ItemSpec {
     Perimeter(PerimeterSpec),
     TrussRoof(TrussRoofSpec),
     Assembly(AssemblySpec),
+    /// A frame with points in it, as nodes (`Frame/point`): a body (a scan's, placed where it is
+    /// registered, or free), or the world (its points are datums).
+    Frame(FrameItemSpec),
     /// Two nodes are one (`Assembly name/point`).
     Coincide { a: String, b: String },
-    /// A node is at this place.
-    Datum { node: String, at: [f64; 3] },
     /// A reading with a tape: two nodes are this far apart, to about `tolerance`.
     Tape { a: String, b: String, distance: f64, tolerance: f64 },
     /// A surveyed point: a node is here, along whichever of x, y, z are given, to about `tolerance`.
@@ -182,7 +183,7 @@ impl ItemSpec {
     fn nodes(&self) -> Vec<&str> {
         match self {
             ItemSpec::Coincide { a, b } | ItemSpec::Tape { a, b, .. } => vec![a, b],
-            ItemSpec::Datum { node, .. } | ItemSpec::Survey { node, .. } => vec![node],
+            ItemSpec::Survey { node, .. } => vec![node],
             _ => vec![],
         }
     }
@@ -194,10 +195,6 @@ fn relate(sc: &mut scene::Scene, item: &ItemSpec, node: &mut dyn FnMut(&mut scen
         ItemSpec::Coincide { a, b } => {
             let (na, nb) = (node(sc, a)?, node(sc, b)?);
             sc.coincide(&format!("{a} is {b}"), na, nb);
-        }
-        ItemSpec::Datum { node: n, at } => {
-            let nn = node(sc, n)?;
-            sc.datum(&format!("{n} at [{}, {}, {}]", at[0], at[1], at[2]), nn, v3(at[0], at[1], at[2]));
         }
         ItemSpec::Tape { a, b, distance, tolerance } => {
             let (na, nb) = (node(sc, a)?, node(sc, b)?);
@@ -281,6 +278,28 @@ pub struct AssemblySpec {
     /// Free: its placement is only where it starts; relations place it.
     #[serde(default)]
     pub free: bool,
+}
+
+/// A frame with points in it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FrameItemSpec {
+    pub name: String,
+    /// The world: fixed where it is, its points datums.
+    #[serde(default)]
+    pub world: bool,
+    #[serde(default)]
+    pub placement: Option<FrameSpec>,
+    /// Free: its placement is only where it starts; relations to its points place it.
+    #[serde(default)]
+    pub free: bool,
+    pub points: Vec<FramePointSpec>,
+}
+
+/// A point of a frame: where it is in the frame, along the axes given (the others are free).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FramePointSpec {
+    pub name: String,
+    pub at: [Option<f64>; 3],
 }
 
 /// An assembly, declared in the scene: its points' nodes, its members, its rests' nodes.
@@ -461,11 +480,9 @@ pub struct AssemblyLoadSpec {
 #[derive(Debug, Deserialize)]
 pub struct TrussRoofSpec {
     pub name: String,
-    /// Where the first heel is on plan: a point, or a node (`at`).
-    #[serde(default)]
-    pub origin: Option<(f64, f64)>,
-    #[serde(default)]
-    pub at: Option<String>,
+    /// The node the first heel is set out from on plan (a point of the world, of a scan's frame,
+    /// of the walls).
+    pub at: String,
     pub span_dir: (f64, f64),
     pub shape: TrussShape,
     pub length: f64,
@@ -910,14 +927,9 @@ impl Builder {
         full.strip_prefix(&format!("{}/", self.m.groups[self.root.idx()].name)).map(String::from).unwrap_or(full)
     }
 
-    /// A truss roof, in the scene: its trusses free bodies of it, set out from a node of it (`at`)
-    /// or a datum (`origin`), sat by `TrussRoof::place` on what the script says it bears on.
-    fn place_roof(&mut self, r: &TrussRoofSpec, sc: &mut scene::Scene, at: Option<scene::NodeRef>, declared: &[(&AssemblySpec, Declared)]) -> Result<topo_timber::truss::PlacedRoof, String> {
-        let set_out = match (at, r.origin) {
-            (Some(n), _) => topo_timber::truss::SetOut::Node(n, sc.position(n)),
-            (None, Some(o)) => topo_timber::truss::SetOut::Datum(v3(o.0, o.1, 0.0)),
-            (None, None) => return Err(format!("roof {}: give origin or at", r.name)),
-        };
+    /// A truss roof, in the scene: its trusses free bodies of it, set out from a node of it
+    /// (`at`), sat by `TrussRoof::place` on what the script says it bears on.
+    fn place_roof(&mut self, r: &TrussRoofSpec, sc: &mut scene::Scene, set_out: scene::NodeRef, declared: &[(&AssemblySpec, Declared)]) -> Result<topo_timber::truss::PlacedRoof, String> {
         let mat = self.material(&r.grade)?;
         r.shape.validate()?;
         for o in &r.overrides {
@@ -1347,8 +1359,17 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         // (Its built nodes are found as they move with its numbers if a relation names one.)
         let prefix = format!("{}/", p.name);
         let named = spec.items.iter().flat_map(|i| i.nodes()).any(|n| n.starts_with(&prefix) && !n[prefix.len()..].starts_with("corner "))
-            || spec.items.iter().any(|i| matches!(i, ItemSpec::TrussRoof(TrussRoofSpec { at: Some(n), .. }) if n.starts_with(&prefix)));
+            || spec.items.iter().any(|i| matches!(i, ItemSpec::TrussRoof(TrussRoofSpec { at: n, .. }) if n.starts_with(&prefix)));
         numbers.push(b.perimeter(p, &mut sc, &at[k], &drawn[k], named)?);
+    }
+    // Frames: their points are nodes.
+    for item in &spec.items {
+        if let ItemSpec::Frame(f) = item {
+            let body = (!f.world).then(|| sc.body(&f.name, "frame", f.placement.as_ref().map_or(Frame::WORLD, |p| p.frame()), f.free, Some(b.root)));
+            for pt in &f.points {
+                sc.frame_point(&format!("{}/{}", f.name, pt.name), body, pt.at)?;
+            }
+        }
     }
     let mut declared = vec![];
     for item in &spec.items {
@@ -1386,7 +1407,7 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     let mut roofs = vec![];
     for item in &spec.items {
         if let ItemSpec::TrussRoof(r) = item {
-            let at = r.at.as_deref().map(|at| node(&mut sc, &b, at)).transpose()?;
+            let at = node(&mut sc, &b, &r.at)?;
             roofs.push((r, b.place_roof(r, &mut sc, at, &declared)?));
         }
     }

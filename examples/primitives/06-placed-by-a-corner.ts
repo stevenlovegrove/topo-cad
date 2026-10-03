@@ -2,7 +2,8 @@
 //
 // The walls are drawn at the origin, and made free: that is only where the
 // solve starts. One relation places them: the start of the front wall's cap
-// plate (a corner, at the top of the walls) is at a surveyed point (datum).
+// plate (a corner, at the top of the walls) is a surveyed mark: a point of the
+// world (`Frame.world`), made one with it.
 // What that leaves free (turning about the corner, tilting) the walls' own
 // hints settle: upright, and turned as drawn. Everything the perimeter's
 // generator made moves with it.
@@ -13,7 +14,7 @@
 // A post stands in front of the front wall, its top made one node with the
 // point of the front cap plate 1.2 m along it: that point becomes a node of
 // the plate.
-import { Assembly, Building, coincide, datum, DFL, ft, inch, Perimeter, TrussRoof, TrussShape, Wall } from "topo-cad";
+import { Assembly, Building, coincide, DFL, Frame, ft, inch, Perimeter, TrussRoof, TrussShape, Wall } from "topo-cad";
 
 const grade = DFL.No2;
 const wall = Wall.template({ height: ft(8), grade });
@@ -24,6 +25,8 @@ const walls = Perimeter.start("Walls", [0, 0])
   .close(wall.named("Left"))
   .free();
 const corner = walls.node("Front/cap_plate", "start");
+// The surveyed mark: a datum, a point of the world.
+const mark = Frame.world.point("mark", [5, 3, ft(8)]);
 
 const roof = TrussRoof.of(TrussShape.fink({ span: ft(12), pitch: 6 / 12, overhang: inch(12) }), { at: corner, spanDir: [0, 1], length: ft(16), grade })
   .bearingOn(walls);
@@ -38,7 +41,8 @@ const post = Assembly.named("Post")
 export default Building.named("Placed by a corner").add(
   walls,
   roof,
-  datum(corner, [5, 3, ft(8)]),
+  mark,
+  coincide(corner, mark.node("mark")),
   post,
   coincide(post.node("top"), walls.node("Front/cap_plate", 1.2)),
 );

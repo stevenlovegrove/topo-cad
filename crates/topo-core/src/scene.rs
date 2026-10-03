@@ -189,6 +189,34 @@ impl Scene {
         Ok(NodeRef(self.nodes.len() - 1))
     }
 
+    /// A point of a frame (a body, or the world), as a node: at `at` in it along the axes given;
+    /// along any not given, a number of its own, as it is in the frame (where it starts, 0, is a
+    /// hint). A datum is a point of the world; a reference in a scan, a point of the scan's frame.
+    pub fn frame_point(&mut self, name: &str, body: Option<BodyRef>, at: [Option<f64>; 3]) -> Result<NodeRef, String> {
+        if self.node_named(name).is_some() {
+            return Err(format!("two nodes named {name}"));
+        }
+        let frame = body.map_or(ts::WORLD, |b| self.bodies[b.0].frame);
+        let given = [at[0].unwrap_or(0.0), at[1].unwrap_or(0.0), at[2].unwrap_or(0.0)];
+        let mut point = ts::Point::at(frame, given);
+        for (k, v) in at.iter().enumerate() {
+            if v.is_none() {
+                let axis = ["x", "y", "z"][k];
+                let s = self.sys.scalar(frame, &format!("{name}: {axis}"), 0.0);
+                self.starts.push((s, 0.0));
+                self.sys.constrain(&format!("{name}: {axis}, unless told"), ts::Tier::Default, ts::Kind::equal(s, 0.0));
+                let mut d = [0.0; 3];
+                d[k] = 1.0;
+                point = point.plus(s, d);
+            }
+        }
+        let id = self.sys.node(name, point);
+        let fixed = (at.iter().all(Option::is_some)).then_some(()).and(body).map(|b| (b.0, vec(given)));
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed, faces: vec![], along: None });
+        self.same.push(self.nodes.len() - 1);
+        Ok(NodeRef(self.nodes.len() - 1))
+    }
+
     /// A node is `value` from a point of the world along a direction of it (`n - at`, along
     /// `dir`): hard (a datum, along one direction), a reading, or a hint (a station a layout
     /// sets out).
@@ -431,12 +459,6 @@ impl Scene {
         self.sys.constrain(name, ts::Tier::Hard, ts::Kind::Coincident(pa, pb));
         let (ra, rb) = (self.root(a.0), self.root(b.0));
         self.same[ra.max(rb)] = ra.min(rb);
-    }
-
-    /// A node is at this place in the world.
-    pub fn datum(&mut self, name: &str, n: NodeRef, at: Vec3) {
-        let p = self.sys.at(self.nodes[n.0].of[0]);
-        self.sys.constrain(name, ts::Tier::Hard, ts::Kind::Coincident(p, ts::Point::at(ts::WORLD, arr(at))));
     }
 
     /// One member rests on another where they cross: a node (named `name`) on the underside

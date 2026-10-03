@@ -24,7 +24,7 @@ const items = shapes.flatMap(([name, shape], i) => {
     .by([0, s], wall)
     .by([-bay, 0], wall)
     .close(wall);
-  const roof = TrussRoof.of(shape, { name, origin: [x0, 0], spanDir: [0, 1], length: bay, grade: DFL.No2 }).bearingOn(walls);
+  const roof = TrussRoof.of(shape, { name, at: walls.corner(1), spanDir: [0, 1], length: bay, grade: DFL.No2 }).bearingOn(walls);
   return [walls, roof];
 });
 

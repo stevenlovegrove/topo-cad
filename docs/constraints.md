@@ -206,7 +206,8 @@ held by reference.
 A truss roof is not given a height. The script says what it bears on
 (`bearingOn(...)`: a perimeter's cap plates, an assembly's horizontal
 members), and nothing else is looked for. The roof is set out on plan from
-a node (`at`) or a datum (`origin`).
+a node (`at`): a corner of the walls, a point of a scan's frame, or a
+datum (a point of the world).
 
 **Each truss is a free body of the building's one solve**, holding what
 its generator wrote (`TrussRoof::place`). Its heel is a node: across the
@@ -293,8 +294,9 @@ where the solve starts, relations place it, and a hint keeps it upright.
 A **node** is a named point fixed in a body. **Members** run between a
 body's nodes. **Relations** are between nodes:
 
-- `coincide`: two nodes are one point, and one node of the model;
-- `datum`: a node is at a place in the world;
+- `coincide`: two nodes are one point, and one node of the model (a
+  node made one with a point of the world is placed there: that is a
+  datum);
 - `rest`: one member rests on another where they cross. It makes a node
   on the underside of the one and the top of the other: on each face two
   numbers (along, across) bounded by the face; held to be the same
@@ -323,8 +325,15 @@ there (for something to rest on); relations to them join to them.
 
 In the script, assemblies are bodies in one scene: their points are
 nodes named `Assembly name/point`, and `Assembly.free()`,
-`assembly.node(point)`, `coincide(a, b)` and `datum(node, at)` relate
-them. The end of any member a generator made is a node too:
+`assembly.node(point)` and `coincide(a, b)` relate them.
+
+A **frame** is a body with points and no members (`Frame.named("Scan")`,
+placed where it is registered, or `free()`); each point is a node
+(`Scan/heel line`), so moving the frame moves every reference in it.
+`Frame.world` is the building's own frame, fixed: its points are
+**datums**, and a node is placed at one by `coincide`. A point may give
+only some of its coordinates (`{ x, y }`, from a georeference): along the
+others it is a number of its own, 0 unless something says otherwise. The end of any member a generator made is a node too:
 `walls.node("Front/cap_plate", "start")`. `Assembly.bearingOn(walls)` is
 a utility: each of the assembly's members that crosses a cap plate rests
 on it (`examples/primitives/05-joists-on-walls.ts`). `Perimeter.free()`

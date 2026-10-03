@@ -61,7 +61,6 @@ positions because the solve found them.
 
 | Today | What it should be |
 | --- | --- |
-| (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
 | Where two walls meet at a step, the lower wall's plies end on the side of the taller wall's end stud | Corner framing (backing) for steps |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
 | Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
@@ -84,12 +83,12 @@ Each step leaves everything working and removes one row above.
 3. **A scene: bodies, nodes, relations, then solve, then the model.**
    *Done* (`topo_core::scene`). Bodies (fixed, or free and placed by
    relations, kept upright by a hint), nodes fixed in them, members
-   between nodes, relations (`coincide`, `datum`, `rest`); solved, then
+   between nodes, relations (`coincide`, `rest`); solved, then
    written into the model, which keeps the solve.
 4. **Assemblies on the scene.** *Done.* Each assembly is a body, its
    points are nodes (`Assembly name/point`), `free()` makes it placed
    only by relations; the script has node handles (`assembly.node(...)`)
-   and `coincide`, `datum`; `resting` is a node on the faces of both,
+   and `coincide`; `resting` is a node on the faces of both,
    with two bounded numbers on each, solved. Writing the scene makes a
    model node for each node and joins none by position (the pergola's
    bays are now joined by `coincide`). `Assembly.bearingOn` is a utility
@@ -106,7 +105,10 @@ Each step leaves everything working and removes one row above.
    roof can be set out from a node (`at`); each truss's station is a node.
    *Decided:* walls are not each a body: at a corner the plates lap and
    share nodes, so a wall cannot move alone; a wall moves by its corners.
-   `TrussRoof.origin` stays, as a datum.
+   A roof is set out only `at` a node. A datum is a node: a point of the
+   world (`Frame.world.point`, along only the coordinates given, if not
+   all), placed by `coincide`; a scan is a frame with points in it
+   (`Frame.named("Scan")`), so moving the scan moves what refers to it.
 6. **Readings as measured constraints.** *Done.*
    `tape(a, b, distance)` and `survey(node, {x, y, z})` are measured
    constraints on any nodes (corners, assemblies' points). A truss's

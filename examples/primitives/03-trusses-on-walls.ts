@@ -17,7 +17,7 @@ const walls = Perimeter.start("Walls", [0, 0])
   .by([-ft(8), 0], wall)
   .close(wall);
 
-const roof = TrussRoof.of(TrussShape.fink({ span: ft(16), pitch: 6 / 12, overhang: inch(12) }), { origin: [0, 0], spanDir: [0, 1], length: ft(8), grade: DFL.No2 })
+const roof = TrussRoof.of(TrussShape.fink({ span: ft(16), pitch: 6 / 12, overhang: inch(12) }), { at: walls.corner(1), spanDir: [0, 1], length: ft(8), grade: DFL.No2 })
   .bearingOn(walls);
 
 export default Building.named("Trusses on walls").add(walls, roof);

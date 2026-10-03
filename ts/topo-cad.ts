@@ -952,8 +952,7 @@ interface AreaLoad {
 export class TrussRoof {
   private constructor(readonly spec: {
     readonly name: string;
-    readonly origin?: Point;
-    readonly at?: string;
+    readonly at: string;
     readonly span_dir: Point;
     readonly shape: TrussShape;
     readonly length: Length;
@@ -968,21 +967,20 @@ export class TrussRoof {
   }) {}
 
   /**
-   * Where the first truss's left heel is on plan: `at` a node (a corner of
-   * the walls: `walls.node("Left/cap_plate", "start")`), so the roof goes
-   * where the walls do; or `origin`, a point. `spanDir`: the direction the
-   * trusses span; `length`: along the ridge. Their height is not given:
-   * they sit on what they bear on (`bearingOn`).
+   * Where the first truss's left heel is on plan: `at` a node, so the roof
+   * goes where that node does: a corner of the walls
+   * (`walls.node("Left/cap_plate", "start")`), a point of a scan's frame
+   * (`scan.node("heel line")`), or a datum (`Frame.world.point(...)`).
+   * `spanDir`: the direction the trusses span; `length`: along the ridge.
+   * Their height is not given: they sit on what they bear on (`bearingOn`).
    */
   static of(
     shape: TrussShape,
-    o: { name?: string; origin?: Point; at?: NodeHandle; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal },
+    o: { name?: string; at: NodeHandle; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal },
   ): TrussRoof {
-    if ((o.origin === undefined) === (o.at === undefined)) throw new Error("a truss roof needs one of origin or at");
     return new TrussRoof({
       name: o.name ?? "Roof trusses",
-      origin: o.origin,
-      at: o.at?.name,
+      at: o.at.name,
       span_dir: o.spanDir,
       shape,
       length: o.length,
@@ -995,7 +993,7 @@ export class TrussRoof {
     });
   }
   /**
-   * A different shape for some trusses (1-based numbers, T1 at the origin),
+   * A different shape for some trusses (1-based numbers, T1 where the roof is set out),
    * e.g. the trusses over a wing with a different bearing. The same
    * spacing and loads apply.
    */
@@ -1069,10 +1067,6 @@ export class TrussRoof {
   /** A member of the `i`-th truss (1-based; 1 and the last are the gable ends), by its shape name. */
   trussMember(i: number, name: string): MemberRef {
     return new MemberRef(`${this.spec.name}/T${i}/${name}`);
-  }
-  /** Plan offset (a z component is ignored: height follows the bearing walls). */
-  moved(d: Point | Point3): TrussRoof {
-    return new TrussRoof({ ...this.spec, origin: [this.spec.origin[0] + d[0], this.spec.origin[1] + d[1]] });
   }
   named(name: string): TrussRoof {
     return new TrussRoof({ ...this.spec, name });
@@ -1284,7 +1278,8 @@ export interface Placeable<T> {
 
 /**
  * `count` copies of `item`, the i-th moved by `i × step` and named
- * `"<name> #<i+1>"`. Copies that land on shared points connect automatically.
+ * `"<name> #<i+1>"`. (Copies are not joined where they touch: say so, with
+ * `coincide` or a utility such as `bearingOn`.)
  */
 export function repeat<T extends Placeable<T>>(item: T, count: number, step: Point3): T[] {
   return Array.from({ length: count }, (_, i) => item.moved([step[0] * i, step[1] * i, step[2] * i]).named(`${item.name} #${i + 1}`));
@@ -1568,10 +1563,6 @@ export class Relation {
   static coincide(a: NodeHandle, b: NodeHandle): Relation {
     return new Relation({ type: "coincide", a: a.name, b: b.name });
   }
-  /** A node is at this place (in the building's coordinates). */
-  static datum(node: NodeHandle, at: Point3): Relation {
-    return new Relation({ type: "datum", node: node.name, at });
-  }
   /** A reading with a tape: the two nodes are `distance` apart, to about `tolerance` (default 3 mm). */
   static tape(a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation {
     return new Relation({ type: "tape", a: a.name, b: b.name, distance, tolerance: o.tolerance ?? 0.003 });
@@ -1586,14 +1577,68 @@ export class Relation {
 }
 /** Two nodes are one: the same point, and joined there. */
 export const coincide = (a: NodeHandle, b: NodeHandle): Relation => Relation.coincide(a, b);
-/** A node is at this place (in the building's coordinates). */
-export const datum = (node: NodeHandle, at: Point3): Relation => Relation.datum(node, at);
 /** A reading with a tape between two nodes: measured, so it gives way to what must hold, and says by how much. */
 export const tape = (a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation => Relation.tape(a, b, distance, o);
 /** A surveyed point: measured, along whichever of x, y, z are given. */
 export const survey = (node: NodeHandle, at: { x?: Length; y?: Length; z?: Length }, o: { tolerance?: Length } = {}): Relation => Relation.survey(node, at, o);
 
-export type Item = Perimeter | TrussRoof | Assembly | Relation;
+/**
+ * A frame with points in it: each point is a node (`Frame/point`). A
+ * scan's frame, placed where the scan is registered (or `free()`, placed by
+ * relations to its points), with references in it: move the frame, and they
+ * move. `Frame.world` is the building's own frame, fixed: its points are
+ * datums.
+ *
+ * A point may give only some of its coordinates (`{ x, y }`, from a
+ * georeference): along the others it is free (0 unless something says
+ * otherwise).
+ *
+ *   const scan = Frame.named("Scan").point("heel line", [3.2, 14.1, 2.44]);
+ *   TrussRoof.of(shape, { at: scan.node("heel line"), ... })
+ *   const mark = Frame.world.point("mark", [5, 3, ft(8)]);
+ *   coincide(walls.corner(1), mark.node("mark"))
+ */
+export class Frame {
+  private constructor(
+    readonly name: string,
+    readonly world: boolean,
+    readonly placement: Placement,
+    readonly free_: boolean,
+    readonly points: readonly { readonly name: string; readonly at: readonly (Length | null)[] }[],
+  ) {}
+  /** The building's own frame: fixed, its points datums (`World/name`). */
+  static readonly world = new Frame("World", true, Placement.identity, false, []);
+  /** A frame of its own (a scan's), where it is put (by default, the building's frame). */
+  static named(name: string): Frame {
+    return new Frame(name, false, Placement.identity, false, []);
+  }
+  /** Where the frame is, in the building's coordinates. */
+  placed(p: Placement): Frame {
+    if (this.world) throw new Error("the world frame is where it is");
+    return new Frame(this.name, false, p, this.free_, this.points);
+  }
+  /** Free: where it is put is only where it starts; relations to its points place it. */
+  free(): Frame {
+    if (this.world) throw new Error("the world frame is where it is");
+    return new Frame(this.name, false, this.placement, true, this.points);
+  }
+  /** A point of it, at `at` in it; or along only the coordinates given (`{ x, y }`). */
+  point(name: string, at: Point3 | { x?: Length; y?: Length; z?: Length }): Frame {
+    if (this.points.some((p) => p.name === name)) throw new Error(`frame ${this.name}: two points named ${name}`);
+    const xyz = Array.isArray(at) ? (at as readonly Length[]) : [(at as { x?: Length }).x ?? null, (at as { y?: Length }).y ?? null, (at as { z?: Length }).z ?? null];
+    return new Frame(this.name, this.world, this.placement, this.free_, [...this.points, { name, at: xyz }]);
+  }
+  /** A point of it, as a node. */
+  node(point: string): NodeHandle {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`frame ${this.name} has no point ${point}`);
+    return new NodeHandle(`${this.name}/${point}`);
+  }
+  toJSON() {
+    return { type: "frame", name: this.name, world: this.world, placement: this.world ? undefined : this.placement, free: this.free_, points: this.points };
+  }
+}
+
+export type Item = Perimeter | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of

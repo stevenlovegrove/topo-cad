@@ -26,7 +26,7 @@ const walls = Perimeter.start("Walls", [0, 0])
   .close(wall.named("Wall D (West)"));
 
 const roof = TrussRoof.fink({
-  origin: [0, 0],
+  at: walls.corner(1),
   spanDir: [0, 1],
   span: depth,
   length: width,

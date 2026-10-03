@@ -268,7 +268,7 @@ fn the_primitives_examples_show_what_they_say() {
     assert!(m.member(front).path.contains(&p.end()));
     assert!(m.pos(p.end()).distance(corner + topo_core::Vec3::X * 1.2) < 1e-9);
     // Moving the datum moves it all.
-    let m2 = run(&src.replace("datum(corner, [5, 3, ft(8)])", "datum(corner, [7, 3, ft(8)])"), "moved.ts").unwrap();
+    let m2 = run(&src.replace("Frame.world.point(\"mark\", [5, 3, ft(8)])", "Frame.world.point(\"mark\", [7, 3, ft(8)])"), "moved.ts").unwrap();
     let front2 = m2.find_member("Walls/Front/cap_plate").unwrap();
     assert!((m2.pos(m2.member(front2).start()) - corner - v3(2.0, 0.0, 0.0)).norm() < 1e-9, "{:?} {:?}", m2.pos(m2.member(front2).start()), corner);
 
@@ -290,7 +290,10 @@ fn the_primitives_examples_show_what_they_say() {
     assert!(m.pos(m.member(front_cap).end()).x > ft(20.0) + inch(0.9));
     // Readings that cannot hold with a datum give way, and say by how much: here the tape and corner 1's survey
     // (both readings, to the same tolerance) share the inch between them.
-    let fought = src.replace("survey(walls.corner(1), { x: 0, y: 0 }),", "survey(walls.corner(1), { x: 0, y: 0 }),\n  datum(walls.corner(2), [ft(20), 0, 0]),").replace("import { Building,", "import { Building, datum,");
+    let fought = src
+        .replace("survey(walls.corner(1), { x: 0, y: 0 }),", "survey(walls.corner(1), { x: 0, y: 0 }),\n  mark,\n  coincide(walls.corner(2), mark.node(\"corner 2\")),")
+        .replace("export default", "const mark = Frame.world.point(\"corner 2\", [ft(20), 0, 0]);\nexport default")
+        .replace("import { Building,", "import { Building, coincide, Frame,");
     let m = run(&fought, "fought.ts").unwrap();
     let c = &m.solves[0];
     let tape_gap = c.constraints.iter().find(|x| x.name.starts_with("Walls/corner 1 to Walls/corner 2")).unwrap();
@@ -395,12 +398,13 @@ fn roof_on_beams(far: Option<f64>) -> topo_core::Model {
     let far = far.map_or(String::new(), |z| format!(r#".point("c", [-1, ft(20) - inch(2), {z}]).point("d", [ft(12) + 1, ft(20) - inch(2), {z}]).member("beam", ["c", "d"], o)"#));
     let src = format!(
         r#"
-        import {{ Assembly, Building, DFL, ft, inch, TrussRoof, TrussShape }} from "topo-cad";
+        import {{ Assembly, Building, DFL, Frame, ft, inch, TrussRoof, TrussShape }} from "topo-cad";
         const shape = TrussShape.fink({{ span: ft(20), pitch: 6 / 12, overhang: inch(12) }});
+        const setOut = Frame.world.point("set-out", {{ x: 0, y: 0 }});
         const o = {{ size: [4, 8], grade: DFL.No2 }};
         const beams = Assembly.named("Beams").point("a", [-1, inch(2), ft(8)]).point("b", [ft(12) + 1, inch(2), ft(8)]).member("beam", ["a", "b"], o){far};
-        const roof = TrussRoof.of(shape, {{ origin: [0, 0], spanDir: [0, 1], length: ft(12), grade: DFL.No2 }}).bearingOn(beams);
-        export default Building.named("t").add(beams, roof);
+        const roof = TrussRoof.of(shape, {{ at: setOut.node("set-out"), spanDir: [0, 1], length: ft(12), grade: DFL.No2 }}).bearingOn(beams);
+        export default Building.named("t").add(beams, setOut, roof);
     "#
     );
     run(&src, "t.ts").unwrap()
@@ -456,7 +460,7 @@ fn every_standard_truss_roof_builds_clean_from_typescript() {
             const w = Wall.template({{ height: ft(8), grade: DFL.No2 }});
             const walls = Perimeter.start("W", [0, 0]).by([ft(12), 0], w).by([0, ft(20)], w).by([-ft(12), 0], w).close(w);
             const o = {{ span: ft(20), pitch: 6 / 12, overhang: inch(12) }};
-            const roof = TrussRoof.of(TrussShape.{ctor}, {{ origin: [0, 0], spanDir: [0, 1], length: ft(12), grade: DFL.No2 }}).bearingOn(walls);
+            const roof = TrussRoof.of(TrussShape.{ctor}, {{ at: walls.corner(1), spanDir: [0, 1], length: ft(12), grade: DFL.No2 }}).bearingOn(walls);
             export default Building.named("t").add(walls, roof);
         "#
         );
@@ -540,9 +544,10 @@ fn shape_edit_errors_are_reported() {
     assert!(e.contains("even"), "{e}");
     // A moved point that kinks a chord is caught when the roof is built.
     let e = run(
-        r#"import { Building, DFL, ft, TrussRoof, TrussShape } from "topo-cad";
+        r#"import { Building, DFL, Frame, ft, TrussRoof, TrussShape } from "topo-cad";
            const s = TrussShape.fink({ span: ft(20), pitch: 0.5 }).withPoint("T1", [ft(5), ft(3)]);
-           export default Building.named("t").add(TrussRoof.of(s, { origin: [0, 0], spanDir: [0, 1], length: ft(8), grade: DFL.No2 }));"#,
+           const f = Frame.world.point("set-out", { x: 0, y: 0 });
+           export default Building.named("t").add(f, TrussRoof.of(s, { at: f.node("set-out"), spanDir: [0, 1], length: ft(8), grade: DFL.No2 }));"#,
         "t.ts",
     )
     .unwrap_err()
@@ -562,7 +567,7 @@ fn edited_standard_shape_builds_clean() {
           .web("B1", "Tx")
           .web("Tx", "B2")
           .sized("bottom_chord", [2, 6]);
-        const roof = TrussRoof.of(shape, { origin: [0, 0], spanDir: [0, 1], length: ft(8), grade: DFL.No2 }).bearingOn(walls);
+        const roof = TrussRoof.of(shape, { at: walls.corner(1), spanDir: [0, 1], length: ft(8), grade: DFL.No2 }).bearingOn(walls);
         export default Building.named("t").add(walls, roof);
     "#;
     let m = run(src, "t.ts").unwrap_or_else(|e| panic!("{e}"));
@@ -658,7 +663,7 @@ fn relative_imports_resolve_against_the_importing_file() {
         const w = Wall.template({ height: ft(8), grade: DFL.No2 });
         const walls = Perimeter.start("W", [0, 0]).by([ft(8), 0], w).by([0, DEFAULT_SPAN], w).by([-ft(8), 0], w).close(w);
         export default Building.named("t").add(walls,
-          TrussRoof.of(myTruss(DEFAULT_SPAN), { origin: [0, 0], spanDir: [0, 1], length: ft(8), grade: DFL.No2 }).bearingOn(walls));
+          TrussRoof.of(myTruss(DEFAULT_SPAN), { at: walls.corner(1), spanDir: [0, 1], length: ft(8), grade: DFL.No2 }).bearingOn(walls));
     "#;
     let m = run(src, main.to_str().unwrap()).unwrap_or_else(|e| panic!("{e}"));
     all_clean(&m);

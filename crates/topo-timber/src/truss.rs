@@ -593,14 +593,6 @@ impl RoofParts {
     }
 }
 
-/// Where a roof is set out from on plan: a point of the world (a datum), or a node of the
-/// scene (with where it is, as things were put).
-#[derive(Clone, Copy, Debug)]
-pub enum SetOut {
-    Datum(Vec3),
-    Node(scene::NodeRef, Vec3),
-}
-
 /// A roof placed in a scene: its trusses (each a free body of it, written by its generator),
 /// and how each sits on what is under it.
 #[derive(Clone, Debug, Default)]
@@ -700,7 +692,8 @@ impl TrussRoof {
     /// them among `bearings` (as things were put):
     ///
     /// - each truss's heel is a node (`Roof/T1/heel`); where the layout puts it along the ridge
-    ///   from where the roof is set out is a hint, a reading of it (`shifted`) a reading, and
+    ///   from the node the roof is set out from (a point of the world, of a scan's frame, of the
+    ///   walls) is a hint, a reading of it (`shifted`) a reading, and
     ///   across the ridge it is where the layout puts it (hard). Its plane is plumb and square
     ///   to the ridge, and it is level, unless what it sits on says otherwise (the body's hints);
     /// - what carries it is found by a utility, by geometry, as things were put: the lines of
@@ -715,7 +708,7 @@ impl TrussRoof {
     ///
     /// The trusses start at the height of the highest top. The scene's solve sits them; writing
     /// it moves each truss, and makes each contact a node of the chord and of what it is on.
-    pub fn place(&self, m: &mut Model, sc: &mut scene::Scene, set_out: SetOut, bearings: &[scene::MemberRef]) -> Result<PlacedRoof, String> {
+    pub fn place(&self, m: &mut Model, sc: &mut scene::Scene, set_out: scene::NodeRef, bearings: &[scene::MemberRef]) -> Result<PlacedRoof, String> {
         let (span, run) = (self.span_dir, self.run_dir.normalized());
         let normal = Vec3::Z.cross(span);
         let tops: Vec<(Face, FacePlane, Option<f64>, String)> = bearings
@@ -728,10 +721,7 @@ impl TrussRoof {
             })
             .collect();
         let start = tops.iter().map(|(_, t, ..)| (t.origin.z).max((t.origin + t.along * t.length).z)).fold(f64::MIN, f64::max);
-        let (from, at) = match set_out {
-            SetOut::Datum(p) => (None, p),
-            SetOut::Node(n, p) => (Some(n), p),
-        };
+        let at = sc.position(set_out);
         let origin = v3(at.x, at.y, if tops.is_empty() { at.z } else { start });
         let g = self.group(m, origin);
         let mut placed = PlacedRoof { parts: RoofParts { group: g, trusses: vec![] }, ..Default::default() };
@@ -760,10 +750,7 @@ impl TrussRoof {
                 Some(n) => sc.node_built(&heel_name, body, Vec3::ZERO, &[], n)?,
                 None => sc.node(&heel_name, body, Vec3::ZERO)?,
             };
-            let station = |sc: &mut scene::Scene, what: &str, dir: Vec3, value: f64, how: scene::Tier| match from {
-                Some(n) => sc.offset(&format!("{name} {what}"), n, heel_node, dir, value + if dir == run { r } else { 0.0 }, how),
-                None => sc.offset_from(&format!("{name} {what}"), origin + run * r, heel_node, dir, value, how),
-            };
+            let station = |sc: &mut scene::Scene, what: &str, dir: Vec3, value: f64, how: scene::Tier| sc.offset(&format!("{name} {what}"), set_out, heel_node, dir, value + if dir == run { r } else { 0.0 }, how);
             station(sc, "at its station along the ridge", run, 0.0, scene::Tier::Hint);
             if read != 0.0 {
                 station(sc, &format!("read {:.0} mm along the ridge from its station", read * 1000.0), run, read, scene::Tier::Reading(0.001));
@@ -945,7 +932,8 @@ mod tests {
         let shape = TrussShape::standard(shape, 6.0, 4.0 / 12.0, 0.0).unwrap();
         // It starts from the highest top; what is under it says where it sits.
         let roof = TrussRoof::new("Roof", v3(0.0, 0.0, 2.4), Vec3::Y, shape, 4.0 * inch(24.0), inch(24.0), mat);
-        let placed = roof.place(&mut m, &mut sc, SetOut::Datum(v3(0.0, 0.0, 2.4)), &beams).unwrap();
+        let set_out = sc.frame_point("World/set-out", None, [Some(0.0), Some(0.0), Some(2.4)]).unwrap();
+        let placed = roof.place(&mut m, &mut sc, set_out, &beams).unwrap();
         sc.write(&mut m).unwrap();
         (m, placed)
     }

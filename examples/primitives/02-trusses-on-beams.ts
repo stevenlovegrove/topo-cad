@@ -25,7 +25,7 @@
 // and its number with its bounds); rings are constraints; orange diamonds
 // are the model's bearing points, which are the contact nodes (on the beams'
 // top faces: their axes are through their middles).
-import { Assembly, Building, DFL, ft, inch, TrussRoof, TrussShape } from "topo-cad";
+import { Assembly, Building, DFL, Frame, ft, inch, TrussRoof, TrussShape } from "topo-cad";
 
 const grade = DFL.No2;
 const o = { size: [4, 8] as const, grade };
@@ -37,7 +37,9 @@ const beams = Assembly.named("Beams")
   .member("beam", ["c", "d"], o)
   .supportedAt("a", "b", "c", "d");
 
-const roof = TrussRoof.of(TrussShape.fink({ span: ft(16), pitch: 6 / 12, overhang: inch(12) }), { origin: [0, 0], spanDir: [0, 1], length: ft(4), grade })
+// Where the roof is set out on plan: a datum (a point of the world, x and y only).
+const setOut = Frame.world.point("set-out", { x: 0, y: 0 });
+const roof = TrussRoof.of(TrussShape.fink({ span: ft(16), pitch: 6 / 12, overhang: inch(12) }), { at: setOut.node("set-out"), spanDir: [0, 1], length: ft(4), grade })
   .bearingOn(beams);
 
-export default Building.named("Trusses on beams").add(beams, roof);
+export default Building.named("Trusses on beams").add(beams, setOut, roof);

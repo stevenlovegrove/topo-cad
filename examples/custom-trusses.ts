@@ -40,7 +40,7 @@ const edited = howe
   .named("Howe (edited)");
 void kink;
 
-const roof = TrussRoof.of(custom, { origin: [0, 0], spanDir: [0, 1], length: width, spacing: inch(24), grade: DFL.No2 })
+const roof = TrussRoof.of(custom, { at: walls.corner(1), spanDir: [0, 1], length: width, spacing: inch(24), grade: DFL.No2 })
   .bearingOn(walls)
   .load("dead", psf(20))
   .load("snow", psf(25));
