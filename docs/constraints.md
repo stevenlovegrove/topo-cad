@@ -394,15 +394,17 @@ a free beam on two posts by its end nodes alone.
 
 Where a wall slopes (or two meet at a step), the plates at its corners
 cannot interleave: they butt. A plate of the second wall that ends at the
-same node as one of the first butts against it there; one that does not
-(the plies at different heights) is cut back to a node on the first face
-of the other wall it runs into (`Model::attach`: a face reaches past its
-member's end nodes by its section's size, as a joint may run it), and its
-end is cut on that face. *Known limitation:* the square-cut ends of
-sloping plates rise or fall past what they butt (a sloping cap past a
-level one by its slope over the wall's thickness), reported as partial
-bearing; at a step, the lower wall's plies end on the taller wall's end
-stud (no backing is framed for them yet).
+same node as one of the first butts against it there, cut on its side
+toward it (`JointRule::ButtFace`: where they slope differently, a line
+along the one may first meet the other's top); one that does not end
+there (the plies at different heights) is cut back to a node on the first
+face of the other wall it runs into (`Model::attach`: a face reaches past
+its member's end nodes by its section's size, as a joint may run it), and
+its end is cut on that face. Such ends meet side faces and carry nothing
+through their ends, so they are not checked as bearing (only an end cut
+on a face that faces up or down is). *Known limitation:* at a step, the
+lower wall's plies end on the side of the taller wall's end stud, which
+is narrower than they are wide: no backing is framed for them yet.
 
 ## Seeing it
 

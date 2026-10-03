@@ -257,6 +257,7 @@ impl Model {
             for r in &mut j.rules {
                 *r = match r.clone() {
                     JointRule::Butt { member, against } => JointRule::Butt { member: m(member), against: m(against) },
+                    JointRule::ButtFace { member, against, face } => JointRule::ButtFace { member: m(member), against: m(against), face },
                     JointRule::Through { member } => JointRule::Through { member: m(member) },
                     JointRule::Square { member } => JointRule::Square { member: m(member) },
                     JointRule::Miter { a, b } => JointRule::Miter { a: m(a), b: m(b) },

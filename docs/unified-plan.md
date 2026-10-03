@@ -62,7 +62,7 @@ positions because the solve found them.
 | Today | What it should be |
 | --- | --- |
 | (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
-| Where a wall slopes, or two meet at a step, plates butt with square-cut ends (partial bearing reported; no backing at a step) | Plate ends cut to what they meet; corner framing for steps |
+| Where two walls meet at a step, the lower wall's plies end on the side of the taller wall's end stud | Corner framing (backing) for steps |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
 | Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
 | The scan is compared with the model after the fact | Scan evidence is measured constraints |

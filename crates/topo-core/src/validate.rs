@@ -107,7 +107,7 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
         let at = |m: MemberId| junction.get(m).is_some() || model.attached_at(j.node).any(|a| a.member == m);
         for r in &j.rules {
             let ms: Vec<MemberId> = match r {
-                JointRule::Butt { member, against } => vec![*member, *against],
+                JointRule::Butt { member, against } | JointRule::ButtFace { member, against, .. } => vec![*member, *against],
                 JointRule::Through { member }
                 | JointRule::Square { member }
                 | JointRule::Plane { member, .. }

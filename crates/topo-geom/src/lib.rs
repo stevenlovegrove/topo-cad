@@ -73,11 +73,17 @@ impl Geometry {
     /// Butt joints whose cut end face does not fully land on the member it
     /// butts against (e.g. a stud standing past the end of its plate). The
     /// value is the largest overhang (m) of the end face beyond that member.
+    /// Only ends that bear: cut on a face that faces up or down (an end that
+    /// meets a side face, a plate butting another at a corner, carries no
+    /// weight through its end).
     pub fn bearing_overhangs(&self) -> Vec<(MemberId, MemberId, f64)> {
         let mut out = vec![];
         for g in &self.members {
             for cut in [&g.start, &g.end] {
                 let CutKind::Butt { against } = cut.kind else { continue };
+                if cut.plane.normal.z.abs() < 0.5 {
+                    continue;
+                }
                 // A compound butt bears on all the members it is cut against.
                 let targets: Vec<Vec<topo_core::Plane>> =
                     std::iter::once(against).chain(cut.also.iter().copied()).map(|t| self.member(t).envelope_planes()).collect();

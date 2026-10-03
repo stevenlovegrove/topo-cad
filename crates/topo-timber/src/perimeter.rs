@@ -278,7 +278,17 @@ fn butt_plates(m: &mut Model, through: &WallParts, butting: &WallParts, corner: 
     for p in tops(butting) {
         let Some(n) = near(m, p) else { continue };
         if let Some(t) = tops(through).into_iter().find(|&t| ends(m, t).contains(&n)) {
-            m.add_rule(n, JointRule::Butt { member: p, against: t });
+            // (Sloping differently, it is cut on the other's side toward it, not where a line along
+            // it first meets the other: that may be the other's top.)
+            let slope = |id: MemberId| m.member_axes(id).x.z;
+            let rule = if (slope(p) - slope(t)).abs() > 1e-9 {
+                let far = ends(m, p).into_iter().find(|&e| e != n).unwrap();
+                let toward = m.pos(far) - m.pos(n);
+                JointRule::ButtFace { member: p, against: t, face: m.face_toward(t, Vec3::new(toward.x, toward.y, 0.0)) }
+            } else {
+                JointRule::Butt { member: p, against: t }
+            };
+            m.add_rule(n, rule);
             m.connect(n, p, Some(t), c);
             continue;
         }
@@ -329,11 +339,6 @@ mod tests {
     use topo_geom::Geometry;
 
     fn check(m: &Model) {
-        check_but(m, |_, _| false)
-    }
-
-    /// As `check`, but partial bearing of an end of `a` on `b` is accepted where `allow(a, b)`.
-    fn check_but(m: &Model, allow: impl Fn(MemberId, MemberId) -> bool) {
         let topo = Topology::build(m);
         let issues = validate(m, &topo);
         assert!(issues.iter().all(|i| i.severity < Severity::Warning), "{issues:#?}");
@@ -345,7 +350,7 @@ mod tests {
             .map(|(a, b, d)| format!("{} {} / {} {} : {:.1} mm", a, m.member(*a).role, b, m.member(*b).role, d * 1000.0))
             .collect();
         assert!(clashes.is_empty(), "{clashes:#?}");
-        let bearing: Vec<String> = g.bearing_issues(m).iter().filter(|i| !allow(i.members[0], i.members[1])).map(|i| i.message.clone()).collect();
+        let bearing: Vec<String> = g.bearing_issues(m).iter().map(|i| i.message.clone()).collect();
         assert!(bearing.is_empty(), "{bearing:#?}");
     }
 
@@ -367,11 +372,9 @@ mod tests {
             .close(Side::Wall(w.clone().named("Left")));
         p.heights = vec![Some((lo, lo)), Some((lo, hi)), Some((hi, hi)), Some((hi, lo))];
         let parts = p.build(&mut m);
-        // KNOWN LIMITATION: where a sloping top ply butts a level one at a corner, its end face
-        // rises above (or straddles) the ply it is cut against, which the bearing check reports.
-        // Plate ends at a corner are nailed, not relied on for bearing; accepted here, for plies only.
-        let ply = |m: &Model, id: MemberId| ["top_plate", "cap_plate"].contains(&m.member(id).role.as_str());
-        check_but(&m, |a, b| ply(&m, a) && ply(&m, b));
+        // (Where a sloping ply butts a level one at a corner, its end face rises past the ply it
+        // is cut against: it meets a side face, and carries no weight through its end.)
+        check(&m);
         let right = parts.walls[1].as_ref().unwrap();
         let cap = right.cap_plates[0];
         let (a, b) = (m.pos(m.member(cap).start()), m.pos(m.member(cap).end()));
@@ -397,10 +400,8 @@ mod tests {
             .close(Side::Wall(w.clone()));
         p.heights = vec![None, None, Some((hi, hi)), None];
         p.build(&mut m);
-        // KNOWN LIMITATION: where the lower wall's plies butt the taller wall at a step, they end on
-        // its end stud, which is narrower than they are wide (no backing for them is framed yet).
-        // Accepted here, for plies on a stud only.
-        check_but(&m, |a, b| m.member(a).role.ends_with("_plate") && m.member(b).role == "stud");
+        // (The lower wall's plies end on the taller wall's end stud, on its side face.)
+        check(&m);
         assert_eq!(m.issues.iter().filter(|i| i.code == "corner-step").count(), 2, "{:#?}", m.issues);
     }
 

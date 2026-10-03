@@ -204,6 +204,9 @@ pub struct Group {
 pub enum JointRule {
     /// `member` is cut against the face of `against`.
     Butt { member: MemberId, against: MemberId },
+    /// `member` is cut on this face of `against` (where the face to cut on is known: a sloping
+    /// plate butting a level one at a corner, on its side, not on its top).
+    ButtFace { member: MemberId, against: MemberId, face: Face },
     /// `member` extends through all other ending members at this node.
     Through { member: MemberId },
     /// `member` gets a square cut at the node.

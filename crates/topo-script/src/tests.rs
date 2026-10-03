@@ -382,14 +382,12 @@ fn the_primitives_examples_show_what_they_say() {
     assert!((end("Lean-to/Back/cap_plate").z - ft(10.0)).abs() < 1e-6, "{:?}", end("Lean-to/Back/cap_plate"));
     // The base: the front's bottom plate slopes down 4" to its east end.
     assert!((end("Lean-to/Front/bottom_plate").z + inch(4.0)).abs() < 1e-9 && start("Lean-to/Front/bottom_plate").z.abs() < 1e-9);
-    // And no clashes. KNOWN LIMITATION: where sloping plates butt at a corner, their square-cut end faces rise or
-    // fall past the plate they are cut against (a sloping cap past a level one by its slope over the wall's
-    // thickness), and an end stud under a sloping plate reaches a millimetre past its square end: all reported as
-    // partial bearing. Accepted here for plates on plates, and a stud by no more than 2 mm.
+    // And no clashes. KNOWN LIMITATION: the front wall's end stud, under its sloping plate, reaches a millimetre past
+    // the plate's square-cut end (reported as partial bearing). (Plates butting at the sloped corners meet side faces,
+    // and carry nothing through their ends: not bearing.)
     let g = topo_geom::Geometry::build(&m, &Topology::build(&m));
     assert!(g.clashes().is_empty(), "{:?}", g.clashes());
-    let plate = |id: topo_core::MemberId| m.member(id).role.ends_with("_plate");
-    assert!(g.bearing_overhangs().iter().all(|&(a, b, d)| plate(b) && (plate(a) || d < 0.002)), "{:?}", g.bearing_overhangs());
+    assert!(g.bearing_overhangs().iter().all(|&(a, b, d)| m.member(a).role == "stud" && m.member(b).role.ends_with("_plate") && d < 0.002), "{:?}", g.bearing_overhangs());
 }
 
 fn roof_on_beams(far: Option<f64>) -> topo_core::Model {
