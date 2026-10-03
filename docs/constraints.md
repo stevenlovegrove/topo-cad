@@ -320,7 +320,17 @@ too: `member("Trusses/T1/bottom_chord").node("south", 1)` is the middle of
 the face toward the south, a metre along it (a direction, or a compass
 word; written as an attachment on that face). So a face seen in a scan is
 read where the scan sees it, not where the member's axis would be. Nodes
-made on the same face of a member at the same point are one node.
+made on the same face of a member at the same point are one node. On a
+member a generator built at numbers (a stud), it moves with them, as the
+member's ends do: a face reading on a stud moves the stud.
+
+A point of a frame may also be **on a plane** of it:
+`Frame.named("Scan").on(at, normal)` (in the frame's coordinates) is a node
+anywhere on that plane (where it was put, unless something says
+otherwise), found by the frame's name with no point declared. A face seen in
+a scan is read on one: `coincide(scan.on(at, normal), member(path).node(normal,
+along), { tolerance })`. This is what dragging a face in the scan workspace
+writes.
 
 Writing makes a model node for each node, and joins none to another
 because of where it is: only `coincide` (or a generator, inside what it

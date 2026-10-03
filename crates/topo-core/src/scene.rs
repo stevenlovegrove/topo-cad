@@ -122,6 +122,10 @@ pub struct Scene {
     rests: Vec<(usize, usize, usize, String)>,
     /// Each number's starting value.
     starts: Vec<(ScalarId, f64)>,
+    /// Nodes on faces of members a generator built at numbers: where each is as built (in its
+    /// body, as put), which is where it is written: the member is built again at the solved
+    /// numbers, and the node is where the solve puts it once they settle.
+    as_built: Vec<(usize, Option<usize>, Vec3)>,
 }
 
 fn tier(how: Tier) -> ts::Tier {
@@ -150,7 +154,7 @@ fn frame(p: &ts::Pose) -> Frame {
 impl Scene {
     /// A scene; `name` names its solve.
     pub fn new(name: &str) -> Scene {
-        Scene { name: name.into(), sys: ts::System::new(), bodies: vec![], nodes: vec![], members: vec![], same: vec![], rests: vec![], starts: vec![] }
+        Scene { name: name.into(), sys: ts::System::new(), bodies: vec![], nodes: vec![], members: vec![], same: vec![], rests: vec![], starts: vec![], as_built: vec![] }
     }
 
     /// A body (written as a group named `name`, of `kind`, in `parent`), put at `start`: fixed
@@ -214,6 +218,31 @@ impl Scene {
         let id = self.sys.node(name, point);
         let fixed = (at.iter().all(Option::is_some)).then_some(()).and(body).map(|b| (b.0, vec(given)));
         self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed, faces: vec![], along: None });
+        self.same.push(self.nodes.len() - 1);
+        Ok(NodeRef(self.nodes.len() - 1))
+    }
+
+    /// A point of a frame (a body, or the world) on a plane of it: `at` along `normal` (both in
+    /// the frame's coordinates), anywhere across it, a number of its own each way (where it was
+    /// put, `at`, unless anything else, even a hint, says otherwise). A face seen in a scan is
+    /// such a point of the scan's frame.
+    pub fn frame_point_on(&mut self, name: &str, body: Option<BodyRef>, at: Vec3, normal: Vec3) -> Result<NodeRef, String> {
+        if self.node_named(name).is_some() {
+            return Err(format!("two nodes named {name}"));
+        }
+        let n = normal.try_normalized().ok_or_else(|| format!("{name}: the plane's normal is not a direction"))?;
+        let frame = body.map_or(ts::WORLD, |b| self.bodies[b.0].frame);
+        let t1 = (if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y }).cross(n).normalized();
+        let t2 = n.cross(t1);
+        let mut point = ts::Point::at(frame, arr(at));
+        for (k, t) in [t1, t2].into_iter().enumerate() {
+            let s = self.sys.scalar(frame, &format!("{name}: across {}", k + 1), 0.0);
+            self.starts.push((s, 0.0));
+            self.sys.constrain(&format!("{name}: across {}, unless told", k + 1), ts::Tier::Fallback, ts::Kind::equal(s, 0.0));
+            point = point.plus(s, arr(t));
+        }
+        let id = self.sys.node(name, point);
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: None, faces: vec![], along: None });
         self.same.push(self.nodes.len() - 1);
         Ok(NodeRef(self.nodes.len() - 1))
     }
@@ -461,9 +490,10 @@ impl Scene {
     }
 
     /// A point on a face of a member of the model (the face facing most nearly `toward`, `along`
-    /// it from its first node, in the middle across it), as a node fixed in the member's body:
+    /// it from its first node, in the middle across it), as a node fixed in the member's body
+    /// (plus so much of some numbers, as `node_built`, for a member a generator built at them):
     /// written on that face of the member.
-    pub fn node_on_face(&mut self, name: &str, model: &Model, m: MemberId, toward: Vec3, along: f64) -> Result<NodeRef, String> {
+    pub fn node_on_face(&mut self, name: &str, model: &Model, m: MemberId, toward: Vec3, along: f64, moving: &[(ScalarId, Vec3)]) -> Result<NodeRef, String> {
         if self.node_named(name).is_some() {
             return Err(format!("two nodes named {name}"));
         }
@@ -474,7 +504,10 @@ impl Scene {
         }
         let at = world.origin + world.along * along;
         let (frame, local) = self.local(self.body_with(m), at);
-        let id = self.sys.node(name, ts::Point::at(frame, arr(local)));
+        let id = self.sys.node(name, moving.iter().fold(ts::Point::at(frame, arr(self.about_start(local, moving))), |p, &(s, d)| p.plus(s, arr(d))));
+        if !moving.is_empty() {
+            self.as_built.push((self.nodes.len(), self.body_with(m).map(|b| b.0), local));
+        }
         self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: None, faces: vec![(mref.0, face)], along: None });
         self.same.push(self.nodes.len() - 1);
         Ok(NodeRef(self.nodes.len() - 1))
@@ -713,6 +746,15 @@ impl Scene {
                         n
                     }
                 };
+                written[root] = Some(n);
+            }
+        }
+        for (i, body, local) in std::mem::take(&mut self.as_built) {
+            let root = self.root(i);
+            if written[root].is_none() {
+                let at = body.map_or(local, |b| frame(&self.sys.in_world(self.bodies[b].frame)).to_world(local));
+                let n = model.add_node(at);
+                model.nodes[n.idx()].name = Some(self.nodes[root].name.clone());
                 written[root] = Some(n);
             }
         }

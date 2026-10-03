@@ -1658,6 +1658,16 @@ export class Frame {
     if (!this.points.some((p) => p.name === point)) throw new Error(`frame ${this.name} has no point ${point}`);
     return new NodeHandle(`${this.name}/${point}`);
   }
+  /**
+   * A point of it on a plane of it (through `at`, square to `normal`, in its
+   * coordinates), as a node: anywhere on the plane (where it was put, unless
+   * something says otherwise). Where a face was seen in a scan:
+   * `coincide(Frame.named("Scan").on(at, normal), member(path).node(normal, along), { tolerance })`.
+   * (It needs no point declared: the frame is found by its name.)
+   */
+  on(at: Point3, normal: Point3): NodeHandle {
+    return new NodeHandle(`${this.name}:plane ${at.join(",")} n ${normal.join(",")}`);
+  }
   toJSON() {
     return { type: "frame", name: this.name, world: this.world, placement: this.world ? undefined : this.placement, free: this.free_, points: this.points };
   }

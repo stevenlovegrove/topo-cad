@@ -917,6 +917,18 @@ impl Builder {
 
     /// A point `at` along a member a generator built, as `bind` (moving as its ends do).
     fn bind_along(&self, sc: &mut scene::Scene, name: &str, id: MemberId, at: f64) -> Result<scene::NodeRef, String> {
+        sc.node_along(name, &self.m, id, at, &self.moving_at(id, at))
+    }
+
+    /// A point on a face of a member a generator built (the face facing most nearly `toward`),
+    /// `at` along it, moving as the member's ends do.
+    fn bind_on_face(&self, sc: &mut scene::Scene, name: &str, id: MemberId, toward: Vec3, at: f64) -> Result<scene::NodeRef, String> {
+        sc.node_on_face(name, &self.m, id, toward, at, &self.moving_at(id, at))
+    }
+
+    /// How a point `at` along a member moves with the numbers its ends move with (none, for a
+    /// member not built at numbers).
+    fn moving_at(&self, id: MemberId, at: f64) -> Vec<(scene::ScalarId, Vec3)> {
         let mm = self.m.member(id);
         let (a, b) = (mm.start(), mm.end());
         let f = at / self.m.member_length(id).max(1e-12);
@@ -926,7 +938,7 @@ impl Builder {
                 terms.extend(t.iter().map(|&(s, d)| (s, d * k)));
             }
         }
-        sc.node_along(name, &self.m, id, at, &terms)
+        terms
     }
 
     /// A member's path in the building (as nodes are named: `Walls/Front/cap_plate`).
@@ -1371,12 +1383,14 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         numbers.push(b.perimeter(p, &mut sc, &at[k], &drawn[k], named)?);
     }
     // Frames: their points are nodes.
+    let mut frames: HashMap<String, Option<scene::BodyRef>> = HashMap::new();
     for item in &spec.items {
         if let ItemSpec::Frame(f) = item {
             let body = (!f.world).then(|| sc.body(&f.name, "frame", f.placement.as_ref().map_or(Frame::WORLD, |p| p.frame()), f.free, Some(b.root)));
             for pt in &f.points {
                 sc.frame_point(&format!("{}/{}", f.name, pt.name), body, pt.at)?;
             }
+            frames.insert(f.name.clone(), body);
         }
     }
     let mut declared = vec![];
@@ -1392,6 +1406,20 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
             return Ok(n);
         }
         let m = &b.m;
+        let triple = |t: &str| -> Result<Vec3, String> {
+            let v: Vec<f64> = t.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("{name}: {t} is not x,y,z"))?;
+            match v[..] {
+                [x, y, z] => Ok(v3(x, y, z)),
+                _ => Err(format!("{name}: {t} is not x,y,z")),
+            }
+        };
+        // A point of a frame on a plane of it: `Frame:plane x,y,z n nx,ny,nz` (through x,y,z, its
+        // normal nx,ny,nz, in the frame's coordinates): where a face was seen in a scan.
+        if let Some((frame, rest)) = name.split_once(":plane ") {
+            let body = *frames.get(frame).ok_or_else(|| format!("{name}: no frame named {frame}"))?;
+            let (at, n) = rest.split_once(" n ").ok_or_else(|| format!("{name}: a plane is `x,y,z n nx,ny,nz`"))?;
+            return sc.frame_point_on(name, body, triple(at)?, triple(n)?);
+        }
         // A point on a face of a member: `path:face x,y,z` (the face facing that way), in the middle
         // of it, or `@d` along it.
         if let Some((path, rest)) = name.split_once(":face ") {
@@ -1399,10 +1427,9 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
                 Some((d, a)) => (d, Some(a.parse::<f64>().map_err(|_| format!("{name}: not a distance along it"))?)),
                 None => (rest, None),
             };
-            let v: Vec<f64> = dir.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("{name}: not a direction"))?;
             let id = m.find_member(path)?;
             let along = at.unwrap_or(m.member_length(id) / 2.0);
-            return sc.node_on_face(name, m, id, v3(v[0], v[1], v[2]), along);
+            return b.bind_on_face(sc, name, id, triple(dir)?, along);
         }
         if let Some((path, at)) = name.rsplit_once('@') {
             let at: f64 = at.parse().map_err(|_| format!("{name}: not a distance along {path}"))?;

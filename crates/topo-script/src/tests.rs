@@ -1139,3 +1139,48 @@ fn surveyed_wall_from_typescript() {
     let e = run(&bad, "s.ts").unwrap_err().to_string();
     assert!(e.contains("say what the offset is"), "{e}");
 }
+
+#[test]
+fn a_face_seen_in_a_scan_moves_what_it_is_a_face_of() {
+    // A face of a member read on a plane of a scan's frame (where a person put it, dragging it on the scan):
+    // the plane is in the scan's coordinates, and the frame is turned, so the plane is too.
+    use topo_core::Vec3;
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let sound = |m: &topo_core::Model| {
+        let v = topo_core::validate(m, &Topology::build(m));
+        assert!(v.iter().all(|i| i.severity < topo_core::Severity::Error) && m.issues.is_empty(), "{v:#?} {:#?}", m.issues);
+    };
+    let (o, yaw) = (Vec3::new(1.0, 2.0, 0.0), 30f64.to_radians());
+    let local = |p: Vec3| {
+        let d = p - o;
+        Vec3::new(yaw.cos() * d.x + yaw.sin() * d.y, -yaw.sin() * d.x + yaw.cos() * d.y, d.z)
+    };
+    let turn = |n: Vec3| Vec3::new(yaw.cos() * n.x + yaw.sin() * n.y, -yaw.sin() * n.x + yaw.cos() * n.y, n.z);
+    let f = |v: Vec3| format!("[{}, {}, {}]", v.x, v.y, v.z);
+    let seen = |path: &str, at: Vec3, n: Vec3| {
+        format!("  coincide(scan.on({}, {}), member(\"{path}\").node({}), {{ tolerance: 0.003 }}),\n", f(local(at)), f(turn(n)), f(n))
+    };
+    let src = include_str!("../../../examples/primitives/08-studs-on-readings.ts");
+    let base = src
+        .replace("import { Building,", "import { Building, coincide, Frame, member, Placement,")
+        .replace("  tape(walls.stud(\"Front\", 2, \"bottom\"), walls.stud(\"Front\", 3, \"bottom\"), inch(15)),\n  survey(walls.stud(\"Front\", 4, \"bottom\"), { x: ft(5) }),\n", "  scan,\n")
+        .replace("export default", "const scan = Frame.named(\"Scan\").placed(Placement.at([1, 2, 0], 30));\nexport default");
+    let plain = run(&base, "plain.ts").unwrap();
+    let stud = |m: &topo_core::Model, k: usize| m.pos(m.member(m.find_member(&format!("Walls/Front/stud#{k}")).unwrap()).start());
+    // The 4th stud's west face seen at 5 ft less half its thickness: the stud moves along the wall to 5 ft (its
+    // layout is a fallback), and nothing else does.
+    let face = seen("Walls/Front/stud#4", Vec3::new(ft(5.0) - inch(0.75), 0.05, 1.0), Vec3::new(-1.0, 0.0, 0.0));
+    let m = run(&base.replace("  scan,\n", &format!("  scan,\n{face}")), "seen.ts").unwrap();
+    sound(&m);
+    assert!((stud(&m, 4).x - ft(5.0)).abs() < 1e-6, "{:?}", stud(&m, 4));
+    for k in [1, 2, 3, 5] {
+        assert!(stud(&m, k).distance(stud(&plain, k)) < 1e-9, "stud {k} moved");
+    }
+    let read = m.solves[0].constraints.iter().find(|c| c.name.contains("read to be at")).unwrap();
+    assert!(read.tier == "measured" && read.gap.abs() < 1e-6, "{read:?}");
+    // The wall's outside face (its line, y = 0) seen 20 mm out at both ends: the wall moves out, built there.
+    let out = |x: f64| seen("Walls/Front/bottom_plate", Vec3::new(x, -0.02, 0.0), Vec3::new(0.0, -1.0, 0.0));
+    let wall = run(&base.replace("  scan,\n", &format!("  scan,\n{}{}", out(0.5), out(ft(11.0)))), "wall.ts");
+    let wall = wall.unwrap();
+    assert!((stud(&wall, 3).y - (stud(&plain, 3).y - 0.02)).abs() < 1e-6, "{:?} {:?}", stud(&wall, 3), stud(&plain, 3));
+}
