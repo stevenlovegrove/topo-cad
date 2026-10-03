@@ -28,6 +28,7 @@ pub mod render;
 #[cfg(feature = "pango")]
 pub mod render3d;
 pub mod scan;
+pub mod seen;
 pub mod selection;
 pub mod stats;
 pub mod tools;
@@ -89,6 +90,8 @@ pub struct PredMember {
     pub faces: Vec<PredFace>,
     /// Oriented box about its solid (member axes: along the grain, u, v).
     pub obb: Obb,
+    /// Its first and last nodes.
+    pub ends: [V3; 2],
 }
 
 /// A model evaluated: its members' predicted solids.
@@ -100,6 +103,9 @@ pub struct Prediction {
     /// Where the model has the scan, if it says: its frame named `Scan` (the scan's frame, placed
     /// where the scan is registered), as the model's placement in the scan.
     pub scan_frame: Option<Placement>,
+    /// The model's readings (measured constraints) as its solves leave them: name, and how far
+    /// off each is (m).
+    pub readings: Vec<(String, f64)>,
 }
 
 fn v(p: topo_core::math::Vec3) -> V3 {
@@ -148,7 +154,8 @@ pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -
             let c: [f32; 3] = std::array::from_fn(|a| 0.5 * (lo[a] + hi[a]));
             let centre = add(add(scale(axes[0], c[0]), scale(axes[1], c[1])), scale(axes[2], c[2]));
             let obb = Obb { centre, axes, length: hi[0] - lo[0], width: hi[1] - lo[1], depth: hi[2] - lo[2] };
-            PredMember { id: k, path: model.member_path(m.id), role: m.role.clone(), faces, obb }
+            let ends = [v(model.pos(m.start())), v(model.pos(m.end()))];
+            PredMember { id: k, path: model.member_path(m.id), role: m.role.clone(), faces, obb, ends }
         })
         .collect();
     // The scan's frame, if the model has one: model → scan is its placement, turned back.
@@ -159,7 +166,8 @@ pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -
         let o = p.rotate(v(f.origin));
         Placement { yaw, t: [-o[0], -o[1], -o[2]] }
     });
-    Ok(Prediction { name: model.info.name.clone(), members, report: report.map(|r| r.text()), scan_frame })
+    let readings = model.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.tier == "measured").map(|c| (c.name.clone(), c.gap)).collect();
+    Ok(Prediction { name: model.info.name.clone(), members, report: report.map(|r| r.text()), scan_frame, readings })
 }
 
 // ----- small vector helpers ---------------------------------------------------

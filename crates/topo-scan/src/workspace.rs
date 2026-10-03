@@ -199,7 +199,7 @@ pub struct Workspace {
     pub repo: Repo,
     /// The model's entry file, relative to the repository's root.
     pub model_rel: String,
-    model_abs: String,
+    pub(crate) model_abs: String,
     items_path: PathBuf,
     pub scan: Option<Arc<Scan>>,
     /// The scan thinned for drawing (made once the scan is loaded).
@@ -512,6 +512,7 @@ impl Workspace {
             "set_placement" | "refine_placement" | "register_placement" | "align_points" => self.placement_tool(who, name, args),
             "model_read" => self.model_read(args),
             "propose" => self.propose(who, args),
+            "seen" => self.seen(who, args),
             "proposal" => self.proposal(who, args),
             "members" => self.members(args),
             "render_section" => self.render(who, args),
@@ -665,7 +666,7 @@ impl Workspace {
 
     /// The model with some files replaced (absolute path → text), and its
     /// evidence at the current placement.
-    fn evaluate(&mut self, files: &HashMap<String, String>) -> Result<Evaluated> {
+    pub(crate) fn evaluate(&mut self, files: &HashMap<String, String>) -> Result<Evaluated> {
         let pred = predict_with(&self.model_abs, &mut |id| files.get(id).cloned().or_else(|| std::fs::read_to_string(id).ok()))?;
         let samples = FaceSamples::new(&pred, 0.05);
         // (Where this model has the scan, if it says: else where the scan is now.)

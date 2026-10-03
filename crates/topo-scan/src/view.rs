@@ -193,6 +193,46 @@ mod tests {
     }
 
     #[test]
+    fn a_face_placed_by_hand_moves_what_is_free_and_can_be_taken_back() {
+        // The model has the shed a foot short, and the scan's frame where the scan is; the person drags the north
+        // wall's room face to where the scan has it.
+        let pl = Placement { yaw: 0.3, t: [2.0, -1.0, 0.5] };
+        let model = shed(15)
+            .replace("import { Building,", "import { Building, Frame, Placement,")
+            .replace("export default Building.named(\"Shed\").add(walls);", &format!(
+                "import {{ seen }} from \"./shed.seen\";\nconst scan = Frame.named(\"Scan\").placed(Placement.at([{}, {}, {}], {}));\nexport default Building.named(\"Shed\").add(walls, scan, seen);",
+                pl.t[0], pl.t[1], pl.t[2], (pl.yaw as f64).to_degrees()));
+        let repo = temp_repo("seen", &[("shed.ts", &model), ("shed.seen.ts", "export const seen = [];\n")]);
+        let root = repo.root.clone();
+        let mut ws = Workspace::open(&root.join("shed.ts"), None).unwrap();
+        ws.scan = Some(Arc::new(scan_of_truth(&pl)));
+        ws.join("p1", "person").unwrap();
+        ws.call("p1", "rename", &json!({"name": "Steven"})).unwrap();
+        let north = |ws: &Workspace| ws.model().unwrap().pred.members.iter().find(|m| m.path == "Shed/Walls/North wall/bottom_plate").unwrap().obb.centre[1];
+        let y0 = north(&ws);
+        let ft = 0.3048f32;
+        let inside = 16.0 * ft - 0.0889;
+        let out = ws.call("p1", "seen", &json!({"action": "add", "member": "Shed/Walls/North wall/bottom_plate", "face": [0, -1, 0], "point": [1.8, inside, 0.0], "view": "b1"})).unwrap();
+        let said = out[0]["text"].as_str().unwrap();
+        assert!(said.contains("reading 1") && said.contains("North wall") && !said.contains("NOT MET"), "{said}");
+        assert!((north(&ws) - (y0 + ft)).abs() < 2e-3, "{} → {}", y0, north(&ws));
+        let file = std::fs::read_to_string(root.join("shed.seen.ts")).unwrap();
+        assert!(file.contains("scan.on(") && file.contains("// 1: Steven") && file.contains("in b1"), "{file}");
+        assert!(ws.call("p1", "seen", &json!({})).unwrap()[0]["text"].as_str().unwrap().contains("mm off"));
+        // Taken back, the wall is where it was; nothing is left uncommitted.
+        ws.call("p1", "seen", &json!({"action": "remove", "n": 1})).unwrap();
+        assert!((north(&ws) - y0).abs() < 1e-4);
+        let dirty = std::process::Command::new("git").arg("-C").arg(&root).args(["status", "--porcelain"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&dirty.stdout), "");
+        // A model that does not add them: refused, nothing kept.
+        std::fs::write(root.join("shed.ts"), model.replace("walls, scan, seen", "walls, scan")).unwrap();
+        ws.sync();
+        let e = ws.call("p1", "seen", &json!({"action": "add", "member": "Shed/Walls/North wall/bottom_plate", "face": [0, -1, 0], "point": [1.8, inside, 0.0]})).unwrap_err();
+        assert!(format!("{e:#}").contains(".add(seen)"), "{e:#}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn an_issue_is_raised_proposed_on_and_applied() {
         // The model has the shed a foot short.
         let repo = temp_repo("workspace", &[("shed.ts", &shed(15))]);

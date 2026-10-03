@@ -146,6 +146,31 @@ A proposal belongs to an issue. Selecting it shows it, one at a time:
 
 Apply or Reject is recorded in the thread.
 
+## Faces placed by hand
+
+Where something is plainer to see than to describe (a stud's side face among
+noisy returns), a person drags it. Select a member (a click only selects
+it); its faces get grips (magenta), each moving only along its face's
+normal, and only those that can be dragged in that view are shown (in a
+plan, a stud's sides, not its top and bottom). Dragging shows the face where
+it would go and how far; letting go places it.
+
+What is placed is a reading, not an edit of the member: the face is on a
+plane of the scan's frame through where it was put
+(`coincide(scan.on(at, normal), member(path).node(normal, along), { tolerance })`),
+3 mm by default. The solve moves whatever is free to meet it: a stud along
+its wall (its layout is a fallback), a wall's corners for a wall's face, a
+truss. It is applied at once (a commit, by whoever placed it) and a note
+says what moved, the reading's gap and the member's rays through it, with
+a way to take it back; one nothing free can meet is said as not met. A
+member's right-click menu lists the faces placed on it, to take back.
+
+They are kept in a file beside the model (`garage.seen.ts` for
+`garage.ts`), which the workspace writes and the model adds once
+(`import { seen } from "./garage.seen"`, `.add(seen)`): a model without
+that is told so, and nothing is kept. Agents use the same readings
+through the `seen` tool (add, list, remove).
+
 ## Layout
 
 - **Top bar:** project and branch, view history (Back, Forward),
@@ -441,6 +466,7 @@ Details that were decided in the building:
 | View links, Back and Forward, saved views | built |
 | Proposals: text diff, before / after / changed / both, apply, reject, revert | built |
 | Participants: names, badges, presence | built |
+| Faces placed by hand (drag a face; `seen`): readings beside the model | built, tested (the workspace side); the drag tried in the app |
 | 3D pictures for agents (`render_view`, feature `pango`) | built, run on a real scan |
 
 Not built yet:

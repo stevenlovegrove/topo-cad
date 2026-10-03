@@ -614,6 +614,15 @@ function rebuildMarks() {
   }
   const pn = thePlane();
   if (pn && vis("planes", `plane:${pn.id}`)) quad(planeCorners(pn), [60, 230, 215, 56]);
+  // A face being dragged: where it would be.
+  if (faceDrag?.moved) {
+    const m = members?.find((x) => x.path === faceDrag.path), f = m?.faces[faceDrag.k];
+    if (f) {
+      const d = vec.scale(faceDrag.n, faceDrag.t), q = f.map((p) => toScan(vec.add(p, d)));
+      for (let i = 0; i < q.length; i++) segs.push([q[i], q[(i + 1) % q.length], [255, 60, 220]]);
+      segs.push([toScan(faceDrag.c), toScan(vec.add(faceDrag.c, d)), [255, 60, 220]]);
+    }
+  }
   // Polylines, and the one being drawn.
   const run = (pts, closed, rgb) => { for (let k = 0; k + 1 < pts.length || (closed && k < pts.length && pts.length > 2); k++) segs.push([toScan(pts[k]), toScan(pts[(k + 1) % pts.length]), rgb]); };
   for (const l of lines()) if (vis("polylines", `line:${l.id}`)) run(l.points, l.closed, l.id === sel.polyline ? [240, 255, 170] : [180, 235, 60]);
@@ -715,7 +724,81 @@ function rebuildHandles() {
       list.push({ id: `m:${k}`, pos: toScan(a.map((x, i) => 0.5 * (x + b[i]))), cls: "seg", text: `${Math.hypot(...vec.sub(b, a)).toFixed(3)} m`, title: "This stretch's length. Drag to add a point here" });
     }
   }
+  // The selected member's faces: each can be dragged along its normal to where the scan has it (a reading).
+  const m = sel.member && !drawing && !sel.proposal && vis("model") && members?.find((x) => x.path === sel.member);
+  if (m) {
+    m.faces.forEach((f, k) => {
+      const g = faceGeom(m, f);
+      if (!g || g.area < 0.001) return;
+      const d = faceDrag?.k === k && faceDrag.path === m.path ? faceDrag.t : 0;
+      list.push({ id: `sf:${k}`, pos: toScan(vec.add(g.c, vec.scale(g.n, d))), along: rot(g.n), cls: "seen", text: d ? `${d > 0 ? "+" : ""}${(d * 1000).toFixed(1)} mm` : "", title: "Drag this face to where the scan has it: a reading that it is there (the solve moves what is free to meet it). A click on the member only selects it." });
+    });
+  }
   for (const v of Object.values(views)) v.setHandles(list);
+}
+
+/** A member's face (model frame): its middle, outward normal and area; null for a degenerate one. */
+function faceGeom(m, f) {
+  if (f.length < 3) return null;
+  let n = [0, 0, 0];
+  for (let i = 1; i + 1 < f.length; i++) n = vec.add(n, vec.cross(vec.sub(f[i], f[0]), vec.sub(f[i + 1], f[0])));
+  const len = Math.hypot(...n);
+  if (len < 1e-9) return null;
+  n = vec.scale(n, 1 / len);
+  const c = vec.scale(f.reduce((a, p) => vec.add(a, p), [0, 0, 0]), 1 / f.length);
+  if (vec.dot(n, vec.sub(c, m.centre)) < 0) n = vec.scale(n, -1);
+  return { c, n, area: len / 2 };
+}
+
+// ----- faces placed by hand: a face dragged to where the scan has it ---------------------
+
+let faceDrag = null;  // { path, k, c, n (model frame), t (how far it has moved, m), t0, x, y, moved }
+let lastSeen = null;  // the last face placed here: { n, path }
+function faceDragged(v, k, phase, ray, e) {
+  const m = members?.find((x) => x.path === sel.member), g = m && faceGeom(m, m.faces[k]);
+  if (!g) return;
+  const along = (r) => alongLine(toScan(g.c), rot(g.n), r);
+  if (phase === "start") { faceDrag = { path: m.path, k, c: g.c, n: g.n, t: 0, t0: along(ray) ?? 0, x: e.clientX, y: e.clientY, moved: false }; return; }
+  if (!faceDrag) return;
+  // (Only a drag moves it: a few pixels first.)
+  if (!faceDrag.moved && Math.hypot(e.clientX - faceDrag.x, e.clientY - faceDrag.y) > 3) faceDrag.moved = true;
+  const t = along(ray);
+  if (faceDrag.moved && t != null) { faceDrag.t = Math.round((t - faceDrag.t0) * 2000) / 2000; rebuildMarks(); }
+  if (phase === "end") {
+    const d = faceDrag;
+    faceDrag = null;
+    rebuildMarks();
+    if (d.moved && Math.abs(d.t) >= 0.0005) placeFace(v, d);
+  }
+}
+
+async function placeFace(v, d) {
+  const point = vec.add(d.c, vec.scale(d.n, d.t));
+  note(`Placing ${shortPath(d.path)}: its face ${d.t > 0 ? "out" : "in"} ${(Math.abs(d.t) * 1000).toFixed(1)} mm… (solving)`);
+  const r = await service.call("seen", { action: "add", member: d.path, face: d.n.map((x) => Math.round(x * 1e4) / 1e4), point: round(point, 1e5), view: v.slab || undefined });
+  if (r.error) return note(r.error, { error: true });
+  const n = Number(r.text.match(/reading (\d+)/)?.[1]);
+  lastSeen = n ? { n, path: d.path } : null;
+  note(r.text, { undo: lastSeen, warn: r.text.includes("NOT MET") });
+}
+
+async function takeBack(n) {
+  note(`Taking back reading ${n}… (solving)`);
+  const r = await service.call("seen", { action: "remove", n });
+  if (lastSeen?.n === n) lastSeen = null;
+  note(r.error || r.text, { error: !!r.error });
+}
+
+/** A note over the views: what a face placed by hand did (with a way to take it back). */
+function note(text, o = {}) {
+  let box = $("seenNote");
+  if (!box) { box = el("div", { id: "seenNote", class: "seennote" }); document.body.appendChild(box); }
+  box.className = `seennote${o.error ? " error" : o.warn ? " warn" : ""}`;
+  box.innerHTML = `<pre>${esc(text.trim())}</pre><div class="row">${o.undo ? `<button data-undo="${o.undo.n}">Take it back</button>` : ""}<button data-close>Close</button></div>`;
+  box.hidden = false;
+  box.querySelector("[data-close]").onclick = () => { box.hidden = true; };
+  const u = box.querySelector("[data-undo]");
+  if (u) u.onclick = () => takeBack(Number(u.dataset.undo));
 }
 
 /** How far along a line (through `p`, along `d`) the point nearest a ray is; null if they run together. */
@@ -731,6 +814,7 @@ function onPlane(p, n, ray) {
 
 let grab = null;  // what a handle's drag started from
 function handleDrag(v, id, phase, ray, e) {
+  if (id.startsWith("sf:")) return faceDragged(v, Number(id.slice(3)), phase, ray, e);
   const refresh = () => { syncSlabs(); rebuildMarks(); renderChips(); };
   if (sel.slab && !id.startsWith("n:") && !id.startsWith("m:")) {
     if (phase === "start") { grab = { s: structuredClone(slabOf(sel.slab)) }; return; }
@@ -1195,6 +1279,7 @@ function objectMenu(kind, id) {
     add("Go to it", () => gotoMembers(id));
     add("Its checks", () => { selectMember(id); app.showTab("member"); });
     if (st.scan.rays) add("Show the points seen through it (what contradicts it)", () => seenThrough(id));
+    add("Faces placed on it by hand…", () => facesPlacedOn(id));
     showHide();
   } else if (kind === "group" || kind === "top") {
     showHide();
@@ -1255,6 +1340,25 @@ function objectMenu(kind, id) {
 }
 
 /** The right-click menu of a scan view: for the point under the cursor, then for what is selected. */
+/** The faces placed by hand on a member: each to take back. */
+async function facesPlacedOn(path) {
+  const r = await service.call("seen", { action: "list" });
+  if (r.error) return note(r.error, { error: true });
+  const rel = path.split("/").slice(1).join("/");
+  const lines = r.text.split("\n").filter((l) => l.includes(`member(${JSON.stringify(rel)})`));
+  if (!lines.length) return note(`No faces of ${shortPath(path)} have been placed by hand.`);
+  const box = note(lines.map((l) => l.replace(/^\s*coincide\(.*?\), \/\/ /, "")).join("\n"));
+  const at = $("seenNote").querySelector(".row");
+  for (const l of lines) {
+    const n = Number(l.match(/\/\/ (\d+):/)?.[1]);
+    if (!n) continue;
+    const b = el("button", {}, `Take back ${n}`);
+    b.onclick = () => takeBack(n);
+    at.prepend(b);
+  }
+  return box;
+}
+
 function contextMenu(v, p, x, y) {
   const items = p?.hit ? pointMenu(p, v) : [{ label: "New issue, not pinned", run: () => startDraft("none") }];
   const c = chosen();
