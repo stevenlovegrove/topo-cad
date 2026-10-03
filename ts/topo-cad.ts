@@ -603,6 +603,15 @@ export class Perimeter {
    * its path within the perimeter (`cap_plate#2` where a wall's cap is in
    * pieces).
    */
+  /**
+   * A corner, as a node (1 is its start, then each corner it turns, in
+   * order). Corners are where they are drawn, unless relations among
+   * corners say otherwise: a datum, a `survey` of one, a `tape` between two.
+   * The walls are built on the corners where they then are.
+   */
+  corner(i: number): NodeHandle {
+    return new NodeHandle(`${this.name}/corner ${i}`);
+  }
   node(member: string, at: "start" | "end" | Length): NodeHandle {
     return new NodeHandle(typeof at === "number" ? `${this.name}/${member}@${at}` : `${this.name}/${member}:${at}`);
   }
@@ -1522,6 +1531,14 @@ export class Relation {
   static datum(node: NodeHandle, at: Point3): Relation {
     return new Relation({ type: "datum", node: node.name, at });
   }
+  /** A reading with a tape: the two nodes are `distance` apart, to about `tolerance` (default 3 mm). */
+  static tape(a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation {
+    return new Relation({ type: "tape", a: a.name, b: b.name, distance, tolerance: o.tolerance ?? 0.003 });
+  }
+  /** A surveyed point: the node is here, along whichever of x, y, z are given, to about `tolerance` (default 3 mm). */
+  static survey(node: NodeHandle, at: { x?: Length; y?: Length; z?: Length }, o: { tolerance?: Length } = {}): Relation {
+    return new Relation({ type: "survey", node: node.name, ...at, tolerance: o.tolerance ?? 0.003 });
+  }
   toJSON() {
     return this.spec;
   }
@@ -1530,6 +1547,10 @@ export class Relation {
 export const coincide = (a: NodeHandle, b: NodeHandle): Relation => Relation.coincide(a, b);
 /** A node is at this place (in the building's coordinates). */
 export const datum = (node: NodeHandle, at: Point3): Relation => Relation.datum(node, at);
+/** A reading with a tape between two nodes: measured, so it gives way to what must hold, and says by how much. */
+export const tape = (a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation => Relation.tape(a, b, distance, o);
+/** A surveyed point: measured, along whichever of x, y, z are given. */
+export const survey = (node: NodeHandle, at: { x?: Length; y?: Length; z?: Length }, o: { tolerance?: Length } = {}): Relation => Relation.survey(node, at, o);
 
 export type Item = Perimeter | TrussRoof | Assembly | Relation;
 

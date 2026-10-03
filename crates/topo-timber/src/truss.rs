@@ -644,8 +644,9 @@ impl TrussRoof {
         );
         stations.push((self.length, Some(-run)));
         let mut parts = RoofParts { group: g, ..Default::default() };
-        let stations: Vec<(f64, Option<Vec3>)> = stations.into_iter().enumerate().map(|(i, (r, face))| (r + self.shifts.iter().filter(|(ns, _)| ns.contains(&(i + 1))).map(|(_, d)| d).sum::<f64>(), face)).collect();
-        let seats = self.seats(&stations.iter().map(|(r, face)| (self.origin + run * *r, *face)).collect::<Vec<_>>(), &mut parts);
+        // Each truss's station (where the layout puts it), and how far from it it was read to be (`shifted`).
+        let read = |i: usize| self.shifts.iter().filter(|(ns, _)| ns.contains(&(i + 1))).map(|(_, d)| d).sum::<f64>();
+        let seats = self.seats(&stations.iter().enumerate().map(|(i, (r, face))| (self.origin + run * *r, read(i), *face)).collect::<Vec<_>>(), &mut parts);
         if let Some(solved) = parts.solved.take() {
             m.solves.push(solved);
         }
@@ -693,7 +694,8 @@ impl TrussRoof {
     /// it is level; these settle what the supports leave open and give way where they do not.
     /// Nothing ties one truss to another, so each is solved on its own. Afterward, every
     /// support node the chord touches is one it sits on.
-    fn seats(&self, heels: &[(Vec3, Option<Vec3>)], parts: &mut RoofParts) -> Vec<(Vec3, Vec3, Vec3)> {
+    fn seats(&self, stations: &[(Vec3, f64, Option<Vec3>)], parts: &mut RoofParts) -> Vec<(Vec3, Vec3, Vec3)> {
+        let heels: Vec<(Vec3, Option<Vec3>)> = stations.iter().map(|&(at, read, face)| (at + self.run_dir.normalized() * read, face)).collect();
         use topo_solve::{Dir, Joint, Kind, Point, Pose, System, Tier, WORLD};
         struct Under {
             bearing: usize,
@@ -812,9 +814,16 @@ impl TrussRoof {
                 sys.constrain(&format!("{name} on the {}", under[k].label), Tier::Hard, Kind::offset(support.clone(), chord.clone(), Dir(WORLD, [0.0, 0.0, 1.0]), 0.0));
                 sys.constrain(&format!("{name} over the {}", under[k].label), Tier::Hard, Kind::offset(support, chord, Dir(WORLD, arr(span)), 0.0));
             }
+            // Its station: a node where the layout puts it. Along the ridge, the layout is a hint, and a
+            // reading of where it is (`shifted`) is a measurement; across, the station is where it is (a datum).
             let heel_node = sys.node(&format!("{name}/heel"), Point::at(truss, [0.0; 3]));
-            let (laid, origin) = (Point::at(WORLD, arr(heel)), sys.at(heel_node));
-            sys.constrain(&format!("{name} at its place along the ridge"), Tier::Hard, Kind::offset(laid.clone(), origin.clone(), Dir(WORLD, arr(run)), 0.0));
+            let (station_at, read, _) = stations[i];
+            let station = sys.node(&format!("{name} station"), Point::at(WORLD, arr(station_at)));
+            let (laid, origin) = (sys.at(station), sys.at(heel_node));
+            sys.constrain(&format!("{name} at its station along the ridge"), Tier::Default, Kind::offset(laid.clone(), origin.clone(), Dir(WORLD, arr(run)), 0.0));
+            if read != 0.0 {
+                sys.constrain(&format!("{name} read {:.0} mm along the ridge from its station", read * 1000.0), Tier::Measured { sigma: 0.001 }, Kind::offset(laid.clone(), origin.clone(), Dir(WORLD, arr(run)), read));
+            }
             sys.constrain(&format!("{name} at its place along the span"), Tier::Hard, Kind::offset(laid, origin, Dir(WORLD, arr(span)), 0.0));
             sys.constrain(&format!("{name} plumb and square to the ridge"), Tier::Default, Kind::Aligned(Dir(truss, [0.0, 1.0, 0.0]), Dir(WORLD, arr(normal))));
             sys.constrain(&format!("{name} level"), Tier::Default, Kind::Aligned(Dir(truss, [1.0, 0.0, 0.0]), Dir(WORLD, arr(span))));
@@ -828,7 +837,7 @@ impl TrussRoof {
             let gaps: Vec<String> = c.constraints.iter().map(|g| format!("{} ({:.0} mm off)", g.constraint, g.size * 1000.0)).collect();
             parts.problems.push(format!("{} cannot sit on what is under it: {}", c.frames.join(", "), gaps.join("; ")));
         }
-        (placed.iter().zip(heels).enumerate())
+        (placed.iter().zip(&heels).enumerate())
             .map(|(_, ((frame, under), &(heel, _)))| match frame {
                 Some(f) if !report.conflicts.iter().any(|c| c.frames.iter().any(|n| n == sys.name(*f))) => {
                     let p = sys.in_world(*f);

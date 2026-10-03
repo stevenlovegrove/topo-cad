@@ -162,6 +162,54 @@ pub enum ItemSpec {
     Coincide { a: String, b: String },
     /// A node is at this place.
     Datum { node: String, at: [f64; 3] },
+    /// A reading with a tape: two nodes are this far apart, to about `tolerance`.
+    Tape { a: String, b: String, distance: f64, tolerance: f64 },
+    /// A surveyed point: a node is here, along whichever of x, y, z are given, to about `tolerance`.
+    Survey {
+        node: String,
+        #[serde(default)]
+        x: Option<f64>,
+        #[serde(default)]
+        y: Option<f64>,
+        #[serde(default)]
+        z: Option<f64>,
+        tolerance: f64,
+    },
+}
+
+impl ItemSpec {
+    /// The nodes a relation names.
+    fn nodes(&self) -> Vec<&str> {
+        match self {
+            ItemSpec::Coincide { a, b } | ItemSpec::Tape { a, b, .. } => vec![a, b],
+            ItemSpec::Datum { node, .. } | ItemSpec::Survey { node, .. } => vec![node],
+            _ => vec![],
+        }
+    }
+}
+
+/// A relation, into a scene, its nodes found by `node`.
+fn relate(sc: &mut scene::Scene, item: &ItemSpec, node: &mut dyn FnMut(&mut scene::Scene, &str) -> Result<scene::NodeRef, String>) -> Result<(), String> {
+    match item {
+        ItemSpec::Coincide { a, b } => {
+            let (na, nb) = (node(sc, a)?, node(sc, b)?);
+            sc.coincide(&format!("{a} is {b}"), na, nb);
+        }
+        ItemSpec::Datum { node: n, at } => {
+            let nn = node(sc, n)?;
+            sc.datum(&format!("{n} at [{}, {}, {}]", at[0], at[1], at[2]), nn, v3(at[0], at[1], at[2]));
+        }
+        ItemSpec::Tape { a, b, distance, tolerance } => {
+            let (na, nb) = (node(sc, a)?, node(sc, b)?);
+            sc.tape(&format!("{a} to {b}, read {distance:.4} m"), na, nb, *distance, *tolerance);
+        }
+        ItemSpec::Survey { node: n, x, y, z, tolerance } => {
+            let nn = node(sc, n)?;
+            sc.survey(&format!("{n} surveyed"), nn, [*x, *y, *z], *tolerance);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Placement of a local frame in world coordinates.
@@ -282,13 +330,13 @@ pub struct WallSpec {
     pub survey: Option<topo_timber::Survey>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SegmentSpec {
     pub to: (f64, f64),
     pub side: Option<WallSpec>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PerimeterSpec {
     pub name: String,
     pub start: (f64, f64),
@@ -919,11 +967,39 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
     let mut b = Builder { m, grades: HashMap::new(), perimeters: HashMap::new(), assemblies: HashMap::new(), root };
     // One scene: perimeters (written by their generator, as bodies of it), assemblies, and the
     // relations between their nodes; solved, then written into the model. Then roofs, on what it placed.
-    let mut sc = scene::Scene::new("The building's parts and the relations between them");
-    for item in &spec.items {
-        if let ItemSpec::Perimeter(p) = item {
-            b.perimeter(p, &mut sc)?;
+    // A perimeter's corners are nodes (`Perimeter/corner 1`, from its start): where it is drawn,
+    // unless relations among corners (datums, readings) say otherwise. Those are solved first, on
+    // their own; the perimeter is then built on the corners where they are.
+    let is_corner = |name: &str| spec.items.iter().any(|i| matches!(i, ItemSpec::Perimeter(p) if name.strip_prefix(&format!("{}/corner ", p.name)).is_some_and(|k| k.parse::<usize>().is_ok())));
+    let on_corners: Vec<&ItemSpec> = spec.items.iter().filter(|i| !i.nodes().is_empty() && i.nodes().iter().all(|n| is_corner(n))).collect();
+    let mut perimeters: Vec<PerimeterSpec> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(p.clone()) } else { None }).collect();
+    if !on_corners.is_empty() {
+        let mut cs = scene::Scene::new("Corners of the walls");
+        let mut corners: Vec<Vec<scene::NodeRef>> = vec![];
+        for p in &perimeters {
+            let n = if p.closed { p.segments.len() } else { p.segments.len() + 1 };
+            let at = |k: usize| if k == 0 { p.start } else { p.segments[k - 1].to };
+            corners.push((0..n).map(|k| cs.point(&format!("{}/corner {}", p.name, k + 1), v3(at(k).0, at(k).1, p.z))).collect::<Result<_, _>>()?);
         }
+        for item in &on_corners {
+            relate(&mut cs, item, &mut |sc: &mut scene::Scene, name: &str| sc.node_named(name).ok_or_else(|| format!("no corner {name}")))?;
+        }
+        let report = cs.solve()?;
+        b.m.solves.push(cs.solved(&report));
+        for (p, cs_nodes) in perimeters.iter_mut().zip(&corners) {
+            let at: Vec<Vec3> = cs_nodes.iter().map(|&n| cs.position(n)).collect();
+            p.start = (at[0].x, at[0].y);
+            p.z = at[0].z;
+            for (k, seg) in p.segments.iter_mut().enumerate() {
+                if k + 1 < at.len() {
+                    seg.to = (at[k + 1].x, at[k + 1].y);
+                }
+            }
+        }
+    }
+    let mut sc = scene::Scene::new("The building's parts and the relations between them");
+    for p in &perimeters {
+        b.perimeter(p, &mut sc)?;
     }
     let mut declared = vec![];
     for item in &spec.items {
@@ -960,18 +1036,8 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
             node(&mut sc, &b.m, at)?;
         }
     }
-    for item in &spec.items {
-        match item {
-            ItemSpec::Coincide { a, b: other } => {
-                let (na, nb) = (node(&mut sc, &b.m, a)?, node(&mut sc, &b.m, other)?);
-                sc.coincide(&format!("{a} is {other}"), na, nb);
-            }
-            ItemSpec::Datum { node: n, at } => {
-                let nn = node(&mut sc, &b.m, n)?;
-                sc.datum(&format!("{n} at [{}, {}, {}]", at[0], at[1], at[2]), nn, v3(at[0], at[1], at[2]));
-            }
-            _ => {}
-        }
+    for item in spec.items.iter().filter(|i| !on_corners.iter().any(|c| std::ptr::eq(*c, *i))) {
+        relate(&mut sc, item, &mut |sc: &mut scene::Scene, name: &str| node(sc, &b.m, name))?;
     }
     let written = sc.write(&mut b.m)?;
     for open in &written.open {

@@ -126,6 +126,8 @@ pub enum Joint {
     Hinge(V3),
     /// Moving in the plane with this normal, and turning about the normal.
     Planar(V3),
+    /// Moving, not turning: a point.
+    Moves,
 }
 
 impl Joint {
@@ -141,6 +143,7 @@ impl Joint {
         match *self {
             Joint::Fixed => vec![],
             Joint::Free => (0..3).map(|k| (axes[k], z, format!("move along its {}", ["x", "y", "z"][k]))).chain((0..3).map(|k| (z, axes[k], format!("turn about its {}", ["x", "y", "z"][k])))).collect(),
+            Joint::Moves => (0..3).map(|k| (axes[k], z, format!("move along its {}", ["x", "y", "z"][k]))).collect(),
             Joint::Slider(a) => vec![(unit(a), z, "slide".into())],
             Joint::Hinge(a) => vec![(z, unit(a), "turn".into())],
             Joint::Planar(n) => {
@@ -1488,6 +1491,7 @@ impl System {
                 Joint::Slider(_) => "slider",
                 Joint::Hinge(_) => "hinge",
                 Joint::Planar(_) => "planar",
+                Joint::Moves => "a point",
             };
             let freedoms = (joint.freedoms().into_iter().enumerate())
                 .map(|(k, (v, w, what))| {

@@ -147,6 +147,57 @@ impl Scene {
         b
     }
 
+    /// A point, free to move (not a body: it does not turn), as a node: it starts at `at`, and
+    /// stays there as a hint unless relations say otherwise.
+    pub fn point(&mut self, name: &str, at: Vec3) -> Result<NodeRef, String> {
+        if self.node_named(name).is_some() {
+            return Err(format!("two nodes named {name}"));
+        }
+        let f = self.sys.frame(name, ts::WORLD, ts::Joint::Moves, pose(&Frame { origin: at, ..Frame::WORLD }));
+        let id = self.sys.node(name, ts::Point::at(f, [0.0; 3]));
+        self.sys.constrain(&format!("{name} where it is drawn"), ts::Tier::Default, ts::Kind::Coincident(self.sys.at(id), ts::Point::at(ts::WORLD, arr(at))));
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: None, faces: vec![], along: None });
+        self.same.push(self.nodes.len() - 1);
+        Ok(NodeRef(self.nodes.len() - 1))
+    }
+
+    /// Where a node is, once solved (`write` consumes the scene; this is for a scene solved on its own).
+    pub fn solve(&mut self) -> Result<ts::Report, String> {
+        let report = self.sys.solve();
+        if report.refused {
+            return Err(report.conflicts.iter().map(|c| format!("{} cannot all hold: {}", c.frames.join(", "), c.constraints.iter().map(|g| format!("{} ({:.1} mm off)", g.constraint, g.size * 1000.0)).collect::<Vec<_>>().join("; "))).collect::<Vec<_>>().join(". "));
+        }
+        Ok(report)
+    }
+
+    pub fn position(&self, n: NodeRef) -> Vec3 {
+        vec(self.sys.node_at(self.nodes[n.0].of[0]))
+    }
+
+    /// The solve, as the model keeps it to be shown.
+    pub fn solved(&self, report: &ts::Report) -> Solved {
+        solved(&self.name, &self.sys.explain(report))
+    }
+
+    /// A reading with a tape: the two nodes are `distance` apart, to about `tolerance`.
+    pub fn tape(&mut self, name: &str, a: NodeRef, b: NodeRef, distance: f64, tolerance: f64) {
+        let (pa, pb) = (self.sys.at(self.nodes[a.0].of[0]), self.sys.at(self.nodes[b.0].of[0]));
+        self.sys.constrain(name, ts::Tier::Measured { sigma: tolerance }, ts::Kind::distance(pa, pb, distance));
+    }
+
+    /// A surveyed point: the node is here, along whichever of x, y and z are given, to about `tolerance`.
+    pub fn survey(&mut self, name: &str, n: NodeRef, at: [Option<f64>; 3], tolerance: f64) {
+        let p = self.sys.at(self.nodes[n.0].of[0]);
+        for (k, v) in at.iter().enumerate() {
+            if let Some(v) = v {
+                let mut axis = [0.0; 3];
+                axis[k] = 1.0;
+                let which = ["x", "y", "z"][k];
+                self.sys.constrain(&format!("{name}: {which} = {v:.4}"), ts::Tier::Measured { sigma: tolerance }, ts::Kind::offset(ts::Point::at(ts::WORLD, [0.0; 3]), p.clone(), ts::Dir(ts::WORLD, axis), *v));
+            }
+        }
+    }
+
     /// The body whose written content has this member of the model.
     pub fn body_with(&self, m: MemberId) -> Option<BodyRef> {
         self.bodies.iter().position(|b| b.content.as_ref().is_some_and(|c| c.members.contains(&m))).map(BodyRef)

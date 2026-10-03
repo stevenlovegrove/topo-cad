@@ -165,9 +165,11 @@ fn the_primitives_examples_show_what_they_say() {
     let s = &m.solves[0];
     assert_eq!(s.variables.iter().filter(|v| v.kind == "free").count(), 3);
     assert!(s.variables.iter().all(|v| v.freedoms.iter().all(|f| f.settled != "open")), "nothing is left open");
-    // The supports fix T1's height and its tilt, and the datums its place on plan (hard); the hints settle its roll and its turn on plan.
+    // The supports fix T1's height and its tilt, and its station across the ridge its place along the span (hard);
+    // the hints settle its roll, its turn on plan, and (the layout being a hint) its place along the ridge.
     let t1 = s.variables.iter().find(|v| v.name == "T1").unwrap();
-    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hard", "hard", "hint", "hard", "hint"]);
+    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hint", "hard", "hint", "hard", "hint"]);
+    assert!(s.nodes.iter().any(|n| n.name == "T1 station" && n.kind == "fixed"));
     // The level hint gives way to the beams (2 inches over the span between them), and says by how much.
     let level = s.constraints.iter().find(|c| c.name == "T1 level").unwrap();
     assert!(level.gap > 0.009 && level.gap < 0.012, "{level:?}");
@@ -261,6 +263,30 @@ fn the_primitives_examples_show_what_they_say() {
     let m2 = run(&src.replace("datum(corner, [5, 3, ft(8)])", "datum(corner, [7, 3, ft(8)])"), "moved.ts").unwrap();
     let front2 = m2.find_member("Walls/Front/cap_plate").unwrap();
     assert!((m2.pos(m2.member(front2).start()) - corner - v3(2.0, 0.0, 0.0)).norm() < 1e-9);
+
+    // Walls on readings: the corners go where the readings put them, and the walls are built on them.
+    let src = include_str!("../../../examples/primitives/07-walls-on-readings.ts");
+    let m = run(src, "07-walls-on-readings.ts").unwrap();
+    sound(&m);
+    let inch = topo_core::units::inch;
+    let corners = m.solves.iter().find(|s| s.name == "Corners of the walls").unwrap();
+    let at = |k: usize| corners.nodes.iter().find(|n| n.name == format!("Walls/corner {k}")).unwrap().at;
+    assert!(at(1).norm() < 1e-9 && (at(2).x - (ft(20.0) + inch(1.0))).abs() < 1e-9 && (at(3).y - (ft(12.0) + inch(0.75))).abs() < 1e-9, "{:?} {:?} {:?}", at(1), at(2), at(3));
+    // Corner 3 kept its x (as drawn, a hint), and corner 4 is where it was drawn.
+    assert!((at(3).x - ft(20.0)).abs() < 1e-9 && (at(4) - topo_core::v3(0.0, ft(12.0), 0.0)).norm() < 1e-9);
+    // The front wall is built on them: its bottom plate runs the taped length.
+    let plate = m.find_member("Walls/Front/bottom_plate").unwrap();
+    assert!((m.member_length(plate) - (ft(20.0) + inch(1.0))).abs() < 0.2, "{}", m.member_length(plate));
+    let front_cap = m.find_member("Walls/Front/cap_plate").unwrap();
+    assert!(m.pos(m.member(front_cap).end()).x > ft(20.0) + inch(0.9));
+    // Readings that cannot hold with a datum give way, and say by how much: here the tape and corner 1's survey
+    // (both readings, to the same tolerance) share the inch between them.
+    let fought = src.replace("survey(walls.corner(1), { x: 0, y: 0 }),", "survey(walls.corner(1), { x: 0, y: 0 }),\n  datum(walls.corner(2), [ft(20), 0, 0]),").replace("import { Building,", "import { Building, datum,");
+    let m = run(&fought, "fought.ts").unwrap();
+    let c = m.solves.iter().find(|s| s.name == "Corners of the walls").unwrap();
+    let tape_gap = c.constraints.iter().find(|x| x.name.starts_with("Walls/corner 1 to Walls/corner 2")).unwrap();
+    let survey_gap = c.constraints.iter().find(|x| x.name == "Walls/corner 1 surveyed: x = 0.0000").unwrap();
+    assert!(tape_gap.tier == "measured" && (tape_gap.gap + survey_gap.gap - inch(1.0)).abs() < 1e-6 && (tape_gap.gap - survey_gap.gap).abs() < 1e-6, "{tape_gap:?} {survey_gap:?}");
 
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
