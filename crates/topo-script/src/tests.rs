@@ -161,34 +161,39 @@ fn the_primitives_examples_show_what_they_say() {
     let e = run(&off, "off.ts").unwrap_err().to_string();
     assert!(e.contains("does not rest on") && e.contains("above"), "{e}");
 
-    // Trusses on beams: three free things and their numbers, sat by a solve kept with the model; six bearing points on faces.
+    // Trusses on beams: three free things in the building's one solve; six bearing points on faces.
     let m = run(include_str!("../../../examples/primitives/02-trusses-on-beams.ts"), "02-trusses-on-beams.ts").unwrap();
     sound(&m);
     assert_eq!(m.attachments.len(), 6);
+    assert_eq!(m.solves.len(), 1);
     let s = &m.solves[0];
     assert_eq!(s.variables.iter().filter(|v| v.kind == "free").count(), 3);
-    assert!(s.variables.iter().all(|v| v.freedoms.iter().all(|f| f.settled != "open")), "nothing is left open");
-    // The supports fix T1's height and its tilt, and its station across the ridge its place along the span (hard);
-    // the hints settle its roll, its turn on plan, and (the layout being a hint) its place along the ridge.
-    let t1 = s.variables.iter().find(|v| v.name == "T1").unwrap();
-    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hint", "hard", "hint", "hard", "hint"]);
-    assert!(s.nodes.iter().any(|n| n.name == "T1 station" && n.kind == "fixed"));
-    // The level hint gives way to the beams (2 inches over the span between them), and says by how much.
-    let level = s.constraints.iter().find(|c| c.name == "T1 level").unwrap();
+    assert!(s.variables.iter().all(|v| v.freedoms.iter().all(|f| f.settled != "open")), "nothing is left open: {:#?}", s.variables);
+    // What it sits on fixes T1's height and its tilt, and its station across the ridge its place along the span
+    // (hard); the hints settle its roll, its turn on plan, and (the layout being a hint) its place along the ridge.
+    let t1 = s.variables.iter().find(|v| v.name == "Roof trusses/T1").unwrap();
+    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hint", "hard", "hint", "hard", "hint"], "{t1:#?}");
+    let station = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 at its station along the ridge").unwrap();
+    assert!(station.tier == "hint" && station.gap.abs() < 1e-9);
+    // The level hint (it is turned as it was put) gives way to the beams (2 inches over the span between them).
+    let level = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 turned as it was put").unwrap();
     assert!(level.gap > 0.009 && level.gap < 0.012, "{level:?}");
-    // The nodes. Supports, fixed on the beams: an edge, the middle and an edge of each beam's top under T1. Chord
-    // nodes, on a line of T1 (one number, bounded): over the two supports that carry it, the far edge of each top.
-    let of_t1: Vec<_> = s.nodes.iter().filter(|n| n.name.starts_with("T1 ")).collect();
-    assert_eq!(of_t1.iter().filter(|n| n.kind == "fixed" && n.of == "world" && n.name.starts_with("T1 support: ")).count(), 6, "{of_t1:#?}");
-    let chords: Vec<_> = of_t1.iter().filter(|n| n.kind == "on a line").collect();
-    assert_eq!(chords.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["T1 chord over the far edge of Trusses on beams/Beams/beam#1", "T1 chord over the far edge of Trusses on beams/Beams/beam#2"]);
-    assert!(chords.iter().all(|n| n.of == "T1" && n.numbers.len() == 1 && n.numbers[0].bounds.is_some() && n.numbers[0].settled == "hard"));
-    // Each contact is between a support node and a chord node, by name.
-    let on = s.constraints.iter().find(|c| c.name == "T1 on the far edge of Trusses on beams/Beams/beam#1").unwrap();
-    assert_eq!(on.nodes, ["T1 support: far edge of Trusses on beams/Beams/beam#1", "T1 chord over the far edge of Trusses on beams/Beams/beam#1"]);
-    // The model's bearing points are those support nodes, by name.
-    let named: Vec<&str> = m.attachments.iter().filter_map(|a| m.nodes[a.node.idx()].name.as_deref()).filter(|n| n.starts_with("T1 ")).collect();
-    assert_eq!(named, ["T1 support: far edge of Trusses on beams/Beams/beam#1", "T1 support: far edge of Trusses on beams/Beams/beam#2"]);
+    // Each contact is a node of the solve on a line of the chord's underside (its axis: one number, bounded by the
+    // chord, settled by the contact) and on a line of the beam's top (the far edge: sloping down to the lower beam,
+    // it touches each there), held to be one point.
+    let contacts = ["Roof trusses/T1 on the far edge of Beams/beam#1", "Roof trusses/T1 on the far edge of Beams/beam#2"];
+    for c in contacts {
+        let halves: Vec<_> = s.nodes.iter().filter(|n| n.name.starts_with(&format!("{c} ("))).collect();
+        assert_eq!(halves.len(), 2, "{c}: {:#?}", s.nodes.iter().map(|n| &n.name).collect::<Vec<_>>());
+        assert!(halves.iter().all(|n| n.kind == "on a line" && n.numbers.len() == 1 && n.numbers[0].bounds.is_some()), "{halves:#?}");
+        assert_eq!(halves[0].of, "Roof trusses/T1");
+        assert_eq!(halves[0].numbers[0].settled, "hard");
+        let on = s.constraints.iter().find(|x| x.name == format!("{c}: on both")).unwrap();
+        assert!(on.tier == "hard" && on.gap.abs() < 1e-9 && on.nodes.len() == 2);
+    }
+    // The model's bearing points are those nodes, by name: in the chord's path, on the beam's top face.
+    let named: Vec<&str> = m.attachments.iter().filter_map(|a| m.nodes[a.node.idx()].name.as_deref()).filter(|n| n.starts_with("Roof trusses/T1 ")).collect();
+    assert_eq!(named, contacts);
 
     // Placed by nodes: the free beam, put anywhere and turned, ends up on the posts' tops, sharing their nodes.
     let m = run(include_str!("../../../examples/primitives/04-placed-by-nodes.ts"), "04-placed-by-nodes.ts").unwrap();
@@ -265,7 +270,7 @@ fn the_primitives_examples_show_what_they_say() {
     // Moving the datum moves it all.
     let m2 = run(&src.replace("datum(corner, [5, 3, ft(8)])", "datum(corner, [7, 3, ft(8)])"), "moved.ts").unwrap();
     let front2 = m2.find_member("Walls/Front/cap_plate").unwrap();
-    assert!((m2.pos(m2.member(front2).start()) - corner - v3(2.0, 0.0, 0.0)).norm() < 1e-9);
+    assert!((m2.pos(m2.member(front2).start()) - corner - v3(2.0, 0.0, 0.0)).norm() < 1e-9, "{:?} {:?}", m2.pos(m2.member(front2).start()), corner);
 
     // Walls on readings: the corners go where the readings put them, and the walls are built on them.
     let src = include_str!("../../../examples/primitives/07-walls-on-readings.ts");
@@ -356,8 +361,10 @@ fn the_primitives_examples_show_what_they_say() {
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
     sound(&m);
-    // (Two solves: the walls' studs, in the building's solve; then the roof's.)
-    assert!(m.attachments.is_empty() && m.solves.len() == 2 && m.solves.iter().any(|s| s.name.ends_with("trusses on what is under them")));
+    // (One solve: the walls' numbers and the trusses, each a free body sat on the plates, in the building's.)
+    assert!(m.attachments.is_empty(), "{:#?}", m.attachments);
+    assert_eq!(m.solves.len(), 1);
+    assert!(m.solves[0].variables.iter().filter(|v| v.kind == "free").count() >= 2);
 
     // Walls that slope: built from numbers of the one solve, and built again at the solved ones until they settle.
     let src = include_str!("../../../examples/primitives/09-walls-that-slope.ts");

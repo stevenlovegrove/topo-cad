@@ -121,6 +121,15 @@ pub struct Scene {
     starts: Vec<(ScalarId, f64)>,
 }
 
+fn tier(how: Tier) -> ts::Tier {
+    match how {
+        Tier::Hard => ts::Tier::Hard,
+        Tier::Reading(tolerance) => ts::Tier::Measured { sigma: tolerance },
+        Tier::Hint => ts::Tier::Default,
+        Tier::Fallback => ts::Tier::Fallback,
+    }
+}
+
 fn arr(v: Vec3) -> [f64; 3] {
     [v.x, v.y, v.z]
 }
@@ -177,6 +186,21 @@ impl Scene {
         Ok(NodeRef(self.nodes.len() - 1))
     }
 
+    /// A node is `value` from a point of the world along a direction of it (`n - at`, along
+    /// `dir`): hard (a datum, along one direction), a reading, or a hint (a station a layout
+    /// sets out).
+    pub fn offset_from(&mut self, name: &str, at: Vec3, n: NodeRef, dir: Vec3, value: f64, how: Tier) {
+        let p = self.sys.at(self.nodes[n.0].of[0]);
+        self.sys.constrain(name, tier(how), ts::Kind::offset(ts::Point::at(ts::WORLD, arr(at)), p, ts::Dir(ts::WORLD, arr(dir)), value));
+    }
+
+    /// One node is `value` from another along a direction of the world (`b - a`, along `dir`):
+    /// hard, a reading (to about a tolerance), or a hint.
+    pub fn offset(&mut self, name: &str, a: NodeRef, b: NodeRef, dir: Vec3, value: f64, how: Tier) {
+        let (pa, pb) = (self.sys.at(self.nodes[a.0].of[0]), self.sys.at(self.nodes[b.0].of[0]));
+        self.sys.constrain(name, tier(how), ts::Kind::offset(pa, pb, ts::Dir(ts::WORLD, arr(dir)), value));
+    }
+
     /// Where a node is, once solved (`write` consumes the scene; this is for a scene solved on its own).
     pub fn solve(&mut self) -> Result<ts::Report, String> {
         let report = self.sys.solve();
@@ -227,13 +251,7 @@ impl Scene {
 
     /// A number is this: `hard` (it must be), a reading (`Some(tolerance)`: it should be), or a hint (`None`).
     pub fn number_is(&mut self, name: &str, s: ScalarId, value: f64, how: Tier) {
-        let tier = match how {
-            Tier::Hard => ts::Tier::Hard,
-            Tier::Reading(tolerance) => ts::Tier::Measured { sigma: tolerance },
-            Tier::Hint => ts::Tier::Default,
-            Tier::Fallback => ts::Tier::Fallback,
-        };
-        self.sys.constrain(name, tier, ts::Kind::equal(s, value));
+        self.sys.constrain(name, tier(how), ts::Kind::equal(s, value));
     }
 
     /// A number is kept between two values.
@@ -243,13 +261,7 @@ impl Scene {
 
     /// Two sums of numbers are equal: `hard`, a reading (to about a tolerance), or a hint.
     pub fn equal(&mut self, name: &str, a: Num, b: Num, how: Tier) {
-        let tier = match how {
-            Tier::Hard => ts::Tier::Hard,
-            Tier::Reading(tolerance) => ts::Tier::Measured { sigma: tolerance },
-            Tier::Hint => ts::Tier::Default,
-            Tier::Fallback => ts::Tier::Fallback,
-        };
-        self.sys.constrain(name, tier, ts::Kind::equal(a, b));
+        self.sys.constrain(name, tier(how), ts::Kind::equal(a, b));
     }
 
     /// One number is at least `gap` more than another.
@@ -441,9 +453,10 @@ impl Scene {
         };
         let on = |s: &mut Scene, m: usize, p: &crate::model::FacePlane, start: f64, which: &str| {
             let body = s.body_of(m).0;
-            let along = s.sys.scalar(body, &format!("{name}: along {which}"), start.clamp(0.0, p.length));
+            let reach = s.reach(m, model);
+            let along = s.sys.scalar(body, &format!("{name}: along {which}"), start.clamp(-reach, p.length + reach));
             let across = s.sys.scalar(body, &format!("{name}: across {which}"), 0.0);
-            s.sys.bound(along, 0.0, p.length);
+            s.sys.bound(along, -reach, p.length + reach);
             s.sys.bound(across, -p.half_width, p.half_width);
             s.sys.constrain(&format!("{name}: in the middle of {which}, across"), ts::Tier::Default, ts::Kind::equal(across, 0.0));
             s.sys.node(&format!("{name} ({which})"), ts::Point::at(body, arr(p.origin)).plus(along, arr(p.along)).plus(across, arr(p.across)))
@@ -454,6 +467,71 @@ impl Scene {
         let (pa, pb) = (self.sys.at(a), self.sys.at(b));
         self.sys.constrain(&format!("{name}: on both"), ts::Tier::Hard, ts::Kind::Coincident(pa, pb));
         self.nodes.push(Node { name: name.into(), of: vec![a, b], model: None, fixed: None, faces: vec![(upper.0, fu), (lower.0, fl)], along: None });
+        self.same.push(self.nodes.len() - 1);
+        let n = self.nodes.len() - 1;
+        self.rests.push((upper.0, lower.0, n, name.into()));
+        Ok(NodeRef(n))
+    }
+
+    /// A face of a member, as things were put: which face faces most nearly `toward`, and the
+    /// face in the world.
+    pub fn face_toward(&self, m: MemberRef, toward: Vec3, model: &Model) -> (Face, crate::model::FacePlane) {
+        let mm = &self.members[m.0];
+        let start = self.body_of(m.0).1;
+        let local = start.dir_to_local(toward);
+        let faces = [Face::PlusU, Face::MinusU, Face::PlusV, Face::MinusV].map(|f| (f, face_plane(&mm.axes, model.section(mm.spec.section), &mm.spec.anchor, f)));
+        let (f, p) = faces.into_iter().max_by(|a, b| a.1.normal.dot(local).total_cmp(&b.1.normal.dot(local))).unwrap();
+        (f, crate::model::FacePlane { origin: start.to_world(p.origin), along: start.dir_to_world(p.along), across: start.dir_to_world(p.across), normal: start.dir_to_world(p.normal), ..p })
+    }
+
+    /// How far a member's faces reach past its end nodes (as `Model::face_reach`).
+    fn reach(&self, m: usize, model: &Model) -> f64 {
+        let bb = model.section(self.members[m].spec.section).bbox();
+        bb.width().max(bb.height())
+    }
+
+    /// What a member is called in what is said about it.
+    pub fn label(&self, m: MemberRef) -> &str {
+        &self.members[m.0].label
+    }
+
+    /// A member's axis, as things were put: where it starts and its direction, in the world.
+    pub fn axis(&self, m: MemberRef) -> (Vec3, Vec3) {
+        let start = self.body_of(m.0).1;
+        (start.to_world(self.members[m.0].axes.origin), start.dir_to_world(self.members[m.0].axes.x))
+    }
+
+    /// One member rests on another along a line of each's face: a node on a line of the one's
+    /// underside (`upper_across` from its middle, across it) and on a line of the other's top
+    /// (`lower_across`), each with one number along its line, bounded by the face; held to be
+    /// one point. Where along the other's top is a hint (the point of it nearest `at`, as
+    /// things were put): it settles where they touch where the two lines lie along each other. This states a contact a utility found (the edge a sloping chord sits on); `rest`
+    /// is the same with the whole of each face.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rest_on_lines(&mut self, name: &str, upper: MemberRef, upper_across: f64, lower: MemberRef, lower_across: f64, at: Vec3, model: &Model) -> Result<NodeRef, String> {
+        if self.node_named(name).is_some() {
+            return Err(format!("two nodes named {name}"));
+        }
+        let mut of = vec![];
+        let mut faces = vec![];
+        for (m, toward, across, which) in [(upper, -Vec3::Z, upper_across, format!("the underside of {}", self.members[upper.0].label)), (lower, Vec3::Z, lower_across, format!("the top of {}", self.members[lower.0].label))] {
+            let (face, world) = self.face_toward(m, toward, model);
+            let mm = &self.members[m.0];
+            let local = face_plane(&mm.axes, model.section(mm.spec.section), &mm.spec.anchor, face);
+            let reach = self.reach(m.0, model);
+            let start = (at - world.origin).dot(world.along).clamp(-reach, world.length + reach);
+            let body = self.body_of(m.0).0;
+            let along = self.sys.scalar(body, &format!("{name}: along {which}"), start);
+            self.sys.bound(along, -reach, local.length + reach);
+            if toward.z > 0.0 {
+                self.sys.constrain(&format!("{name}: where along {which}"), ts::Tier::Default, ts::Kind::equal(along, start));
+            }
+            of.push(self.sys.node(&format!("{name} ({which})"), ts::Point::at(body, arr(local.origin + local.across * across)).plus(along, arr(local.along))));
+            faces.push((m.0, face));
+        }
+        let (pa, pb) = (self.sys.at(of[0]), self.sys.at(of[1]));
+        self.sys.constrain(&format!("{name}: on both"), ts::Tier::Hard, ts::Kind::Coincident(pa, pb));
+        self.nodes.push(Node { name: name.into(), of, model: None, fixed: None, faces, along: None });
         self.same.push(self.nodes.len() - 1);
         let n = self.nodes.len() - 1;
         self.rests.push((upper.0, lower.0, n, name.into()));
@@ -524,6 +602,31 @@ impl Scene {
                 let n = model.node_along(m, at).map_err(|e| format!("{}: {e}", self.nodes[i].name))?;
                 model.nodes[n.idx()].name.get_or_insert(self.nodes[i].name.clone());
                 written[root] = Some(n);
+            }
+        }
+        // (A node on the faces of members a generator wrote, where one of them already has a node of
+        // its own (an end, say): it is that node; where more than one has, the relation says they
+        // are one point, and they are made one node.)
+        for i in 0..self.nodes.len() {
+            let root = self.root(i);
+            if written[root].is_some() || self.nodes[i].faces.is_empty() {
+                continue;
+            }
+            let at = vec(self.sys.node_at(self.nodes[i].of[0]));
+            let mut there: Vec<NodeId> = vec![];
+            for &(m, _) in &self.nodes[i].faces {
+                if let Some(id) = self.members[m].model {
+                    there.extend(model.member(id).path.iter().copied().filter(|&n| model.pos(n).distance(at) <= crate::LEN_TOL));
+                }
+            }
+            there.sort();
+            there.dedup();
+            if let Some(&keep) = there.first() {
+                for &drop in &there[1..] {
+                    model.merge_node(keep, drop);
+                }
+                model.nodes[keep.idx()].name.get_or_insert(self.nodes[root].name.clone());
+                written[root] = Some(keep);
             }
         }
         let mut nodes = vec![];

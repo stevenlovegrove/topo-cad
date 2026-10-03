@@ -205,56 +205,39 @@ held by reference.
 
 A truss roof is not given a height. The script says what it bears on
 (`bearingOn(...)`: a perimeter's cap plates, an assembly's horizontal
-members), and nothing else is looked for. Each of those is given as the
-top of the member: the line along the middle of its top face, and that
-face's width. The roof's `origin` is where the first heel is on plan.
+members), and nothing else is looked for. The roof is set out on plan from
+a node (`at`) or a datum (`origin`).
 
-**What is under a truss** is every one of those tops that is under some
-part of a bottom chord, as modelled: across the truss (where it crosses
-the chord's lumber, at either edge of the top) or along it (a wall under
-a gable truss, for as far as the two overlap). Not only at the heels: a
-beam under the middle is under it too.
+**Each truss is a free body of the building's one solve**, holding what
+its generator wrote (`TrussRoof::place`). Its heel is a node: across the
+ridge it is where the layout puts it (hard), along the ridge a hint, and a
+reading of it (`shifted`) a reading. Its body's hints keep it upright and
+turned as it was put (plumb, square to the ridge, level) where nothing
+says otherwise.
 
-`bearingOn` is a utility that finds these by geometry, and what it makes
-is nodes (`TrussRoof::seats`):
+**What is under a truss** is found by a utility, by geometry, as things
+are put: every top of what it bears on that is under some part of a bottom
+chord, across the truss (its two edges and its middle, where it crosses
+the chord's axis) or along it (a wall under a gable truss: each end of
+where they overlap). Not only at the heels: a beam under the middle is
+under it too. Of those, the truss is carried by the two of the upper hull
+(how high the truss must be to touch each) that its middle is between; a
+chord that rises (scissors) is carried where it meets an edge first. It
+touches every line on the line through those two, and **each is stated as
+a contact** (`Scene::rest_on_lines`): a node on a line of the chord's
+underside (its axis, which is in it) and on that line of the top, one
+number along each, bounded by its member, held to be one point. Where the
+chord lies on the whole of a top it crosses, the line is the top's axis,
+if that is in the top (a cap plate's): the bearing point is then a node on
+both axes. Along a top, it is on the chord's axis where that is over the
+top (else the middle of where they overlap).
 
-- **support nodes**, fixed on the bearings: at each edge and the middle
-  of a top the truss crosses, and at each end of where it lies along one;
-- which two of them **carry** the truss: those of the upper hull of the
-  supports (their heights, less the chord's own height there) that its
-  middle is between. It is clear of any that are lower; a chord that
-  rises (scissors) is carried where it meets an edge first;
-- **chord nodes**: for each carrying support, the point of the chord's
-  underside over it. Each is on a line of the truss: one number, bounded
-  by the chord.
-
-Each truss is a rigid frame, free in the world, in one system for the
-roof:
-
-- **hard**: each chord node is on its support node (level with it, and
-  over it);
-- **hard, datums**: its heel (a node) is where the layout puts it on
-  plan, along the ridge and along the span;
-- **hints**: its plane is plumb and square to the ridge, and it is
-  level. These settle what the supports leave open and give way where
-  they do not.
-
-Nothing ties one truss to another, so each is a component of its own.
-On level plates no step is taken and the trusses are exactly where the
-plates' height puts them. Afterward, every support node the chord
-touches is one it sits on, and the model's bearing point there is that
-node, by name.
-
-**It is fastened to what it sits on, and to nothing else**, at a node:
-the bearing point. Where the chord's axis meets the bearing's axis (a
-cap plate, whose axis is on its top face), that is a node on both axes.
-Where it does not (a beam whose axis is through its middle), it is a
-node on the chord's axis that is on the beam's top face (see "Nodes on
-faces"). Along a bearing (a wall under a gable truss) there is one at
-each end of where they touch. Only where the chord's axis is beside the
-other's top, with its lumber over it, are the two fastened face to face
-without a node. There is no other connecting of trusses to things they
-happen to cross.
+Writing the scene makes each contact a node of the chord and of what it is
+on (a member's own node there, if it has one: two members' nodes there are
+made one, because the contact says so). It is fastened there. **Nothing
+else joins a truss to anything**: a generator joins only what it makes
+(`Model::scoped`), so a heel is not joined to a plate's end because it is
+where that end is.
 
 What cannot be done is said, as an error on the model:
 
@@ -262,8 +245,9 @@ What cannot be done is said, as an error on the model:
   of the truss;
 - `truss-not-held`: it is on one support only, or all that is under it
   is to one side of its middle (it is placed level there);
-- a truss whose hard constraints cannot all hold stops the model
-  building, naming the truss and the gaps.
+- a contact that cannot hold (the truss cannot touch what was found
+  under it) stops the model building, naming the contact and how far off
+  it is.
 
 Nothing here is particular to buildings or to a code. A rule such as
 "a truss bears at its heels" or "at a panel point" is a check for a
@@ -479,34 +463,62 @@ it, the step would move off it into the clear. Weight is a stride
 downhill within what the hard and active constraints leave free, no
 longer than a cap and no further than the first inactive contact in the
 way; the stride is brought back onto the hard constraints before it is
-judged. A part still going down when the passes run out is falling. A component's rows
-are laid out as a small dense matrix for that step, and the
-rank-revealing solve (what is settled, what is left free) is by
-eigenvectors. Ideas are taken from articulated-body formulations; no
-outside solver is used.
+judged. A part still going down when the passes run out is falling. 
+
+**Through the structure of a part.** What the tiers above leave free is
+held in one of two forms (`free.rs`). Small parts are dense: a basis, and
+each tier a dense least-squares solve (rank and what is free by
+eigenvectors: Householder reduction and QL). A part with structure that
+isolates most of it is an **arrowhead**: its unknowns split into a few
+shared ones (the most connected: a free perimeter's body, say) and blocks
+that no constraint joins (each truss and the numbers of its contacts),
+found by taking the most connected unknown of a group too big as shared
+until none is. A tier is then solved by eliminating each block's own
+coordinates against the shared ones (a small dense solve per block), then
+solving what is left on the shared ones; what is free afterward has the
+same form, and the step is made least-norm by taking out its part in what
+is still free. Each tier still decides only what the ones above leave
+free; the steps are the dense solve's (a test holds the two equal). Forty
+trusses on walls that can move are forty small solves and one of the
+walls, not one of three hundred unknowns.
+
+**What a step moves least.** A step is least in how far things move, not
+in its coordinates: a frame's turn counts as far as it moves the farthest
+point of it anything is asked of, and a number (where a contact is along a
+member, a corner, a height, a stud: the shape of what is built) ten times
+a move. So a datum far from where something is drawn moves it, rather than
+turning it about its origin or reshaping it. Further, a part that starts
+far from meeting its hard constraints is first put in place as it is,
+numbers held, and then solved from there.
+
+**Judging a step.** The whole step (every tier's), or as much of it as
+does not make things worse; where the hard constraints are not met, the
+hard tier's part alone too, and whichever meets them better (the lower
+tiers' part, made where the hard constraints are not met, can keep them
+from being met: a turn is not straight). Once they are met, a step is
+brought back onto them before it is judged. Ideas are taken from
+articulated-body formulations; no outside solver is used.
 
 ## Not yet
 
-- **Only truss seating uses it.** Walls and assemblies are still placed
-  by coordinates. An assembly's own `bearingOn` still connects it to cap
-  plates wherever axes happen to meet, and says nothing where they do
-  not. The roof's layers do not follow a tilted truss. A perimeter's walls
-  cannot yet differ in height (its cap plates must meet at the corners),
-  so a roof tilted by its walls needs the lower bearing made as an
-  assembly.
+- **The roof's layers do not follow a tilted truss.**
+- **Judging a step across tiers.** A step's acceptance compares the
+  measured and the hints together; where a reading and a hint meet at a
+  lever arm of metres, a hint's step leaves the reading off by a
+  second-order amount that outweighs what the hint gains, and the solve
+  stops short (`hints_settle_beside_readings_at_a_lever`, ignored). Judging
+  tier by tier, allowing a higher tier its second-order change, is what is
+  wanted.
 - **Checks a script asks for** (a ruleset): rules particular to a kind of
   building or a code, kept out of the generic model.
-- **A scope handle for generators**: a generator is not yet handed its
-  frame and its parent's to add hints to; the roof's seating writes the
-  truss's hint itself.
 - **Instances of instances** are not tried: a definition that uses
   another should work (it is a system like any other), with no test yet.
 - **Bounds** on scalars (a point between a member's ends).
 - **Conflict feedback drawn**: the component in conflict shown in the
   view, and one gap per suspect (each released in turn).
-- **A sparse step within a component.** One large component (walls that
-  can move under every truss) is still one dense matrix. That is where
-  `sparten` would come in.
+- **Structure within structure.** A part is split once into shared and
+  blocks; a block too big that has its own structure is solved densely.
+  Nested splitting (or a sparse factorisation, `sparten`) would go further.
 - **Sharing the blocks with `robot`.** `blocks.rs` repeats the traits and
   the parent-child matrix of `robot/src/block_matrix.rs`, which depends on
   nothing but the standard library. Split out as its own crate, both

@@ -37,50 +37,172 @@ pub fn mul_vec(a: &Mat, x: &[f64]) -> Vec<f64> {
     a.iter().map(|row| row.iter().zip(x).map(|(p, q)| p * q).sum()).collect()
 }
 
-/// The eigenvalues and eigenvectors (as columns) of a symmetric matrix, by Jacobi rotations.
+/// The eigenvalues and eigenvectors (as columns) of a symmetric matrix: reduced to tridiagonal
+/// form by Householder reflections, then diagonalised by the implicit QL method (as EISPACK's
+/// `tred2` and `tql2`).
 pub fn eig_sym(a: &Mat) -> (Vec<f64>, Mat) {
     let n = a.len();
-    let (mut a, mut v) = (a.clone(), identity(n));
-    for _ in 0..100 {
-        let off: f64 = (0..n).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| a[i][j] * a[i][j]).sum();
-        let diag: f64 = (0..n).map(|i| a[i][i] * a[i][i]).sum();
-        if off <= 1e-30 * diag.max(1e-300) {
-            break;
+    if n == 0 {
+        return (vec![], vec![]);
+    }
+    let mut v = a.clone();
+    let (mut d, mut e) = (vec![0.0; n], vec![0.0; n]);
+    // Householder reduction to tridiagonal form.
+    for j in 0..n {
+        d[j] = v[n - 1][j];
+    }
+    for i in (1..n).rev() {
+        let scale: f64 = d[..i].iter().map(|x| x.abs()).sum();
+        let mut h = 0.0;
+        if scale == 0.0 {
+            e[i] = d[i - 1];
+            for j in 0..i {
+                d[j] = v[i - 1][j];
+                v[i][j] = 0.0;
+                v[j][i] = 0.0;
+            }
+        } else {
+            for x in d[..i].iter_mut() {
+                *x /= scale;
+                h += *x * *x;
+            }
+            let f = d[i - 1];
+            let g = if f > 0.0 { -h.sqrt() } else { h.sqrt() };
+            e[i] = scale * g;
+            h -= f * g;
+            d[i - 1] = f - g;
+            for x in e[..i].iter_mut() {
+                *x = 0.0;
+            }
+            for j in 0..i {
+                let f = d[j];
+                v[j][i] = f;
+                let mut g = e[j] + v[j][j] * f;
+                for k in j + 1..i {
+                    g += v[k][j] * d[k];
+                    e[k] += v[k][j] * f;
+                }
+                e[j] = g;
+            }
+            let mut f = 0.0;
+            for j in 0..i {
+                e[j] /= h;
+                f += e[j] * d[j];
+            }
+            let hh = f / (h + h);
+            for j in 0..i {
+                e[j] -= hh * d[j];
+            }
+            for j in 0..i {
+                let (f, g) = (d[j], e[j]);
+                for k in j..i {
+                    v[k][j] -= f * e[k] + g * d[k];
+                }
+                d[j] = v[i - 1][j];
+                v[i][j] = 0.0;
+            }
         }
-        for p in 0..n {
-            for q in p + 1..n {
-                if a[p][q].abs() < 1e-300 {
-                    continue;
-                }
-                let theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
-                let t = if theta == 0.0 { 1.0 } else { t };
-                let c = 1.0 / (t * t + 1.0).sqrt();
-                let s = t * c;
-                for k in 0..n {
-                    let (akp, akq) = (a[k][p], a[k][q]);
-                    a[k][p] = c * akp - s * akq;
-                    a[k][q] = s * akp + c * akq;
-                }
-                for k in 0..n {
-                    let (apk, aqk) = (a[p][k], a[q][k]);
-                    a[p][k] = c * apk - s * aqk;
-                    a[q][k] = s * apk + c * aqk;
-                }
-                for k in 0..n {
-                    let (vkp, vkq) = (v[k][p], v[k][q]);
-                    v[k][p] = c * vkp - s * vkq;
-                    v[k][q] = s * vkp + c * vkq;
+        d[i] = h;
+    }
+    // The transformations, accumulated.
+    for i in 0..n - 1 {
+        v[n - 1][i] = v[i][i];
+        v[i][i] = 1.0;
+        let h = d[i + 1];
+        if h != 0.0 {
+            for k in 0..=i {
+                d[k] = v[k][i + 1] / h;
+            }
+            for j in 0..=i {
+                let g: f64 = (0..=i).map(|k| v[k][i + 1] * v[k][j]).sum();
+                for k in 0..=i {
+                    v[k][j] -= g * d[k];
                 }
             }
         }
+        for k in 0..=i {
+            v[k][i + 1] = 0.0;
+        }
     }
-    ((0..n).map(|i| a[i][i]).collect(), v)
+    for j in 0..n {
+        d[j] = v[n - 1][j];
+        v[n - 1][j] = 0.0;
+    }
+    v[n - 1][n - 1] = 1.0;
+    e[0] = 0.0;
+    // Implicit QL on the tridiagonal form.
+    for i in 1..n {
+        e[i - 1] = e[i];
+    }
+    e[n - 1] = 0.0;
+    let (mut f, mut tst1) = (0.0f64, 0.0f64);
+    let eps = f64::EPSILON;
+    for l in 0..n {
+        tst1 = tst1.max(d[l].abs() + e[l].abs());
+        let mut m = l;
+        while m < n - 1 && e[m].abs() > eps * tst1 {
+            m += 1;
+        }
+        if m > l {
+            for _ in 0..60 {
+                let g = d[l];
+                let mut p = (d[l + 1] - g) / (2.0 * e[l]);
+                let mut r = p.hypot(1.0);
+                if p < 0.0 {
+                    r = -r;
+                }
+                d[l] = e[l] / (p + r);
+                d[l + 1] = e[l] * (p + r);
+                let dl1 = d[l + 1];
+                let mut h = g - d[l];
+                for x in d[l + 2..].iter_mut() {
+                    *x -= h;
+                }
+                f += h;
+                p = d[m];
+                let (mut c, mut c2, mut c3) = (1.0, 1.0, 1.0);
+                let el1 = e[l + 1];
+                let (mut s, mut s2) = (0.0, 0.0);
+                for i in (l..m).rev() {
+                    c3 = c2;
+                    c2 = c;
+                    s2 = s;
+                    let g = c * e[i];
+                    h = c * p;
+                    r = p.hypot(e[i]);
+                    e[i + 1] = s * r;
+                    s = e[i] / r;
+                    c = p / r;
+                    p = c * d[i] - s * g;
+                    d[i + 1] = h + s * (c * g + s * d[i]);
+                    for row in v.iter_mut() {
+                        let h = row[i + 1];
+                        row[i + 1] = s * row[i] + c * h;
+                        row[i] = c * row[i] - s * h;
+                    }
+                }
+                p = -s * s2 * c3 * el1 * e[l] / dl1;
+                e[l] = s * p;
+                d[l] = c * p;
+                if e[l].abs() <= eps * tst1 {
+                    break;
+                }
+            }
+        }
+        d[l] += f;
+        e[l] = 0.0;
+    }
+    (d, v)
 }
 
 /// The least-norm `z` minimising |A z + b| (A: m × k), a basis (as columns)
 /// of what A leaves free, and A's rank. With no rows, everything is free.
 pub fn lsq_null(a: &Mat, b: &[f64], k: usize) -> (Vec<f64>, Mat, usize) {
+    lsq_null_tol(a, b, k, None)
+}
+
+/// As `lsq_null`, with what counts as no eigenvalue given (else relative to the largest).
+pub fn lsq_null_tol(a: &Mat, b: &[f64], k: usize, tol: Option<f64>) -> (Vec<f64>, Mat, usize) {
     if a.is_empty() || k == 0 {
         return (vec![0.0; k], identity(k), 0);
     }
@@ -96,7 +218,7 @@ pub fn lsq_null(a: &Mat, b: &[f64], k: usize) -> (Vec<f64>, Mat, usize) {
         }
     }
     let (lam, v) = eig_sym(&g);
-    let tol = (lam.iter().cloned().fold(0.0, f64::max) * 1e-10).max(1e-16);
+    let tol = tol.unwrap_or_else(|| (lam.iter().cloned().fold(0.0, f64::max) * 1e-10).max(1e-16));
     let atb: Vec<f64> = (0..k).map(|j| a.iter().zip(b).map(|(row, bi)| row[j] * bi).sum()).collect();
     let mut z = vec![0.0; k];
     let mut free = Vec::new();
@@ -172,5 +294,35 @@ mod tests {
         // Tidied, one of the free directions is z alone.
         let t = tidy_basis(&null);
         assert!((0..2).any(|c| t[2][c].abs() > 0.99 && t[0][c].abs() < 1e-9), "{t:?}");
+    }
+
+    #[test]
+    fn eigenvectors_are_orthonormal_and_each_is_scaled_by_its_value() {
+        // A symmetric matrix with a repeated value and a zero one (G = BᵀB, B of rank 5, plus a block).
+        let n = 9;
+        let b: Mat = (0..5).map(|i| (0..n).map(|j| ((i * 7 + j * 3) % 5) as f64 - 2.0 + if i == j { 3.0 } else { 0.0 }).collect()).collect();
+        let mut g = zeros(n, n);
+        for row in &b {
+            for i in 0..n {
+                for j in 0..n {
+                    g[i][j] += row[i] * row[j];
+                }
+            }
+        }
+        g[7][7] += 4.0;
+        g[8][8] += 4.0;
+        let (lam, v) = eig_sym(&g);
+        for i in 0..n {
+            for j in 0..n {
+                let dot: f64 = (0..n).map(|k| v[k][i] * v[k][j]).sum();
+                assert!((dot - if i == j { 1.0 } else { 0.0 }).abs() < 1e-10, "{i} {j} {dot}");
+            }
+            for r in 0..n {
+                let gv: f64 = (0..n).map(|k| g[r][k] * v[k][i]).sum();
+                assert!((gv - lam[i] * v[r][i]).abs() < 1e-9, "{i}: {gv} {}", lam[i] * v[r][i]);
+            }
+        }
+        // (Rank 5 plus the two raised: at least two of the nine are zero.)
+        assert!(lam.iter().filter(|l| l.abs() < 1e-9).count() >= 2, "{lam:?}");
     }
 }

@@ -612,7 +612,7 @@ impl Builder {
                 }
             }
         }
-        let parts = per.try_build_walls(&mut self.m, walls.clone())?;
+        let parts = self.m.scoped(|m| per.try_build_walls(m, walls.clone()))?;
         Ok((parts, walls))
     }
 
@@ -657,9 +657,12 @@ impl Builder {
         for (k, (c, d)) in at.corners.iter().zip(&drawn.corners).enumerate() {
             let name = format!("{}/corner {}", p.name, k + 1);
             let xyz: [scene::ScalarId; 3] = std::array::from_fn(|i| sc.number(&format!("{name}: {}", ["x", "y", "z"][i]), body, [c.x, c.y, c.z][i] - [origin.x, origin.y, origin.z][i]));
+            // (A free perimeter is placed by its body, whose origin is its start: there, the corner is
+            // where it is drawn in the body, held. Else where a corner is drawn is a hint.)
+            let held = if p.free && k == 0 { scene::Tier::Hard } else { scene::Tier::Hint };
             for (i, &s) in xyz.iter().enumerate() {
                 let axis = ["x", "y", "z"][i];
-                sc.number_is(&format!("{name} where it is drawn: {axis}"), s, [d.x, d.y, d.z][i] - [origin.x, origin.y, origin.z][i], scene::Tier::Hint);
+                sc.number_is(&format!("{name} where it is drawn: {axis}"), s, [d.x, d.y, d.z][i] - [origin.x, origin.y, origin.z][i], held);
             }
             let terms = [(xyz[0], Vec3::X), (xyz[1], Vec3::Y), (xyz[2], Vec3::Z)];
             let at_corner = content.nodes.iter().copied().find(|&n| self.m.pos(n).distance(*c) < 1e-9);
@@ -832,28 +835,18 @@ impl Builder {
         sc.node_along(name, &self.m, id, at, &terms)
     }
 
-    /// The top of a member: the line along the middle of its highest face, and half that face's width.
-    fn top_of(&self, id: MemberId) -> topo_timber::truss::Bearing {
-        let (mm, axes) = (self.m.member(id), self.m.member_axes(id));
-        let bb = self.m.section(mm.section).bbox();
-        // The point of the section that is on the axis; the body's corners are placed from it.
-        let on_axis = (bb.min.x + (mm.anchor.u + 0.5) * bb.width() + mm.anchor.offset.x, bb.min.y + (mm.anchor.v + 0.5) * bb.height() + mm.anchor.offset.y);
-        let corners = [(bb.min.x, bb.min.y), (bb.min.x + bb.width(), bb.min.y), (bb.min.x, bb.min.y + bb.height()), (bb.min.x + bb.width(), bb.min.y + bb.height())].map(|(x, y)| axes.u * (x - on_axis.0) + axes.v * (y - on_axis.1));
-        let lift = corners.iter().map(|c| c.z).fold(f64::MIN, f64::max);
-        let top: Vec<Vec3> = corners.into_iter().filter(|c| c.z > lift - 1e-9).collect();
-        let middle = top.iter().fold(Vec3::ZERO, |a, c| a + *c) / top.len() as f64;
-        let half_width = top.iter().map(|c| (*c - middle).norm()).fold(0.0, f64::max);
-        topo_timber::truss::Bearing { name: self.m.member_path(id), a: self.m.pos(mm.start()) + middle, b: self.m.pos(mm.end()) + middle, half_width }
+    /// A member's path in the building (as nodes are named: `Walls/Front/cap_plate`).
+    fn path(&self, id: MemberId) -> String {
+        let full = self.m.member_path(id);
+        full.strip_prefix(&format!("{}/", self.m.groups[self.root.idx()].name)).map(String::from).unwrap_or(full)
     }
 
-    fn truss_roof(&mut self, r: &TrussRoofSpec, w: &scene::Written) -> Result<(), String> {
-        let origin = match (&r.at, r.origin) {
-            (Some(at), _) => {
-                let i = w.names.iter().position(|n| n == at).ok_or_else(|| format!("roof {}: no node {at}", r.name))?;
-                let p = self.m.pos(w.nodes[i]);
-                (p.x, p.y)
-            }
-            (None, Some(o)) => o,
+    /// A truss roof, in the scene: its trusses free bodies of it, set out from a node of it (`at`)
+    /// or a datum (`origin`), sat by `TrussRoof::place` on what the script says it bears on.
+    fn place_roof(&mut self, r: &TrussRoofSpec, sc: &mut scene::Scene, at: Option<scene::NodeRef>, declared: &[(&AssemblySpec, Declared)]) -> Result<topo_timber::truss::PlacedRoof, String> {
+        let set_out = match (at, r.origin) {
+            (Some(n), _) => topo_timber::truss::SetOut::Node(n, sc.position(n)),
+            (None, Some(o)) => topo_timber::truss::SetOut::Datum(v3(o.0, o.1, 0.0)),
             (None, None) => return Err(format!("roof {}: give origin or at", r.name)),
         };
         let mat = self.material(&r.grade)?;
@@ -863,27 +856,23 @@ impl Builder {
         }
         // What the script says it bears on: a perimeter's cap plates, an assembly's horizontal
         // members (beams, headers). Nothing else is looked for.
-        let mut plates = vec![];
+        let mut bearings = vec![];
         for name in &r.bears_on {
             if let Some((parts, _)) = self.perimeters.get(name) {
-                plates.extend(parts.cap_plates());
-            } else if let Some(ms) = self.assemblies.get(name) {
-                plates.extend(ms.iter().copied().filter(|&m| {
-                    let mm = self.m.member(m);
-                    (self.m.pos(mm.start()).z - self.m.pos(mm.end()).z).abs() < 1e-6
-                }));
+                for p in parts.cap_plates() {
+                    bearings.push(sc.import_member(&self.m, p, &self.path(p)));
+                }
+            } else if let Some((_, d)) = declared.iter().find(|(a, _)| a.name == *name) {
+                bearings.extend(d.members.iter().copied().filter(|&m| sc.axis(m).1.z.abs() < 1e-6));
             } else {
                 return Err(format!("roof {}: nothing named {name} to bear on (a perimeter or an assembly)", r.name));
             }
         }
-        if plates.is_empty() {
+        if bearings.is_empty() {
             return Err(format!("roof {}: say what it bears on, with bearingOn(...): its height is that of what is under it", r.name));
         }
-        let bearings: Vec<_> = plates.iter().map(|&p| self.top_of(p)).collect();
-        // Where the trusses start from before they are sat on what is under them: the highest top.
-        let start = bearings.iter().map(|b| b.a.z.max(b.b.z)).fold(f64::MIN, f64::max);
         let span = Vec3::new(r.span_dir.0, r.span_dir.1, 0.0).try_normalized().ok_or("roof span direction is zero")?;
-        let mut roof = TrussRoof::new(&r.name, v3(origin.0, origin.1, start), span, r.shape.clone(), r.length, r.spacing, mat);
+        let mut roof = TrussRoof::new(&r.name, Vec3::ZERO, span, r.shape.clone(), r.length, r.spacing, mat);
         roof.chord = r.chord;
         roof.web = r.web;
         for o in &r.overrides {
@@ -892,70 +881,25 @@ impl Builder {
         for s in &r.shifts {
             roof.shifts.push((s.trusses.clone(), s.along));
         }
-        roof.bearings = bearings;
-        let roof = roof.build(&mut self.m);
-        if !roof.problems.is_empty() {
-            return Err(format!("roof {}: {}", r.name, roof.problems.join(". ")));
+        let placed = roof.place(&mut self.m, sc, set_out, &bearings)?;
+        self.m.group_mut(placed.parts.group).parent = Some(self.root);
+        Ok(placed)
+    }
+
+    /// A roof the scene has placed: each contact fastened, what was said about its trusses, its loads.
+    fn finish_roof(&mut self, r: &TrussRoofSpec, placed: &topo_timber::truss::PlacedRoof, w: &scene::Written) -> Result<(), String> {
+        let roof = &placed.parts;
+        // (The roof's frame, which its drawings are given in, is its first truss's, where it now is.)
+        if let Some(t) = roof.trusses.first() {
+            let f = self.m.groups[t.group.idx()].frame;
+            let run = Vec3::new(r.span_dir.1, -r.span_dir.0, 0.0).normalized();
+            self.m.group_mut(roof.group).frame = Frame { origin: f.origin, x: run, y: f.x, z: run.cross(f.x) };
         }
-        self.m.group_mut(roof.group).parent = Some(self.root);
-        // Each truss is fastened to what it sits on: at a node where the chord's axis meets the
-        // other's axis, and otherwise face to face.
+        self.m.issues.extend(placed.issues.iter().cloned());
+        // Each truss is fastened to what it sits on, at the node where they touch.
         let c = self.m.add_connection(fx::truss_to_plate());
-        for (i, t) in roof.trusses.iter().enumerate() {
-            if roof.unseated.contains(&(i + 1)) {
-                let message = format!("roof {}: truss T{} bears on nothing: none of what the roof bears on is under any part of it", r.name, i + 1);
-                self.m.issues.push(Issue::new(Severity::Error, "truss-not-seated", message).members(t.bottom_chords.clone()));
-            }
-            if roof.unsteady.contains(&(i + 1)) {
-                let message = format!("roof {}: truss T{} is not held: what is under it is one bearing, or all to one side of its middle", r.name, i + 1);
-                self.m.issues.push(Issue::new(Severity::Error, "truss-not-held", message).members(t.bottom_chords.clone()));
-            }
-            let mut on: Vec<usize> = roof.seats[i].iter().map(|(k, ..)| *k).collect();
-            on.dedup();
-            for k in on {
-                let plate = plates[k];
-                // The bearing point is the support node the chord is on: the middle one, where it is
-                // on that; else the first it is on (an edge, an end). The model's node has its name.
-                let here: Vec<&(usize, Vec3, String)> = roof.seats[i].iter().filter(|(j, ..)| *j == k).collect();
-                let named = here.iter().find(|(_, _, name)| name.contains(": middle of ") || name.contains(": top ")).unwrap_or(&here[0]).2.clone();
-                if let Some((bc, n)) = t.bottom_chords.iter().find_map(|&bc| self.m.intersect(bc, plate).ok().map(|n| (bc, n))) {
-                    self.m.connect(n, bc, Some(plate), c);
-                    self.m.nodes[n.idx()].name.get_or_insert(named);
-                    continue;
-                }
-                // The axes do not meet: a bearing point is a node on the chord (its axis is its
-                // underside) that is on the other's top face. Across the other, there is one, in
-                // the middle of where they touch; along it, one at each end of where they touch.
-                let top = self.m.face_toward(plate, Vec3::Z);
-                let touching: Vec<Vec3> = here.iter().map(|(_, p, _)| *p).collect();
-                let (first, last) = (touching[0], touching[touching.len() - 1]);
-                let along = self.m.face(plate, top).along;
-                let points = if (last - first).dot(along).abs() > 2.0 * LEN_TOL { vec![first, last] } else { vec![touching.iter().fold(Vec3::ZERO, |a, p| a + *p) / touching.len() as f64] };
-                for at in points {
-                let joined = t.bottom_chords.iter().find_map(|&bc| {
-                    let (along, off) = self.m.project_on_member(bc, at);
-                    let on_chord = off <= LEN_TOL && along > -LEN_TOL && along < self.m.member_length(bc) + LEN_TOL;
-                    let face = self.m.face(plate, top);
-                    let d = at - face.origin;
-                    let on_face = d.dot(face.normal).abs() <= LEN_TOL && d.dot(face.along) > -LEN_TOL && d.dot(face.along) < face.length + LEN_TOL && d.dot(face.across).abs() <= face.half_width + LEN_TOL;
-                    (on_chord && on_face).then_some(bc)
-                });
-                match joined {
-                    Some(bc) => {
-                        let n = self.m.node_on(bc, at).map_err(|e| format!("roof {}: {e}", r.name))?;
-                        self.m.attach(n, plate, top).map_err(|e| format!("roof {}: {e}", r.name))?;
-                        self.m.connect(n, bc, Some(plate), c);
-                        self.m.nodes[n.idx()].name.get_or_insert(named.clone());
-                    }
-                    // (Its axis is beside the other's top, its lumber over it: face to face.)
-                    None => {
-                        if !self.m.bonds.iter().any(|b| (b.a, b.b) == (t.bottom_chords[0], plate)) {
-                            self.m.bond(t.bottom_chords[0], plate, c);
-                        }
-                    }
-                }
-                }
-            }
+        for &(n, chord, on) in &placed.rests {
+            self.m.connect(w.nodes[n.0], chord, Some(w.members[on.0]), c);
         }
         for l in &r.loads {
             let case = self.case(&l.kind)?;
@@ -1040,7 +984,7 @@ impl Builder {
             if let Some((u, v)) = mm.anchor {
                 spec = spec.anchor(Anchor { u, v, offset: Vec2::ZERO });
             }
-            let label = format!("{}#{}", mm.role, a.members[..i].iter().filter(|o| o.role == mm.role).count() + 1);
+            let label = format!("{}/{}#{}", a.name, mm.role, a.members[..i].iter().filter(|o| o.role == mm.role).count() + 1);
             members.push(sc.member(body, &path, spec, &label).map_err(|e| format!("assembly {}: {e}", a.name))?);
         }
         let find = |sel: &str| -> Result<usize, String> {
@@ -1250,7 +1194,7 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
             if moved >= 1e-7 {
                 built.b.m.issues.push(Issue::new(Severity::Warning, "unsettled", format!("the perimeters' numbers still moved {:.2} mm when built again at them for the {PASSES}th time", moved * 1000.0)));
             }
-            return finish(spec, built);
+            return finish(built);
         }
         at = built.solved;
     }
@@ -1262,24 +1206,24 @@ struct Pass<'a> {
     b: Builder,
     written: scene::Written,
     declared: Vec<(&'a AssemblySpec, Declared)>,
+    roofs: Vec<(&'a TrussRoofSpec, topo_timber::truss::PlacedRoof)>,
     /// The perimeters' numbers as solved.
     solved: Vec<PerimeterParams>,
 }
 
 /// Its assemblies and roofs, on what the solve placed.
-fn finish(spec: &BuildingSpec, pass: Pass) -> Result<Model, String> {
-    let Pass { mut b, written, declared, .. } = pass;
+fn finish(pass: Pass) -> Result<Model, String> {
+    let Pass { mut b, written, declared, roofs, .. } = pass;
     for open in &written.open {
         b.m.issues.push(Issue::new(Severity::Warning, "open", format!("nothing places this: {open}")));
     }
     for (a, d) in &declared {
         b.finish(a, d, &written)?;
     }
-    for item in &spec.items {
-        if let ItemSpec::TrussRoof(r) = item {
-            b.truss_roof(r, &written)?;
-        }
+    for (r, placed) in &roofs {
+        b.finish_roof(r, placed, &written)?;
     }
+    b.m.compact_nodes();
     Ok(b.m)
 }
 
@@ -1336,10 +1280,13 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
             None => Err(format!("no node named {name} (an assembly's point, as `Assembly/point`; or a point of a member, as `Perimeter/Wall/cap_plate:start`, `:end` or `@1.2`)")),
         }
     };
-    // (Nodes a roof is set out from are brought in too.)
+    // Roofs: their trusses free bodies of the scene, set out from a node of it or a datum, sat on
+    // what the script says they bear on.
+    let mut roofs = vec![];
     for item in &spec.items {
-        if let ItemSpec::TrussRoof(TrussRoofSpec { at: Some(at), .. }) = item {
-            node(&mut sc, &b, at)?;
+        if let ItemSpec::TrussRoof(r) = item {
+            let at = r.at.as_deref().map(|at| node(&mut sc, &b, at)).transpose()?;
+            roofs.push((r, b.place_roof(r, &mut sc, at, &declared)?));
         }
     }
     for item in &spec.items {
@@ -1348,5 +1295,5 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     let written = sc.write(&mut b.m)?;
     let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
     let solved = numbers.iter().zip(drawn).map(|(n, d)| PerimeterParams::solved(n, &values, d.corners[0])).collect();
-    Ok(Pass { b, written, declared, solved })
+    Ok(Pass { b, written, declared, roofs, solved })
 }

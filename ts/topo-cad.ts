@@ -1028,11 +1028,14 @@ export class TrussRoof {
   }
   /**
    * What the trusses sit on: the cap plates of these perimeters and the
-   * horizontal members (beams, headers) of these assemblies. Each truss
-   * sits on whichever of them are under any part of its bottom chord, as
-   * they are modelled: at their height, level or tilted as they say, on the
-   * two that carry it (it is clear of any that are lower). It is fastened
-   * to those it sits on and to nothing else. A truss with none of them
+   * horizontal members (beams, headers) of these assemblies. A utility:
+   * it looks at what is under any part of each truss's bottom chord, as
+   * they are modelled, and states each contact (a node on the chord's
+   * underside and on the top it is on). Each truss is a free thing of the
+   * building's one solve, sat by those contacts: at their height, level or
+   * tilted as they say, on the two that carry it (it is clear of any that
+   * are lower), touching every other on the line through them. It is
+   * fastened at those contacts and nowhere else. A truss with none of them
    * under it is an error.
    */
   bearingOn(...ps: (Perimeter | Assembly)[]): TrussRoof {

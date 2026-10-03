@@ -61,9 +61,6 @@ positions because the solve found them.
 
 | Today | What it should be |
 | --- | --- |
-| Constraints are between anonymous points; bearing points are made after the solve, by geometry | Nodes are first class in the solve, named; a model's nodes are the solve's nodes |
-| `TrussRoof.bearingOn` finds what is under each truss inside the roof generator | An explicit utility the script calls, returning nodes; the roof rests on nodes |
-| A perimeter is one body; its walls are not each a body | Walls follow their corners, which are nodes (see step 5) |
 | (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
 | A surveyed wall is framed from its survey, outside the solve | Its posts as numbers of the wall with readings, as common studs now are |
 | Where a wall slopes, or two meet at a step, plates butt with square-cut ends (partial bearing reported; no backing at a step) | Plate ends cut to what they meet; corner framing for steps |
@@ -80,12 +77,12 @@ Each step leaves everything working and removes one row above.
    bounds held by an active set; weights as a tier after hard; falling
    detected. Bounds are used; one-sided contact and weight wait for
    step 7 (decided: get the rest right first).
-2. **Nodes first class in the solve.** Named points, fixed in a frame or
-   with numbers of their own (bounded); constraints are between nodes;
-   the report and the 3D view show nodes with their kind. Truss seating
-   states its supports as nodes (a utility finds them and chooses which
-   two carry each truss) and its contacts as equalities; the model's
-   bearing points are those nodes, by name.
+2. **Nodes first class in the solve.** *Done.* Named points, fixed in a
+   frame or with numbers of their own (bounded); constraints are between
+   nodes; the report and the 3D view show nodes with their kind. The
+   model's nodes are the solve's: a bearing point is a contact node of the
+   solve, not made afterward by geometry, and a generator joins only what
+   it makes (`Model::scoped`).
 3. **A scene: bodies, nodes, relations, then solve, then the model.**
    *Done* (`topo_core::scene`). Bodies (fixed, or free and placed by
    relations, kept upright by a hint), nodes fixed in them, members
@@ -136,9 +133,15 @@ Each step leaves everything working and removes one row above.
    plate's end changes the wall's height, and a post joined to a stud's
    top moves the stud (or, off the wall's line, the wall). Walls may slope
    (`Wall.heights(start, end)`, `Perimeter.base(corner, z)`); walls meeting
-   at one height are held so, else the corner is a step. *Not yet:*
-   trusses (their shape) and assemblies as generators of numbers; the
-   same "build again until settled" for them.
+   at one height are held so, else the corner is a step. *And for roofs:*
+   each truss is a free body of the one solve, written by its generator;
+   `bearingOn` is a utility that looks at what is under each truss and
+   states each contact (`rest_on_lines`), and the bearing points are those
+   nodes. The solve goes through the structure of a part (the trusses are
+   blocks, isolated from each other, eliminated against what they share),
+   so this costs little more than solving them apart. *Not yet:* a truss's
+   shape as numbers (the shape fit); the same "build again until settled"
+   for it.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them.

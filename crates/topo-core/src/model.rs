@@ -523,6 +523,9 @@ pub struct Model {
     pub sheets: Option<Vec<crate::sheets::SheetSpec>>,
     #[serde(skip)]
     index: NodeIndex,
+    /// Inside `scoped`: the first node `node_at` may reuse (those made before are another's).
+    #[serde(skip)]
+    join_from: usize,
 }
 
 impl Model {
@@ -632,7 +635,7 @@ impl Model {
             for dy in -1..=1 {
                 for dz in -1..=1 {
                     if let Some(ids) = self.index.cells.get(&(cx + dx, cy + dy, cz + dz)) {
-                        for &id in ids {
+                        for &id in ids.iter().filter(|id| id.idx() >= self.join_from) {
                             let d = self.nodes[id.idx()].pos.distance(pos);
                             if d <= LEN_TOL && best.is_none_or(|(bd, _)| d < bd) {
                                 best = Some((d, id));
@@ -643,6 +646,15 @@ impl Model {
             }
         }
         best.map(|(_, id)| id)
+    }
+
+    /// Runs a generator that joins only what it makes: inside, `node_at` reuses only nodes made
+    /// inside. (Nothing is joined to another's node because it is where that node is.)
+    pub fn scoped<R>(&mut self, f: impl FnOnce(&mut Model) -> R) -> R {
+        let outer = std::mem::replace(&mut self.join_from, self.nodes.len());
+        let r = f(self);
+        self.join_from = outer;
+        r
     }
 
     /// Node at `pos`, reusing an existing coincident node (this is how shared
@@ -790,6 +802,84 @@ impl Model {
         let at = ts.iter().position(|&ti| ti > t).unwrap_or(ts.len());
         self.members[m.idx()].path.insert(at, node);
         Ok(())
+    }
+
+    /// Makes two nodes one: everything at `drop` (members' paths, joints, supports, loads, nodes
+    /// on faces) is at `keep` instead. (`drop` is left, at nothing.)
+    pub fn merge_node(&mut self, keep: NodeId, drop: NodeId) {
+        if keep == drop {
+            return;
+        }
+        for m in &mut self.members {
+            for n in m.path.iter_mut().filter(|n| **n == drop) {
+                *n = keep;
+            }
+            m.path.dedup();
+        }
+        if let Some(k) = self.joints.iter().position(|j| j.node == drop) {
+            let j = self.joints.remove(k);
+            let into = self.joint_mut(keep);
+            into.rules.extend(j.rules);
+            into.connections.extend(j.connections);
+        }
+        for s in self.supports.iter_mut().filter(|s| s.node == drop) {
+            s.node = keep;
+        }
+        for l in &mut self.loads {
+            if let crate::loads::Load::Node { node, .. } = l {
+                if *node == drop {
+                    *node = keep;
+                }
+            }
+        }
+        for a in self.attachments.iter_mut().filter(|a| a.node == drop) {
+            a.node = keep;
+        }
+        if self.nodes[keep.idx()].name.is_none() {
+            self.nodes[keep.idx()].name = self.nodes[drop.idx()].name.take();
+        }
+    }
+
+    /// Drops the nodes nothing is at (no member's path, joint, support, load or node on a face
+    /// refers to them, and they have no name), and numbers the rest again, in order.
+    pub fn compact_nodes(&mut self) {
+        let mut used = vec![false; self.nodes.len()];
+        let mut mark = |n: NodeId| used[n.idx()] = true;
+        self.members.iter().flat_map(|m| m.path.iter()).for_each(|&n| mark(n));
+        self.joints.iter().for_each(|j| mark(j.node));
+        self.supports.iter().for_each(|s| mark(s.node));
+        self.attachments.iter().for_each(|a| mark(a.node));
+        for l in &self.loads {
+            if let crate::loads::Load::Node { node, .. } = l {
+                mark(*node);
+            }
+        }
+        for (k, n) in self.nodes.iter().enumerate() {
+            used[k] |= n.name.is_some();
+        }
+        if used.iter().all(|&u| u) {
+            return;
+        }
+        let mut to = vec![NodeId(u32::MAX); self.nodes.len()];
+        let mut kept = vec![];
+        for (k, n) in std::mem::take(&mut self.nodes).into_iter().enumerate() {
+            if used[k] {
+                to[k] = NodeId(kept.len() as u32);
+                kept.push(Node { id: to[k], ..n });
+            }
+        }
+        self.nodes = kept;
+        let map = |n: &mut NodeId| *n = to[n.idx()];
+        self.members.iter_mut().flat_map(|m| m.path.iter_mut()).for_each(map);
+        self.joints.iter_mut().for_each(|j| map(&mut j.node));
+        self.supports.iter_mut().for_each(|s| map(&mut s.node));
+        self.attachments.iter_mut().for_each(|a| map(&mut a.node));
+        for l in &mut self.loads {
+            if let crate::loads::Load::Node { node, .. } = l {
+                map(node);
+            }
+        }
+        self.reset_index();
     }
 
     /// Node on member `m` at point `p` (creating/reusing a node and inserting it into the path).
