@@ -66,7 +66,7 @@ positions because the solve found them.
 | A perimeter is one body; its walls are not each a body | Walls follow their corners, which are nodes (see step 5) |
 | (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
 | A surveyed wall is framed from its survey, outside the solve | Its posts as numbers of the wall with readings, as common studs now are |
-| Corners are solved before their walls are built, so only relations among corners can move them | A perimeter's corners as numbers in the one solve, as studs now are |
+| Where a wall slopes, or two meet at a step, plates butt with square-cut ends (partial bearing reported; no backing at a step) | Plate ends cut to what they meet; corner framing for steps |
 | The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier (needs generators inside the solve: the fit re-runs the script) |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
 | Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
@@ -104,8 +104,7 @@ Each step leaves everything working and removes one row above.
    of the scene: its generator writes it where it is drawn, and if it is
    `free()`, relations to its nodes place it and everything it made moves
    with it. Its corners are nodes (`walls.corner(1)`, …): where they are
-   drawn is a hint; datums and readings among corners are solved first,
-   and the walls are built on the corners where they then are. Any point
+   drawn is a hint (see 6½). Any point
    of a member a generator made is a node a script can name: an end
    (`walls.node("Front/cap_plate", "start")`) or a distance along it
    (`walls.node("Front/cap_plate", 1.2)`, a node in the member's path). A
@@ -125,15 +124,21 @@ Each step leaves everything working and removes one row above.
    studs there. *Not yet:* surveyed walls (framed from their survey, not
    as numbers), and the truss-shape fit (it re-runs the whole script for
    each unknown).
-6½. **Generators of numbers, in one solve.** *Done for studs.* A wall's
-   studs are numbers in the one solve with everything else. The wall is
-   built where the layout puts its studs; their ends are nodes that join
-   to the built ends; and once solved, any stud whose number changed is
-   moved there along its plates (whose nodes are then put back in order).
-   So a post joined to a stud's top moves the stud, and a stud taped to
-   it comes along. *Not yet:* a perimeter's corners (still solved first,
-   on their own: a corner's move changes a wall's length, and so what the
-   generator builds, not only where).
+6½. **Generators of numbers, in one solve.** *Done for perimeters.* A
+   perimeter's corners (three numbers each), its walls' heights at their
+   ends and its walls' studs are numbers in the one solve with everything
+   else; as drawn, hints (a stud's layout a fallback hint, below them).
+   It is built at the numbers; the nodes it built that relations name
+   move with them as the built ones would (found by building it again
+   with each moved a little); once solved it is built again at the
+   solved numbers, until they settle. So a corner moved by a reading
+   makes a longer wall with its studs laid out on it, a survey of a cap
+   plate's end changes the wall's height, and a post joined to a stud's
+   top moves the stud (or, off the wall's line, the wall). Walls may slope
+   (`Wall.heights(start, end)`, `Perimeter.base(corner, z)`); walls meeting
+   at one height are held so, else the corner is a step. *Not yet:*
+   trusses (their shape) and assemblies as generators of numbers; the
+   same "build again until settled" for them.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them.

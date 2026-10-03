@@ -56,6 +56,9 @@ within what the ones above leave free:
    scan or a tape.
 4. **Default**: a generator's hint ("my y is up"), or a layout rule. It
    decides only what nothing above decides.
+5. **Fallback**: a hint that gives way to the hints. A stud's place in
+   its wall's layout is one: a reading on a stud is then met by moving the
+   stud, not the wall's corners (where they are drawn is a hint).
 
 Solving in order, not with small weights, means a hint cannot bend a
 measurement and a measurement cannot bend a hard constraint, and the
@@ -351,28 +354,59 @@ node here along whichever axes are given), each to a tolerance (3 mm by
 default). They give way to anything hard, share a misfit among themselves
 by their tolerances, and the solve says how far each is off.
 
-A perimeter's **corners are nodes** (`walls.corner(1)` is its start, then
-each corner in turn). Where a corner is drawn is a hint. Relations among
-corners (datums, readings) are solved first, on their own, and the walls
-are then built on the corners where they are
-(`examples/primitives/07-walls-on-readings.ts`). A truss's station is a
-node too: where the layout puts it along the ridge is a hint, and
-`shifted` is a reading of how far from it the truss is.
+A **perimeter is built from numbers of the one solve**:
 
-A wall's **common studs are numbers of the wall** (`Wall::common_studs`):
-where the layout puts each is a hint, a stud given by `studsAt` is a
-reading, and a stud against the wall it meets at an end is fixed. They
-keep their order (one-sided: no two overlap) and stay in the wall
-(bounds). Their ends are nodes, `walls.stud("Front", 3, "bottom")` (or
-`"top"`), numbered along each wall from its start. They are in the one
-solve with everything else: the wall is built where the layout puts its
-studs, their ends are the built studs' end nodes, and once solved, a
-stud whose number changed is moved there along its plates
-(`examples/primitives/08-studs-on-readings.ts`): a tape between two
-studs moves both (each a hint), a survey on one moves it, one pushed
-past its neighbour pushes the neighbour along, and a post joined to a
-stud's top moves the stud to it. `examples/primitives/04-placed-by-nodes.ts` places a free beam on
-two posts by its end nodes alone.
+- its **corners** (`walls.corner(1)` is its start, then each corner in
+  turn): three numbers each, in the perimeter's body, at the bottom of the
+  walls there; where a corner is drawn (`Perimeter.base(corner, z)` for
+  one not at the perimeter's `z`) is a hint;
+- each wall's **height at its start and its end** (`Wall.heights(start,
+  end)`: its top slopes between them; heights are above the wall's
+  bottom); as drawn a hint. Where two walls meet at one height as drawn
+  they are held at one height there; where they meet at different
+  heights, that corner is a step (said, as `corner-step`);
+- each wall's **common studs** (`Wall::common_studs`), along it from its
+  start: where the layout puts one a fallback hint, a stud given by
+  `studsAt` a reading, a stud against the wall it meets at an end held
+  there (the last as far from the end corner as the layout has it,
+  wherever the corners are). They keep their order (one-sided: no two
+  overlap), and so stay in the wall. Their ends are nodes,
+  `walls.stud("Front", 3, "bottom")` (or `"top"`), numbered along each
+  wall from its start.
+
+The perimeter is **built at the numbers**, as drawn first. Any node it
+built that a relation names (`walls.node(...)`, `walls.stud(...)`) is a
+node of the scene that moves with the numbers as the built one would:
+what each number does to it is found by building the perimeter again with
+that number moved a little (the studs all at once: each stud's ends move
+with its own number only). Once solved, the perimeter is **built again at
+the solved numbers**, and solved again, until they do not change (they
+settle in a pass or two; `unsettled` is said if not). So what the
+generator builds is what the solve asked for: a corner moved by a reading
+makes a longer wall with more studs, not a stretched one.
+
+So a tape between corners, a survey of a cap plate's end, a post joined to
+a stud's top: each moves the numbers it needs to, and the walls are built
+there (`examples/primitives/07-walls-on-readings.ts`,
+`08-studs-on-readings.ts`, `09-walls-that-slope.ts`). A reading on a stud
+moves the stud rather than the wall's corner (the layout is a fallback);
+a hard relation the stud cannot meet alone (a fixed post off the wall's
+line) moves the wall. A truss's station is a node too: where the layout
+puts it along the ridge is a hint, and `shifted` is a reading of how far
+from it the truss is. `examples/primitives/04-placed-by-nodes.ts` places
+a free beam on two posts by its end nodes alone.
+
+Where a wall slopes (or two meet at a step), the plates at its corners
+cannot interleave: they butt. A plate of the second wall that ends at the
+same node as one of the first butts against it there; one that does not
+(the plies at different heights) is cut back to a node on the first face
+of the other wall it runs into (`Model::attach`: a face reaches past its
+member's end nodes by its section's size, as a joint may run it), and its
+end is cut on that face. *Known limitation:* the square-cut ends of
+sloping plates rise or fall past what they butt (a sloping cap past a
+level one by its slope over the wall's thickness), reported as partial
+bearing; at a step, the lower wall's plies end on the taller wall's end
+stud (no backing is framed for them yet).
 
 ## Seeing it
 
@@ -389,6 +423,16 @@ two posts by its end nodes alone.
    joined to the beams at bearing points on the beams' top faces.
 3. **Trusses on walls**: the same, where the axes meet, so every bearing
    point is an ordinary node on both axes.
+4. **Placed by nodes**: a free beam on two posts by its end nodes alone.
+5. **Joists on walls**: `Assembly.bearingOn(walls)`, a rest for each
+   joist on each cap plate it crosses.
+6. **Placed by a corner**: free walls placed by a datum on a node of
+   theirs; the roof set out from the same node.
+7. **Walls on readings**: corners moved by a survey and a tape; the walls
+   built on them.
+8. **Studs on readings**: studs moved by a tape and a survey.
+9. **Walls that slope**: a lean-to's heights, a lowered corner, and a
+   survey of a cap plate's end that the generator is built again to meet.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:
