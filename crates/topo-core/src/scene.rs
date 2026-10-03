@@ -94,6 +94,9 @@ pub struct Written {
     pub open: Vec<String>,
     /// Each number (`Scene::number`) as solved.
     pub values: Vec<(ScalarId, f64)>,
+    /// Readings the solve left off by more than three times their tolerance: what, how far off,
+    /// and the tolerance.
+    pub off: Vec<(String, f64, f64)>,
 }
 
 /// How firmly a number is held to a value.
@@ -669,7 +672,13 @@ impl Scene {
         }
         let names = self.nodes.iter().map(|n| n.name.clone()).collect();
         let values = self.starts.iter().map(|&(s, _)| (s, self.sys.value(s))).collect();
-        Ok(Written { groups, nodes, names, members, open: report.open, values })
+        let off = (report.gaps.iter())
+            .filter_map(|g| match g.tier {
+                ts::Tier::Measured { sigma } if g.size.abs() > 3.0 * sigma => Some((g.constraint.clone(), g.size, sigma)),
+                _ => None,
+            })
+            .collect();
+        Ok(Written { groups, nodes, names, members, open: report.open, values, off })
     }
 }
 

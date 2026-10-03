@@ -607,8 +607,10 @@ impl Builder {
         let mut walls = per.walls();
         for (w, studs) in walls.iter_mut().zip(&at.studs) {
             if let (Some(w), Some(studs)) = (w.as_mut(), studs) {
-                if w.survey.is_none() && w.common_studs().len() == studs.len() {
-                    w.studs_solved = Some(studs.clone());
+                match &w.survey {
+                    None if w.common_studs().len() == studs.len() => w.studs_solved = Some(studs.clone()),
+                    Some(survey) if survey.items.iter().filter(|i| matches!(i, topo_timber::survey::SurveyItem::Post { .. })).count() == studs.len() => w.survey_solved = Some(studs.clone()),
+                    _ => {}
                 }
             }
         }
@@ -694,8 +696,14 @@ impl Builder {
                 sc.equal(&format!("{}/corner {}: the walls are one height there", p.name, b % nc + 1), ha.1.into(), hb.0.into(), scene::Tier::Hard);
             }
         }
-        // Studs.
+        // Studs; and a surveyed wall's posts.
         for (i, (w, wp)) in walls.iter().zip(&parts.walls).enumerate() {
+            if let (Some(w), Some(_)) = (w, wp) {
+                if let Some(survey) = &w.survey {
+                    numbers.studs.push(Some(self.surveyed(p, w, survey, sc, body, &numbers, i, nc)?));
+                    continue;
+                }
+            }
             let (Some(w), Some(wp)) = (w.as_ref().filter(|w| w.survey.is_none()), wp) else {
                 numbers.studs.push(None);
                 continue;
@@ -785,6 +793,21 @@ impl Builder {
             let mut stud_of: HashMap<NodeId, scene::ScalarId> = HashMap::new();
             for (w, (ss, wp)) in numbers.studs.iter().zip(&parts.walls).enumerate() {
                 let (Some(ss), Some(wp)) = (ss, wp) else { continue };
+                if let Some(wall) = walls[w].as_ref().filter(|x| x.survey.is_some()) {
+                    // (A surveyed wall's posts: each node of its upright members goes with the nearest.)
+                    let u = (wall.end - wall.start).normalized();
+                    let xs: Vec<f64> = ss.iter().map(|&s| sc.value(s)).collect();
+                    for &id in &wp.studs {
+                        for n in [self.m.member(id).start(), self.m.member(id).end()] {
+                            let x = (self.m.pos(n) - wall.start).dot(u);
+                            if let Some(k) = (0..xs.len()).min_by(|&a, &b| (xs[a] - x).abs().total_cmp(&(xs[b] - x).abs())) {
+                                stud_of.insert(n, ss[k]);
+                            }
+                        }
+                    }
+                    moved.studs[w] = Some(xs.iter().map(|x| x + EPS).collect());
+                    continue;
+                }
                 let commons: Vec<MemberId> = wp.studs.iter().copied().filter(|&id| self.m.member(id).role == "stud").collect();
                 let mut xs = vec![];
                 for (&id, &s) in commons.iter().zip(ss) {
@@ -803,6 +826,52 @@ impl Builder {
         let top = walls.iter().flatten().map(|w| w.start.z + w.height.max(w.height_end.unwrap_or(w.height))).fold(drawn.corners[0].z, f64::max);
         self.perimeters.insert(p.name.clone(), (parts, top));
         Ok(numbers)
+    }
+
+    /// A surveyed wall's posts, as numbers of the perimeter (centres along the wall from its start,
+    /// in the order the survey lists them): each starts where its reading puts it (or where the
+    /// solve last put it); each reading, and each check, is a reading of them (and of the wall's
+    /// length, in its corners' numbers); they keep their order (allowing 1/8" of slop).
+    #[allow(clippy::too_many_arguments)]
+    fn surveyed(&self, p: &PerimeterSpec, w: &Wall, survey: &topo_timber::Survey, sc: &mut scene::Scene, body: scene::BodyRef, numbers: &PerimeterNumbers, i: usize, nc: usize) -> Result<Vec<scene::ScalarId>, String> {
+        use topo_timber::survey::{ResolvedItem, WallContext};
+        let len = w.length();
+        let ply = topo_core::units::inch(topo_timber::lumber::dressed_in(w.stud.0));
+        let u = Vec2::new(w.end.x - w.start.x, w.end.y - w.start.y) / len;
+        let cx = WallContext { len, ply, inside: w.corner_inside, dir: [u.x, u.y] };
+        let r = survey.resolve_at(&w.name, &cx, w.survey_solved.as_deref())?;
+        let posts: Vec<&topo_timber::survey::Post> = r.items.iter().filter_map(|it| if let ResolvedItem::Post(q) = it { Some(q) } else { None }).collect();
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let mut ss = vec![];
+        let mut of_item = HashMap::new();
+        for q in &posts {
+            let role = q.role.role();
+            let k = seen.entry(role).or_insert(0);
+            *k += 1;
+            let name = format!("{}/{}/{}", p.name, w.name, q.name.clone().unwrap_or_else(|| format!("{role}#{k}")));
+            of_item.insert(q.item, ss.len());
+            ss.push(sc.number(&name, body, q.x));
+        }
+        let (ca, cb) = (numbers.corners[i], numbers.corners[(i + 1) % nc]);
+        for rel in survey.relations(&w.name, &cx)? {
+            let mut num = scene::Num::from(0.0);
+            for &(item, k) in &rel.posts {
+                num = num.plus(ss[of_item[&item]], k);
+            }
+            if rel.len != 0.0 {
+                // (The wall's length on plan, in its corners' numbers.)
+                num = num.plus(cb[0], rel.len * u.x).plus(cb[1], rel.len * u.y).plus(ca[0], -rel.len * u.x).plus(ca[1], -rel.len * u.y);
+            }
+            sc.equal(&format!("{}/{}: {}", p.name, w.name, rel.what), num, rel.value.into(), scene::Tier::Reading(rel.tolerance));
+        }
+        let mut order: Vec<usize> = (0..posts.len()).collect();
+        order.sort_by(|&a, &b| posts[a].x.total_cmp(&posts[b].x));
+        for pair in order.windows(2) {
+            let (a, b) = (posts[pair[0]], posts[pair[1]]);
+            let gap = (a.width(ply) + b.width(ply)) / 2.0 - topo_core::units::inch(0.125);
+            sc.at_least(&format!("{}/{}: post {} clear of post {}", p.name, w.name, pair[1] + 1, pair[0] + 1), ss[pair[1]], ss[pair[0]], gap);
+        }
+        Ok(ss)
     }
 
     /// The corners where two walls of a perimeter meet: (incoming side, outgoing side).
@@ -1216,6 +1285,9 @@ fn finish(pass: Pass) -> Result<Model, String> {
     let Pass { mut b, written, declared, roofs, .. } = pass;
     for open in &written.open {
         b.m.issues.push(Issue::new(Severity::Warning, "open", format!("nothing places this: {open}")));
+    }
+    for (what, off, tolerance) in &written.off {
+        b.m.issues.push(Issue::new(Severity::Warning, "reading-off", format!("{what}: off by {:.1} mm (read to about {:.1} mm): it does not agree with the rest", off.abs() * 1000.0, tolerance * 1000.0)));
     }
     for (a, d) in &declared {
         b.finish(a, d, &written)?;

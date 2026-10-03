@@ -113,6 +113,9 @@ pub struct Wall {
     pub corner_inside: [Option<f64>; 2],
     /// The common studs' centres, exactly, as solved (one for each of `common_studs`, in order):
     /// built there instead of where the layout puts them.
+    /// Where a solve has put a surveyed wall's posts (centres along it, in the order its survey
+    /// lists them); none: where their readings put them.
+    pub survey_solved: Option<Vec<f64>>,
     pub studs_solved: Option<Vec<f64>>,
 }
 
@@ -211,6 +214,7 @@ impl Wall {
             openings: vec![],
             start_inset: 0.0,
             end_inset: 0.0,
+            survey_solved: None,
             cap_breaks: vec![],
             parent: None,
             survey: None,
@@ -451,7 +455,7 @@ impl Wall {
         let b = inch(dressed_in(self.stud.0));
         let d = (self.end - self.start) / len;
         let cx = WallContext { len, ply: b, inside: self.corner_inside, dir: [d.x, d.y] };
-        let r = survey.resolve(&self.name, &cx)?;
+        let r = survey.resolve_at(&self.name, &cx, self.survey_solved.as_deref())?;
         let (h, t) = (self.height, self.thickness());
         let _ = t;
         let items = &r.items;

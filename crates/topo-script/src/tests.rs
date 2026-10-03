@@ -1096,6 +1096,22 @@ fn surveyed_wall_from_typescript() {
     assert!(ys.iter().any(|y| (y - (144.0 - 5.5 - 0.5 - 0.75)).abs() < 1e-6), "{ys:?}");
     let chk = m.issues.iter().find(|i| i.code == "survey-check").expect("check");
     assert_eq!(chk.severity, topo_core::Severity::Info, "{}", chk.message);
+    // The posts are numbers of the one solve, and the check is a reading in it. Taped an inch longer than
+    // the walls are drawn, the tape (a reading) puts the west wall's ends an inch further apart (where its
+    // corners are drawn are hints, alike: each gives way half an inch); the posts read from each corner go
+    // with it.
+    let s = &m.solves[0];
+    assert!(s.constraints.iter().any(|c| c.name.starts_with("P/West: south corner") && c.tier == "measured"), "{:#?}", s.constraints.iter().map(|c| &c.name).collect::<Vec<_>>());
+    let longer = run(&src.replace("ft(12) - inch(11)", "ft(12) - inch(10)"), "s.ts").unwrap();
+    let ys = |m: &topo_core::Model| {
+        let mut v: Vec<f64> = m.members.iter().filter(|x| m.member_path(x.id).contains("/West/") && x.role == "stud").map(|x| m.pos(x.start()).y / 0.0254).collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        v
+    };
+    let (before, after) = (ys(&m), ys(&longer));
+    assert!(after[..2].iter().zip(&before[..2]).all(|(a, b)| (a - b + 0.5).abs() < 1e-6), "{before:?} {after:?}");
+    assert!(after[2..].iter().zip(&before[2..]).all(|(a, b)| (a - b - 0.5).abs() < 1e-6), "{before:?} {after:?}");
+    assert!(longer.issues.iter().all(|i| i.code != "reading-off"), "{:#?}", longer.issues);
 
     // Two readings for the same place.
     let bad = src.replace(".stud(0).stud(inch(15.25))", ".stud(0).stud(inch(0.5))");

@@ -369,6 +369,18 @@ settle in a pass or two; `unsettled` is said if not). So what the
 generator builds is what the solve asked for: a corner moved by a reading
 makes a longer wall with more studs, not a stretched one.
 
+A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
+each starts where its reading puts it; each reading is a reading of the
+posts (from a corner of the wall, in the corners' numbers; or from the face
+of another post), to 1/16"; each check (a tape between two datums) is a
+reading too, to its own tolerance. They keep their order. So a check that
+disagrees with the readings and the drawing is shared out as readings and
+hints are, not only reported; the wall is built with its posts where the
+solve puts them, and its `survey-check` notes say what is left.
+
+Any reading the solve leaves off by more than three times its tolerance is
+said, as a warning (`reading-off`): it does not agree with the rest.
+
 So a tape between corners, a survey of a cap plate's end, a post joined to
 a stud's top: each moves the numbers it needs to, and the walls are built
 there (`examples/primitives/07-walls-on-readings.ts`,

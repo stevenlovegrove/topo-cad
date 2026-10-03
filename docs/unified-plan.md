@@ -62,7 +62,6 @@ positions because the solve found them.
 | Today | What it should be |
 | --- | --- |
 | (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
-| A surveyed wall is framed from its survey, outside the solve | Its posts as numbers of the wall with readings, as common studs now are |
 | Where a wall slopes, or two meet at a step, plates butt with square-cut ends (partial bearing reported; no backing at a step) | Plate ends cut to what they meet; corner framing for steps |
 | The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier (needs generators inside the solve: the fit re-runs the script) |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
@@ -109,7 +108,7 @@ Each step leaves everything working and removes one row above.
    *Decided:* walls are not each a body: at a corner the plates lap and
    share nodes, so a wall cannot move alone; a wall moves by its corners.
    `TrussRoof.origin` stays, as a datum.
-6. **Readings as measured constraints.** *Done, but for surveyed walls and the truss-shape fit.*
+6. **Readings as measured constraints.** *Done, but for the truss-shape fit.*
    `tape(a, b, distance)` and `survey(node, {x, y, z})` are measured
    constraints on any nodes (corners, assemblies' points). A truss's
    `shifted` is a reading of where it is along the ridge from its station,
@@ -118,9 +117,13 @@ Each step leaves everything working and removes one row above.
    against the wall at an end fixed; they keep their order and stay in
    the wall. Their ends are nodes (`walls.stud("Front", 3, "bottom")`):
    readings and datums on them move them, and the wall is built with its
-   studs there. *Not yet:* surveyed walls (framed from their survey, not
-   as numbers), and the truss-shape fit (it re-runs the whole script for
-   each unknown).
+   studs there. A surveyed wall's posts are numbers of it too: each
+   reading is a reading of them (from a corner, in the corners' numbers; or
+   from another post's face), and so is each check, so a tape between
+   corners that disagrees with the drawing moves the corners, and the
+   posts read from them. A reading the solve leaves off by more than three
+   times its tolerance is said (`reading-off`). *Not yet:* the truss-shape
+   fit (it re-runs the whole script for each unknown).
 6½. **Generators of numbers, in one solve.** *Done for perimeters.* A
    perimeter's corners (three numbers each), its walls' heights at their
    ends and its walls' studs are numbers in the one solve with everything
