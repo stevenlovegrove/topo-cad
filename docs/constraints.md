@@ -508,24 +508,21 @@ does not make things worse; where the hard constraints are not met, the
 hard tier's part alone too, and whichever meets them better (the lower
 tiers' part, made where the hard constraints are not met, can keep them
 from being met: a turn is not straight). Once they are met, a step is
-brought back onto them before it is judged. Ideas are taken from
+brought back onto them before it is judged, and then (what it does to the
+readings being second-order too) back to what the readings ask there; and
+it is judged tier by tier, the readings first, a tier no worse (but for
+rounding) letting the next decide. Without that, a hint's step beside a
+reading at a lever arm of metres was refused for the reading's
+second-order change, and the solve stopped short. Ideas are taken from
 articulated-body formulations; no outside solver is used.
 
 ## Not yet
 
 - **The roof's layers do not follow a tilted truss.**
-- **Judging a step across tiers.** A step's acceptance compares the
-  measured and the hints together; where a reading and a hint meet at a
-  lever arm of metres, a hint's step leaves the reading off by a
-  second-order amount that outweighs what the hint gains, and the solve
-  stops short (`hints_settle_beside_readings_at_a_lever`, ignored). Judging
-  tier by tier, allowing a higher tier its second-order change, is what is
-  wanted.
 - **Checks a script asks for** (a ruleset): rules particular to a kind of
   building or a code, kept out of the generic model.
 - **Instances of instances** are not tried: a definition that uses
   another should work (it is a system like any other), with no test yet.
-- **Bounds** on scalars (a point between a member's ends).
 - **Conflict feedback drawn**: the component in conflict shown in the
   view, and one gap per suspect (each released in turn).
 - **Structure within structure.** A part is split once into shared and

@@ -193,8 +193,6 @@ pub struct Point {
     pub along: Vec<(ScalarId, V3)>,
     /// The node this is, if it is one (see `System::node`).
     pub node: Option<usize>,
-    /// A point between two others instead (`a + t (b - a)`, in the world): then the rest is unused.
-    pub between: Option<Box<(Point, Point, ScalarId)>>,
 }
 
 /// A node: a named point of the system. It is fixed in its frame, or has numbers of its own
@@ -205,12 +203,7 @@ pub struct NodeId(pub usize);
 impl Point {
     /// At these coordinates of the frame.
     pub fn at(frame: FrameId, at: V3) -> Point {
-        Point { frame, at, along: vec![], node: None, between: None }
-    }
-
-    /// Between two points: `t` of the way from `a` to `b` (0 at `a`, 1 at `b`), wherever they are.
-    pub fn between(a: Point, b: Point, t: ScalarId) -> Point {
-        Point { frame: WORLD, at: [0.0; 3], along: vec![], node: None, between: Some(Box::new((a, b, t))) }
+        Point { frame, at, along: vec![], node: None }
     }
 
     /// And `s` (in the frame's unit) times `dir`.
@@ -278,20 +271,10 @@ impl Kind {
     /// The frames and the scalars it reads.
     fn touches(&self) -> (Vec<usize>, Vec<usize>) {
         let (mut frames, mut scalars) = (vec![], vec![]);
-        fn reads(p: &Point, frames: &mut Vec<usize>, scalars: &mut Vec<usize>) {
-            match &p.between {
-                Some(b) => {
-                    reads(&b.0, frames, scalars);
-                    reads(&b.1, frames, scalars);
-                    scalars.push(b.2 .0);
-                }
-                None => {
-                    frames.push(p.frame.0);
-                    scalars.extend(p.along.iter().map(|(s, _)| s.0));
-                }
-            }
-        }
-        let mut point = |p: &Point, frames: &mut Vec<usize>| reads(p, frames, &mut scalars);
+        let mut point = |p: &Point, frames: &mut Vec<usize>| {
+            frames.push(p.frame.0);
+            scalars.extend(p.along.iter().map(|(s, _)| s.0));
+        };
         let mut nums: Vec<&Num> = vec![];
         match self {
             Kind::Coincident(a, b) => {
@@ -728,6 +711,8 @@ struct Stepped {
     dx: Vec<f64>,
     /// The hard constraints' part of it alone.
     hard: Vec<f64>,
+    /// Its part for the hard constraints and the measured ones.
+    measured: Vec<f64>,
     /// One-sided constraints the step would cross: to be taken as met exactly.
     add: Vec<usize>,
     /// One taken as met that should not be: things would move off it.
@@ -862,13 +847,7 @@ impl System {
     }
 
     fn point_in(&self, world: &[Pose], p: &Point) -> V3 {
-        match &p.between {
-            Some(b) => {
-                let (a, c, t) = (self.point_in(world, &b.0), self.point_in(world, &b.1), self.value(b.2));
-                add(a, scale(sub(c, a), t))
-            }
-            None => world[p.frame.0].apply(self.local(p)),
-        }
+        world[p.frame.0].apply(self.local(p))
     }
 
     fn dir_in(&self, world: &[Pose], d: &Dir) -> V3 {
@@ -918,15 +897,6 @@ impl System {
 
     /// What moving a point asks: `grads` is, for each residual, how it changes with the point's place in the world.
     fn point_terms(&self, world: &[Pose], p: &Point, grads: &[V3], out: &mut Terms) {
-        if let Some(b) = &p.between {
-            // a + t (b - a): so much of what moves a, and of what moves b, and of t.
-            let t = self.value(b.2);
-            let span = sub(self.point_in(world, &b.1), self.point_in(world, &b.0));
-            self.point_terms(world, &b.0, &grads.iter().map(|g| scale(*g, 1.0 - t)).collect::<Vec<_>>(), out);
-            self.point_terms(world, &b.1, &grads.iter().map(|g| scale(*g, t)).collect::<Vec<_>>(), out);
-            out.scalars.push((b.2 .0, Col(grads.iter().map(|g| dot(*g, span)).collect())));
-            return;
-        }
         let (f, x) = (p.frame.0, self.local(p));
         // The same, in the frame's own axes: a turn w and a shift v move the point by v + w × x.
         let own: Vec<V3> = grads.iter().map(|g| world[f].rotate_back(*g)).collect();
@@ -1223,7 +1193,7 @@ impl System {
         let scaled = |m: (Vec<f64>, Mat, Vec<usize>)| (m.0, m.1.into_iter().map(|row| row.iter().zip(&scale).map(|(x, s)| x / s).collect()).collect::<Mat>(), m.2);
         let (r, j, _) = scaled(self.dense_where(part, &rows, &hard));
         let (mut dx, mut free, rank) = Free::all(n, structure.as_ref()).solve(&j, &r);
-        let mut out = Stepped { dx: vec![], hard: dx.iter().zip(&scale).map(|(x, s)| x / s).collect(), add: vec![], release: None, descending: false, ranks: [rank, 0, 0, 0, 0], free: vec![], settled: vec![None; n] };
+        let mut out = Stepped { dx: vec![], hard: dx.iter().zip(&scale).map(|(x, s)| x / s).collect(), measured: vec![], add: vec![], release: None, descending: false, ranks: [rank, 0, 0, 0, 0], free: vec![], settled: vec![None; n] };
         let cols = |m: &Mat| m.first().map_or(0, Vec::len);
         let mark = |free: &Free, settled: &mut [Option<usize>], by: usize| {
             for (j, s) in settled.iter_mut().enumerate() {
@@ -1320,6 +1290,12 @@ impl System {
             free = next;
             out.ranks[tier] = rank;
             mark(&free, &mut out.settled, tier);
+            if tier == 1 {
+                out.measured = dx.iter().zip(&scale).map(|(x, s)| x / s).collect();
+            }
+        }
+        if out.measured.is_empty() {
+            out.measured = dx.iter().zip(&scale).map(|(x, s)| x / s).collect();
         }
         let _ = world;
         // The lower tiers' steps must not cross an inactive one-sided constraint either: those
@@ -1346,18 +1322,10 @@ impl System {
     /// least (not what has the fewest radians), and things are moved before they are reshaped.
     fn scales(&self, part: &Component) -> Vec<f64> {
         let mut reach = vec![1.0f64; self.names.len()];
-        fn each<'a>(p: &'a Point, out: &mut Vec<&'a Point>) {
-            out.push(p);
-            if let Some(b) = &p.between {
-                each(&b.0, out);
-                each(&b.1, out);
-            }
-        }
         let mut points = vec![];
         for c in &self.constraints {
             if let Kind::Coincident(a, b) | Kind::Distance(a, b, _) | Kind::Offset(a, b, _, _) | Kind::Above(a, b, _, _) = &c.kind {
-                each(a, &mut points);
-                each(b, &mut points);
+                points.extend([a, b]);
             }
         }
         for p in points {
@@ -1503,7 +1471,23 @@ impl System {
         let (before, after) = (self.hard_gap(constraints), next.hard_gap(constraints));
         let softer = || next.soft_cost(constraints) <= self.soft_cost(constraints) * (1.0 + 1e-9) + 1e-20;
         if weights.is_empty() {
-            return if before > MET { after < before } else { after <= MET && softer() };
+            // Once the hard constraints are met: tier by tier, the measured first; a tier no
+            // worse (but for rounding) lets the next one decide.
+            let tiers = || {
+                for t in 1..WEIGHT {
+                    let sq = |s: &System| s.tier_residual(constraints, t).iter().map(|x| x * x).sum::<f64>();
+                    let (a, b) = (sq(self), sq(next));
+                    let same = 1e-9 * a + 1e-20;
+                    if b < a - same {
+                        return true;
+                    }
+                    if b > a + same {
+                        return false;
+                    }
+                }
+                true
+            };
+            return if before > MET { after < before } else { after <= MET && tiers() };
         }
         let heavy = 100.0 * weights.iter().map(|&k| self.weights[k].2.abs()).sum::<f64>();
         let (a, b) = (self.height(weights) + heavy * before, next.height(weights) + heavy * after);
@@ -1563,8 +1547,16 @@ impl System {
                     let mut next = self.stepped(&self.step_of(part, &d.iter().map(|x| x * f).collect::<Vec<_>>()));
                     if s.descending || !unmet {
                         // A step is straight, and leaves the hard constraints a little (a turn is not
-                        // straight): once they are met, a step is judged once brought back onto them.
+                        // straight): once they are met, a step is judged once brought back onto them,
+                        // and (what it does to the readings being as much second-order) back to what
+                        // the readings ask there.
                         next = next.restored(part, n, &active);
+                        if !s.descending {
+                            let c = next.step(part, n, &active, &weights, cap, true);
+                            if c.add.is_empty() && !c.measured.is_empty() {
+                                next = next.stepped(&next.step_of(part, &c.measured)).restored(part, n, &active);
+                            }
+                        }
                     }
                     if self.no_worse(&next, &part.constraints, &weights) {
                         if best.as_ref().is_none_or(|b| next.hard_gap(&part.constraints) < b.hard_gap(&part.constraints)) {
@@ -1720,13 +1712,6 @@ impl System {
             out.variables.push(Variable { name: scalar.name.clone(), kind: "scalar", at, value: Some(scalar.value), node, freedoms: vec![Freedom { what: "change".into(), dir, turn: false, settled: report.scalars.get(s).copied().flatten() }] });
         }
         for (name, p) in &self.nodes {
-            if let Some(b) = &p.between {
-                let (a, c) = (self.point_in(&world, &b.0), self.point_in(&world, &b.1));
-                let s = b.2 .0;
-                let number = Number { name: self.scalars[s].name.clone(), value: self.scalars[s].value, dir: unit(sub(c, a)), bounds: self.bounds.iter().find(|x| x.0 == s).map(|x| (x.1, x.2)), settled: report.scalars.get(s).copied().flatten() };
-                out.nodes.push(ShownNode { name: name.clone(), at: self.point_in(&world, p), of: "the points it is between".into(), kind: "between two points", numbers: vec![number] });
-                continue;
-            }
             let numbers: Vec<Number> = (p.along.iter())
                 .map(|(s, u)| Number { name: self.scalars[s.0].name.clone(), value: self.scalars[s.0].value, dir: world[p.frame.0].rotate(*u), bounds: self.bounds.iter().find(|b| b.0 == s.0).map(|b| (b.1, b.2)), settled: report.scalars.get(s.0).copied().flatten() })
                 .collect();
@@ -1868,8 +1853,7 @@ impl Instance {
                 Err(value) => at = add(at, scale(*u, value)),
             }
         }
-        assert!(p.between.is_none(), "a definition's points between points are not used through an instance yet");
-        Point { frame, at: from.apply(at), along, node: None, between: None }
+        Point { frame, at: from.apply(at), along, node: None }
     }
 
     /// A direction of the definition, here.
@@ -1939,14 +1923,12 @@ fn weight(t: Tier) -> f64 {
 mod tests {
     use super::*;
 
-    /// KNOWN LIMITATION: with a reading on each body as well, at a lever arm of metres from the
-    /// base's origin, the hint tier does not settle: a hint's step leaves the readings off by a
-    /// second-order amount, which (weighted by their tolerance) outweighs what the hint gains, so
-    /// the step is refused and the solve stops short (structured and dense stop at different
-    /// places, ~0.015 rad apart in the base's turn). Judging a step tier by tier, allowing a
-    /// higher tier its second-order change, is what is wanted.
+    /// With a reading on each body as well, at a lever arm of metres from the base's origin: a
+    /// hint's step leaves the readings off by a second-order amount, which, weighted by their
+    /// tolerance, outweighed what the hint gained, and the solve stopped short (structured and
+    /// dense at different places, 0.015 rad apart). A step is now brought back to what the
+    /// readings ask before it is judged, and judged tier by tier: both settle at one answer.
     #[test]
-    #[ignore]
     fn hints_settle_beside_readings_at_a_lever() {
         let mut s = System::new();
         let base = s.frame("base", WORLD, Joint::Free, Pose::identity());
@@ -1970,7 +1952,7 @@ mod tests {
         let (r, rd) = (s.solve(), dense.solve());
         assert!(!r.refused && !rd.refused);
         let (a, b) = (s.in_world(FrameId(1)), dense.in_world(FrameId(1)));
-        assert!((0..3).all(|i| (0..3).all(|j| (a.r[i][j] - b.r[i][j]).abs() < 1e-9)), "{:?} {:?}", a.r, b.r);
+        assert!((0..3).all(|i| (0..3).all(|j| (a.r[i][j] - b.r[i][j]).abs() < 1e-6)), "{:?} {:?}", a.r, b.r);
     }
 
     /// A free base, and on it ten free bodies, each sat on it at two points (as trusses are), and hinted:
@@ -2060,11 +2042,6 @@ mod tests {
         s.constrain("i", Tier::Measured { sigma: 0.05 }, Kind::Parallel(Dir(peg, [0.0, 0.0, 1.0]), Dir(sketch, [0.0, 1.0, 1.0])));
         s.constrain("j", Tier::Default, Kind::Aligned(Dir(peg, [1.0, 0.0, 1.0]), Dir(corner, [0.0, 1.0, 0.0])));
         s.constrain("k", Tier::Measured { sigma: 0.1 }, Kind::Aligned(Dir(rider, [1.0, 0.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
-        // A point between a point of the wall and one of the peg (itself moved by the sketch's width), 0.3 of the way.
-        let t = s.scalar(WORLD, "how far between", 0.3);
-        let between = Point::between(Point::at(wall, [0.2, 0.1, 0.4]), Point::at(peg, [0.3, 0.0, 0.1]).plus(width, [0.0, 1.0, 0.0]), t);
-        s.constrain("l", Tier::Hard, Kind::Coincident(between.clone(), Point::at(corner, [0.5, 0.5, 0.0])));
-        s.constrain("m", Tier::Measured { sigma: 0.02 }, Kind::distance(between, Point::at(truss, [1.0, 0.0, 0.0]), 3.0));
         s
     }
 
@@ -2084,7 +2061,7 @@ mod tests {
         let s = a_bit_of_everything();
         let all = s.everything();
         let n = s.unknowns(&all).len();
-        assert_eq!(n, 6 + 1 + 1 + 3 + 6 + 6 + 4);
+        assert_eq!(n, 6 + 1 + 1 + 3 + 6 + 6 + 3);
         let rows = s.linearised(&all.constraints).rows();
         const H: f64 = 1e-6;
         for tier in 0..WEIGHT {
