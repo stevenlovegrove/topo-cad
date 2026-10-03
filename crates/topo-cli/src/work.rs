@@ -203,7 +203,7 @@ impl Work {
             (Method::Get, "/api/free") => {
                 let scan = self.ws.lock().unwrap().scan.clone();
                 let Some(scan) = scan else { return respond_json(req, 503, &json!({"error": "the scan is still loading"})) };
-                let Some(sensor) = scan.sensor.as_deref() else { return respond_json(req, 404, &json!({"error": "this scan has no trajectory: where each point was seen from is not known"})) };
+                let Some(sensor) = scan.sensor.as_deref() else { return respond_json(req, 404, &json!({"error": "this scan does not say where each point was seen from (sensor_x/y/z in its PLY)"})) };
                 let (Some(c), Some(u), Some(vv), Some(n), Some(h)) = (v3(q.get("c")), v3(q.get("u")), v3(q.get("v")), v3(q.get("n")), v3(q.get("h"))) else { return respond_json(req, 400, &json!({"error": "c, u, v, n and h: x,y,z each"})) };
                 // As many cells as asked for (w, h: what the viewer has pixels for; the box is what it
                 // sees of the slab), else cells of 2 cm or as many as fit 1024 along the longer side.

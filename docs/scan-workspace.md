@@ -253,8 +253,8 @@ target/release/topo serve MODEL.ts SCAN.ply        # http://127.0.0.1:8765/
 - The model's folder must be in a git repository (`git init` there).
 - Folders the model imports from outside its own are given too, so the
   app can read them: `topo serve MODEL.ts ../../examples SCAN.ply`.
-- The scan is a binary PLY; a trajectory beside it (`full.tum` or
-  `odom.tum`) gives the sensor rays. After the first run the project
+- The scan is a binary PLY; where each point was seen from
+  (`sensor_x/y/z`, as facet's exports write them) gives the sensor rays. After the first run the project
   remembers its scan: `topo serve MODEL.ts --scan`.
 - An agent attaches over MCP, under a name of its own:
 
@@ -268,7 +268,7 @@ Without a scan, `topo serve` and any static host serve the app as before.
 
 | Where | What |
 |---|---|
-| `crates/topo-scan` | The computation and the workspace. `scan`, `ply`, `trajectory`, `axes`: loading a scan. `lib`: prediction, registration, evidence. `fit`, `render`, `cloud`: plane fits, section images, the thinned cloud and slabs. `git`, `issues`: the project as a repository. `workspace`, `tools`, `view`: the workspace, its tools, and what the app draws from. `mcp`: the tools for agents. |
+| `crates/topo-scan` | The computation and the workspace. `scan`, `ply`, `axes`: loading a scan. `lib`: prediction, registration, evidence. `fit`, `render`, `cloud`: plane fits, section images, the thinned cloud and slabs. `git`, `issues`: the project as a repository. `workspace`, `tools`, `view`: the workspace, its tools, and what the app draws from. `mcp`: the tools for agents. |
 | `crates/topo-cli/src/work.rs` | The service: `/api/…` and `/mcp` beside the app's files. |
 | `web/app/service.js` | The app's client of the service (absent: the app is as before). |
 | `web/app/glview.js` | A WebGL2 view: an orbit camera over the points, optionally clipped to a box (a slab), with handles to drag. |
@@ -387,13 +387,13 @@ Details that were decided in the building:
   would move toward or away from the viewer is not shown.
 - **The scan's points nearer the sensor than a distance are left out**
   (1 m unless set): whoever carried the scanner. A point's range is as
-  the file gives it, else its distance from where the trajectory says
-  the sensor was. The distance is set from the Scan row's right-click
+  the file gives it, else its distance from where the file says the
+  sensor was. The distance is set from the Scan row's right-click
   menu (or by `scan_filter`), is kept with the project
   (`<model>.scan.json`), and applies to everyone and everything made
   from the points; changing it loads the scan again in the background.
 - **Free space can be seen in a slab.** A view clipped to a slab has a
-  free-space switch (when the scan has a trajectory): under the points,
+  free-space switch (when the scan says where its points were seen from): under the points,
   a picture over the slab's middle plane of where the scanner's rays
   pass inside it, brighter where more do. Every ray is taken: the part
   of it inside the slab is drawn into a grid, each cell counting the
@@ -492,10 +492,11 @@ cargo run --release -p topo-scan --example evidence -- MODEL.ts SCAN.ply
 loads a model and a scan, registers the model in the scan and prints the
 evidence per group of members.
 
-- **Scan:** a binary PLY (x, y, z; optionally intensity, time, range). A
-  trajectory beside it gives the sensor position for each point, which
-  turns points into rays. Only `trajectory.rs` knows how a trajectory is
-  stored (today a TUM text file).
+- **Scan:** a binary PLY (x, y, z; optionally intensity, time, range,
+  sensor_x/y/z and tag). Where each point was seen from (`sensor_x/y/z`)
+  turns points into rays; a file stands by itself, with no trajectory
+  beside it. `tag` is the lidar's own flags (Livox: noise by position,
+  by intensity, the return).
 - **Placement:** the model in the scan is a turn about the vertical and a
   translation (both frames are gravity-aligned).
 - **Registration:** four yaw candidates from the scan's wall direction,

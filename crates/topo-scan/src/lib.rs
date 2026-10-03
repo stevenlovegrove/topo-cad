@@ -35,7 +35,6 @@ pub mod tools;
 pub mod tools3d;
 pub mod tools_obj;
 pub mod tools_sel;
-pub mod trajectory;
 pub mod view;
 pub mod workspace;
 
