@@ -161,8 +161,13 @@ pub enum ItemSpec {
     /// A frame with points in it, as nodes (`Frame/point`): a body (a scan's, placed where it is
     /// registered, or free), or the world (its points are datums).
     Frame(FrameItemSpec),
-    /// Two nodes are one (`Assembly name/point`).
-    Coincide { a: String, b: String },
+    /// Two nodes are one (`Assembly name/point`); or, with a tolerance, were read to be one point.
+    Coincide {
+        a: String,
+        b: String,
+        #[serde(default)]
+        tolerance: Option<f64>,
+    },
     /// A reading with a tape: two nodes are this far apart, to about `tolerance`.
     Tape { a: String, b: String, distance: f64, tolerance: f64 },
     /// A surveyed point: a node is here, along whichever of x, y, z are given, to about `tolerance`.
@@ -182,7 +187,7 @@ impl ItemSpec {
     /// The nodes a relation names.
     fn nodes(&self) -> Vec<&str> {
         match self {
-            ItemSpec::Coincide { a, b } | ItemSpec::Tape { a, b, .. } => vec![a, b],
+            ItemSpec::Coincide { a, b, .. } | ItemSpec::Tape { a, b, .. } => vec![a, b],
             ItemSpec::Survey { node, .. } => vec![node],
             _ => vec![],
         }
@@ -192,9 +197,12 @@ impl ItemSpec {
 /// A relation, into a scene, its nodes found by `node`.
 fn relate(sc: &mut scene::Scene, item: &ItemSpec, node: &mut dyn FnMut(&mut scene::Scene, &str) -> Result<scene::NodeRef, String>) -> Result<(), String> {
     match item {
-        ItemSpec::Coincide { a, b } => {
+        ItemSpec::Coincide { a, b, tolerance } => {
             let (na, nb) = (node(sc, a)?, node(sc, b)?);
-            sc.coincide(&format!("{a} is {b}"), na, nb);
+            match tolerance {
+                None => sc.coincide(&format!("{a} is {b}"), na, nb),
+                Some(t) => sc.read_at(&format!("{a} read to be at {b}"), na, nb, *t),
+            }
         }
         ItemSpec::Tape { a, b, distance, tolerance } => {
             let (na, nb) = (node(sc, a)?, node(sc, b)?);
@@ -1384,6 +1392,18 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
             return Ok(n);
         }
         let m = &b.m;
+        // A point on a face of a member: `path:face x,y,z` (the face facing that way), in the middle
+        // of it, or `@d` along it.
+        if let Some((path, rest)) = name.split_once(":face ") {
+            let (dir, at) = match rest.split_once('@') {
+                Some((d, a)) => (d, Some(a.parse::<f64>().map_err(|_| format!("{name}: not a distance along it"))?)),
+                None => (rest, None),
+            };
+            let v: Vec<f64> = dir.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("{name}: not a direction"))?;
+            let id = m.find_member(path)?;
+            let along = at.unwrap_or(m.member_length(id) / 2.0);
+            return sc.node_on_face(name, m, id, v3(v[0], v[1], v[2]), along);
+        }
         if let Some((path, at)) = name.rsplit_once('@') {
             let at: f64 = at.parse().map_err(|_| format!("{name}: not a distance along {path}"))?;
             return b.bind_along(sc, name, m.find_member(path)?, at);

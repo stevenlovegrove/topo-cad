@@ -315,7 +315,12 @@ the scene moves all of it (nodes, groups, members' directions) to where
 the solve puts it before anything else is written. A point of any member
 a generator made is a node by name: `Walls/Front/cap_plate:start` (or
 `:end`), or `Walls/Front/cap_plate@1.2` (so far along it: written as a
-node in the member's path).
+node in the member's path). A point **on a face** of a member is a node
+too: `member("Trusses/T1/bottom_chord").node("south", 1)` is the middle of
+the face toward the south, a metre along it (a direction, or a compass
+word; written as an attachment on that face). So a face seen in a scan is
+read where the scan sees it, not where the member's axis would be. Nodes
+made on the same face of a member at the same point are one node.
 
 Writing makes a model node for each node, and joins none to another
 because of where it is: only `coincide` (or a generator, inside what it
@@ -345,7 +350,9 @@ a datum on a corner, with the roof going where the walls go
 distance)` (two nodes this far apart) and `survey(node, { x, y, z })` (a
 node here along whichever axes are given), each to a tolerance (3 mm by
 default). They give way to anything hard, share a misfit among themselves
-by their tolerances, and the solve says how far each is off.
+by their tolerances, and the solve says how far each is off. `coincide(a,
+b, { tolerance })` is a reading too: the two nodes read to be one point
+(a point of a scan's frame read on a member's face).
 
 A **perimeter is built from numbers of the one solve**:
 
@@ -397,8 +404,11 @@ there (`examples/primitives/07-walls-on-readings.ts`,
 moves the stud rather than the wall's corner (the layout is a fallback);
 a hard relation the stud cannot meet alone (a fixed post off the wall's
 line) moves the wall. A truss's station is a node too: where the layout
-puts it along the ridge is a hint, and `shifted` is a reading of how far
-from it the truss is. `examples/primitives/04-placed-by-nodes.ts` places
+puts it along the ridge is a fallback (below its being upright, as a
+stud's layout is), and `shifted` is a reading of how far from it the truss
+is; a reading of the truss itself (a face of its chord against a scan)
+moves it without leaning it. Where along a top a truss's contact is (as
+things were put) is a fallback too. `examples/primitives/04-placed-by-nodes.ts` places
 a free beam on two posts by its end nodes alone.
 
 Where a wall slopes (or two meet at a step), the plates at its corners

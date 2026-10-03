@@ -101,19 +101,23 @@ Each step leaves everything working and removes one row above.
    drawn is a hint (see 6½). Any point
    of a member a generator made is a node a script can name: an end
    (`walls.node("Front/cap_plate", "start")`) or a distance along it
-   (`walls.node("Front/cap_plate", 1.2)`, a node in the member's path). A
-   roof can be set out from a node (`at`); each truss's station is a node.
+   (`walls.node("Front/cap_plate", 1.2)`, a node in the member's path),
+   or a point on a face (`member(path).node("south", 1)`, an attachment).
+   A roof can be set out from a node (`at`); each truss's station is a node.
    *Decided:* walls are not each a body: at a corner the plates lap and
    share nodes, so a wall cannot move alone; a wall moves by its corners.
    A roof is set out only `at` a node. A datum is a node: a point of the
    world (`Frame.world.point`, along only the coordinates given, if not
    all), placed by `coincide`; a scan is a frame with points in it
-   (`Frame.named("Scan")`), so moving the scan moves what refers to it.
+   (`Frame.named("Scan")`), so moving the scan moves what refers to it;
+   its placement is the scan's registration (the workspace takes it from
+   there). A face the scan sees is read by `coincide(scanPoint,
+   member.node(face, at), { tolerance })`.
 6. **Readings as measured constraints.** *Done.*
    `tape(a, b, distance)` and `survey(node, {x, y, z})` are measured
    constraints on any nodes (corners, assemblies' points). A truss's
    `shifted` is a reading of where it is along the ridge from its station,
-   whose layout is now a hint. A wall's common studs are numbers of the
+   whose layout is a fallback (below its being upright). A wall's common studs are numbers of the
    wall: the layout is a hint on each, `studsAt` a reading, a stud
    against the wall at an end fixed; they keep their order and stay in
    the wall. Their ends are nodes (`walls.stud("Front", 3, "bottom")`):

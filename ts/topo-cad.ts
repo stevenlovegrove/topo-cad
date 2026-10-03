@@ -1398,6 +1398,18 @@ export class MemberRef {
   facing(dir: string | Point3, o: { in?: string } = {}): PlaneRef {
     return facing(this, dir, o);
   }
+  /**
+   * A point on a face of the member, as a node: the face facing most nearly
+   * `dir` (a compass word, `up`, `down`, or a vector), in the middle across it,
+   * `at` along the member from its start (default: its middle). It moves with
+   * the member; in the model it is a node on that face.
+   */
+  node(dir: "north" | "south" | "east" | "west" | "up" | "down" | Point3, at?: Length): NodeHandle {
+    const words: Record<string, Point3> = { north: [0, 1, 0], south: [0, -1, 0], east: [1, 0, 0], west: [-1, 0, 0], up: [0, 0, 1], down: [0, 0, -1] };
+    const v = typeof dir === "string" ? words[dir] : dir;
+    if (!v) throw new Error(`${this.path}: no direction ${dir}`);
+    return new NodeHandle(`${this.path}:face ${v.join(",")}${at === undefined ? "" : `@${at}`}`);
+  }
 }
 export const member = (path: string): MemberRef => new MemberRef(path);
 /**
@@ -1567,9 +1579,14 @@ export class NodeHandle {
 /** A relation between nodes, added to a building like anything else. */
 export class Relation {
   private constructor(readonly spec: Record<string, unknown>) {}
-  /** Two nodes are one: the same point, and joined there. */
-  static coincide(a: NodeHandle, b: NodeHandle): Relation {
-    return new Relation({ type: "coincide", a: a.name, b: b.name });
+  /**
+   * Two nodes are one: the same point, and joined there. With a `tolerance`, a
+   * reading instead: they were read to be one point (a face where the scan has
+   * it), to about that; measured, so it gives way to what must hold, and says
+   * by how much. (A point given along only some axes reads only those.)
+   */
+  static coincide(a: NodeHandle, b: NodeHandle, o: { tolerance?: Length } = {}): Relation {
+    return new Relation({ type: "coincide", a: a.name, b: b.name, tolerance: o.tolerance });
   }
   /** A reading with a tape: the two nodes are `distance` apart, to about `tolerance` (default 3 mm). */
   static tape(a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation {
@@ -1583,8 +1600,8 @@ export class Relation {
     return this.spec;
   }
 }
-/** Two nodes are one: the same point, and joined there. */
-export const coincide = (a: NodeHandle, b: NodeHandle): Relation => Relation.coincide(a, b);
+/** Two nodes are one: the same point, and joined there; or, with a `tolerance`, read to be one point. */
+export const coincide = (a: NodeHandle, b: NodeHandle, o: { tolerance?: Length } = {}): Relation => Relation.coincide(a, b, o);
 /** A reading with a tape between two nodes: measured, so it gives way to what must hold, and says by how much. */
 export const tape = (a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation => Relation.tape(a, b, distance, o);
 /** A surveyed point: measured, along whichever of x, y, z are given. */

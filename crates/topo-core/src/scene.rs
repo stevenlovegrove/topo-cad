@@ -454,6 +454,32 @@ impl Scene {
         n
     }
 
+    /// Two nodes were read to be one point, to about `tolerance` (a reading: not made one node).
+    pub fn read_at(&mut self, name: &str, a: NodeRef, b: NodeRef, tolerance: f64) {
+        let (pa, pb) = (self.sys.at(self.nodes[a.0].of[0]), self.sys.at(self.nodes[b.0].of[0]));
+        self.sys.constrain(name, ts::Tier::Measured { sigma: tolerance }, ts::Kind::Coincident(pa, pb));
+    }
+
+    /// A point on a face of a member of the model (the face facing most nearly `toward`, `along`
+    /// it from its first node, in the middle across it), as a node fixed in the member's body:
+    /// written on that face of the member.
+    pub fn node_on_face(&mut self, name: &str, model: &Model, m: MemberId, toward: Vec3, along: f64) -> Result<NodeRef, String> {
+        if self.node_named(name).is_some() {
+            return Err(format!("two nodes named {name}"));
+        }
+        let mref = self.import_member(model, m, &model.member_path(m));
+        let (face, world) = self.face_toward(mref, toward, model);
+        if along < -1e-9 || along > world.length + 1e-9 {
+            return Err(format!("{name}: {along} m is not along {} ({:.3} m long)", model.member_path(m), world.length));
+        }
+        let at = world.origin + world.along * along;
+        let (frame, local) = self.local(self.body_with(m), at);
+        let id = self.sys.node(name, ts::Point::at(frame, arr(local)));
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: None, faces: vec![(mref.0, face)], along: None });
+        self.same.push(self.nodes.len() - 1);
+        Ok(NodeRef(self.nodes.len() - 1))
+    }
+
     /// Two nodes are one: the same point, and one node of the model.
     pub fn coincide(&mut self, name: &str, a: NodeRef, b: NodeRef) {
         let (pa, pb) = (self.sys.at(self.nodes[a.0].of[0]), self.sys.at(self.nodes[b.0].of[0]));
@@ -537,11 +563,15 @@ impl Scene {
     /// One member rests on another along a line of each's face: a node on a line of the one's
     /// underside (`upper_across` from its middle, across it) and on a line of the other's top
     /// (`lower_across`), each with one number along its line, bounded by the face; held to be
-    /// one point. Where along the other's top is a hint (the point of it nearest `at`, as
-    /// things were put): it settles where they touch where the two lines lie along each other. This states a contact a utility found (the edge a sloping chord sits on); `rest`
-    /// is the same with the whole of each face.
+    /// one point. Where along the other's top is a fallback (the point of it nearest `at`, as
+    /// things were put), below the hints of where the bodies are: it settles where they touch
+    /// where the two lines lie along each other. This states a contact a utility found (the edge
+    /// a sloping chord sits on); `rest` is the same with the whole of each face.
+    ///
+    /// `free_across`: where one lies along the other, it may be anywhere across the top: across
+    /// each face is then a number of its own too, bounded by the face, where it was found a fallback.
     #[allow(clippy::too_many_arguments)]
-    pub fn rest_on_lines(&mut self, name: &str, upper: MemberRef, upper_across: f64, lower: MemberRef, lower_across: f64, at: Vec3, model: &Model) -> Result<NodeRef, String> {
+    pub fn rest_on_lines(&mut self, name: &str, upper: MemberRef, upper_across: f64, lower: MemberRef, lower_across: f64, at: Vec3, free_across: bool, model: &Model) -> Result<NodeRef, String> {
         if self.node_named(name).is_some() {
             return Err(format!("two nodes named {name}"));
         }
@@ -557,9 +587,16 @@ impl Scene {
             let along = self.sys.scalar(body, &format!("{name}: along {which}"), start);
             self.sys.bound(along, -reach, local.length + reach);
             if toward.z > 0.0 {
-                self.sys.constrain(&format!("{name}: where along {which}"), ts::Tier::Default, ts::Kind::equal(along, start));
+                self.sys.constrain(&format!("{name}: where along {which}"), ts::Tier::Fallback, ts::Kind::equal(along, start));
             }
-            of.push(self.sys.node(&format!("{name} ({which})"), ts::Point::at(body, arr(local.origin + local.across * across)).plus(along, arr(local.along))));
+            let mut point = ts::Point::at(body, arr(local.origin + local.across * across)).plus(along, arr(local.along));
+            if free_across {
+                let a = self.sys.scalar(body, &format!("{name}: across {which}"), 0.0);
+                self.sys.bound(a, -local.half_width - across, local.half_width - across);
+                self.sys.constrain(&format!("{name}: where across {which}"), ts::Tier::Fallback, ts::Kind::equal(a, 0.0));
+                point = point.plus(a, arr(local.across));
+            }
+            of.push(self.sys.node(&format!("{name} ({which})"), point));
             faces.push((m.0, face));
         }
         let (pa, pb) = (self.sys.at(of[0]), self.sys.at(of[1]));
@@ -660,6 +697,23 @@ impl Scene {
                 }
                 model.nodes[keep.idx()].name.get_or_insert(self.nodes[root].name.clone());
                 written[root] = Some(keep);
+                continue;
+            }
+            // (Nor is it another such node, on a face of the same member, at the same point: they are one.)
+            let shares = |j: usize| self.nodes[j].faces.iter().any(|(m, _)| self.nodes[i].faces.iter().any(|(n, _)| n == m));
+            let twin = (0..i).find(|&j| shares(j) && vec(self.sys.node_at(self.nodes[j].of[0])).distance(at) <= crate::LEN_TOL);
+            if let Some(j) = twin {
+                let rj = self.root(j);
+                let n = match written[rj] {
+                    Some(n) => n,
+                    None => {
+                        let n = model.add_node(at);
+                        model.nodes[n.idx()].name = Some(self.nodes[rj].name.clone());
+                        written[rj] = Some(n);
+                        n
+                    }
+                };
+                written[root] = Some(n);
             }
         }
         let mut nodes = vec![];

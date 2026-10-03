@@ -170,11 +170,12 @@ fn the_primitives_examples_show_what_they_say() {
     assert_eq!(s.variables.iter().filter(|v| v.kind == "free").count(), 3);
     assert!(s.variables.iter().all(|v| v.freedoms.iter().all(|f| f.settled != "open")), "nothing is left open: {:#?}", s.variables);
     // What it sits on fixes T1's height and its tilt, and its station across the ridge its place along the span
-    // (hard); the hints settle its roll, its turn on plan, and (the layout being a hint) its place along the ridge.
+    // (hard); the hints settle its roll and its turn on plan, and the layout (a fallback, below them) its place along
+    // the ridge.
     let t1 = s.variables.iter().find(|v| v.name == "Roof trusses/T1").unwrap();
-    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "hint", "hard", "hint", "hard", "hint"], "{t1:#?}");
+    assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "fallback", "hard", "hint", "hard", "hint"], "{t1:#?}");
     let station = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 at its station along the ridge").unwrap();
-    assert!(station.tier == "hint" && station.gap.abs() < 1e-9);
+    assert!(station.tier == "fallback" && station.gap.abs() < 1e-9);
     // The level hint (it is turned as it was put) gives way to the beams (2 inches over the span between them).
     let level = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 turned as it was put").unwrap();
     assert!(level.gap > 0.009 && level.gap < 0.012, "{level:?}");
@@ -364,6 +365,19 @@ fn the_primitives_examples_show_what_they_say() {
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
     sound(&m);
+    // A face read where something else has it (a scan, say): a point on the west face of T1's bottom chord, read to be
+    // at a point of the world given along x only (10 mm east of where T1 is drawn). The reading moves the truss (its
+    // station along the ridge is a hint); in the model, that point is a node on the chord's west face.
+    let read = include_str!("../../../examples/primitives/03-trusses-on-walls.ts")
+        .replace("import { Building,", "import { Building, coincide, Frame, member,")
+        .replace("export default Building.named(\"Trusses on walls\").add(walls, roof);", "const seen = Frame.world.point(\"T1 west face\", { x: 0.01 });\nexport default Building.named(\"Trusses on walls\").add(walls, roof, seen, coincide(seen.node(\"T1 west face\"), member(\"T1/bottom_chord.H0-H1\").node(\"west\"), { tolerance: 0.001 }));");
+    let mr = run(&read, "read.ts").unwrap();
+    let chord = mr.find_member("T1/bottom_chord.H0-H1").unwrap();
+    let face = mr.face(chord, mr.face_toward(chord, topo_core::Vec3::new(-1.0, 0.0, 0.0)));
+    assert!((face.origin.x - 0.01).abs() < 1e-6, "{:?}", face.origin);
+    let on: Vec<_> = mr.attachments.iter().filter(|a| a.member == chord).collect();
+    assert_eq!(on.len(), 1, "{:#?}", mr.attachments);
+    assert_eq!(mr.nodes[on[0].node.idx()].name.as_deref(), Some("T1/bottom_chord.H0-H1:face -1,0,0"));
     // (One solve: the walls' numbers and the trusses, each a free body sat on the plates, in the building's.)
     assert!(m.attachments.is_empty(), "{:#?}", m.attachments);
     assert_eq!(m.solves.len(), 1);

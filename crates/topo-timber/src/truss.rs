@@ -693,7 +693,8 @@ impl TrussRoof {
     ///
     /// - each truss's heel is a node (`Roof/T1/heel`); where the layout puts it along the ridge
     ///   from the node the roof is set out from (a point of the world, of a scan's frame, of the
-    ///   walls) is a hint, a reading of it (`shifted`) a reading, and
+    ///   walls) is a fallback (layout: below what is read of it, and below its being upright),
+    ///   a reading of it (`shifted`) a reading, and
     ///   across the ridge it is where the layout puts it (hard). Its plane is plumb and square
     ///   to the ridge, and it is level, unless what it sits on says otherwise (the body's hints);
     /// - what carries it is found by a utility, by geometry, as things were put: the lines of
@@ -751,7 +752,7 @@ impl TrussRoof {
                 None => sc.node(&heel_name, body, Vec3::ZERO)?,
             };
             let station = |sc: &mut scene::Scene, what: &str, dir: Vec3, value: f64, how: scene::Tier| sc.offset(&format!("{name} {what}"), set_out, heel_node, dir, value + if dir == run { r } else { 0.0 }, how);
-            station(sc, "at its station along the ridge", run, 0.0, scene::Tier::Hint);
+            station(sc, "at its station along the ridge", run, 0.0, scene::Tier::Fallback);
             if read != 0.0 {
                 station(sc, &format!("read {:.0} mm along the ridge from its station", read * 1000.0), run, read, scene::Tier::Reading(0.001));
             }
@@ -889,7 +890,9 @@ impl TrussRoof {
                     };
                     ((at - c) * cr, (at - t) * tr)
                 };
-                let n = sc.rest_on_lines(&format!("{name} on the {}", u.label), chord_ref, on_chord, bearings[u.bearing], on_top, u.top, m)?;
+                // (Along a top, the chord may lie anywhere across it: the line found is a hint.)
+                let along_it = !(u.crossing.is_some() || u.label.starts_with("top "));
+                let n = sc.rest_on_lines(&format!("{name} on the {}", u.label), chord_ref, on_chord, bearings[u.bearing], on_top, u.top, along_it, m)?;
                 placed.rests.push((n, chord, bearings[u.bearing]));
             }
             placed.on.push(contacts.iter().map(|u| u.bearing).collect());
