@@ -978,6 +978,9 @@ export class TrussRoof {
     shape: TrussShape,
     o: { name?: string; at: NodeHandle; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal },
   ): TrussRoof {
+    if (!(o.at instanceof NodeHandle)) {
+      throw new Error("a truss roof is set out at a node: give `at` (a corner of the walls, a point of a scan's frame, or a datum: `Frame.world.point(name, { x, y })`)");
+    }
     return new TrussRoof({
       name: o.name ?? "Roof trusses",
       at: o.at.name,
