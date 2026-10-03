@@ -15,8 +15,10 @@ pub struct Scan {
     pub xyz: Vec<V3>,
     /// 0..1 (empty when the scan has none).
     pub intensity: Vec<f32>,
-    /// Where each point was seen from, when there is a trajectory.
+    /// Where each point was seen from: as the file gives it, else from a trajectory beside it.
     pub sensor: Option<Vec<V3>>,
+    /// The lidar driver's flags per point, when the file has them (empty if not).
+    pub tag: Vec<u8>,
     /// Points far enough from the sensor to trust (`min_range` or more, when
     /// ranges are known): nearer ones are of whoever carried it.
     /// Less those of selections people set to be ignored (reflections, things that were moved).
@@ -33,21 +35,28 @@ pub struct Scan {
 }
 
 impl Scan {
-    /// Reads a PLY (and the trajectory beside it) and finds its floor and
-    /// wall direction. Points nearer the sensor than `min_range` are left
+    /// Reads a PLY (and, if it does not say where each point was seen from,
+    /// the trajectory beside it) and finds its floor and wall direction. Points nearer the sensor than `min_range` are left
     /// out (their ranges as the file gives them, else from the trajectory).
     pub fn load(ply: &str, min_range: f32) -> Result<Scan> {
-        let cloud = read_ply(ply)?;
-        let sensor = match Trajectory::beside(Path::new(ply))? {
-            Some(tr) if cloud.time.len() == cloud.xyz.len() => Some(tr.sensor_positions(&cloud.time, cloud.t0_ns)),
-            _ => None,
+        let mut cloud = read_ply(ply)?;
+        let sensor = if cloud.sensor.len() == cloud.xyz.len() {
+            Some(std::mem::take(&mut cloud.sensor))
+        } else {
+            match Trajectory::beside(Path::new(ply))? {
+                Some(tr) if cloud.time.len() == cloud.xyz.len() => Some(tr.sensor_positions(&cloud.time, cloud.t0_ns)),
+                _ => None,
+            }
         };
+        let tag = std::mem::take(&mut cloud.tag);
         let range: Option<Vec<f32>> = if !cloud.range.is_empty() {
             Some(cloud.range)
         } else {
             sensor.as_ref().map(|s| cloud.xyz.iter().zip(s).map(|(p, o)| crate::norm(crate::sub(*p, *o))).collect())
         };
-        Scan::new(ply, cloud.xyz, cloud.intensity, sensor, range.as_deref(), min_range)
+        let mut scan = Scan::new(ply, cloud.xyz, cloud.intensity, sensor, range.as_deref(), min_range)?;
+        scan.tag = tag;
+        Ok(scan)
     }
 
     pub fn new(path: &str, xyz: Vec<V3>, intensity: Vec<f32>, sensor: Option<Vec<V3>>, range: Option<&[f32]>, min_range: f32) -> Result<Scan> {
@@ -57,7 +66,7 @@ impl Scan {
         let thin: Vec<V3> = used.iter().step_by(7).map(|&i| xyz[i as usize]).collect();
         let floor_z = crate::axes::floor_z(&thin).context("no floor found in the scan")?;
         let wall_axis = crate::axes::wall_axis(&thin, floor_z);
-        Ok(Scan { path: path.to_string(), xyz, intensity, sensor, all: used.clone(), used, min_range, ranged: range.is_some(), sub, floor_z, wall_axis })
+        Ok(Scan { path: path.to_string(), xyz, intensity, sensor, tag: vec![], all: used.clone(), used, min_range, ranged: range.is_some(), sub, floor_z, wall_axis })
     }
 
     /// Leaves the points selections take (of all of them, as `how` each was

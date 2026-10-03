@@ -76,6 +76,7 @@ impl Grid {
 /// What the neighbourhood of a point says of it.
 #[derive(Clone, Copy)]
 struct Local {
+    i: u32,
     off: f32,
     range: f32,
     cos_inc: f32,
@@ -118,6 +119,7 @@ fn local(scan: &Scan, g: &Grid, i: u32, buf: &mut Vec<u32>) -> Option<Local> {
     let off = dot(sub(p, [c[0] as f32, c[1] as f32, c[2] as f32]), normal);
     let linear = (1.0 - l1 / l2) as f32;
     Some(Local {
+        i,
         off,
         range,
         cos_inc: dot(d, normal).abs(),
@@ -169,6 +171,20 @@ fn main() -> anyhow::Result<()> {
     println!("{} sampled points with 12 or more neighbours within {:.0} cm", rows.len(), R * 100.0);
     println!("σ⊥: spread of a point off its neighbours' plane (planar ones: smallest/middle eigenvalue < 0.05, not a smear);");
     println!("σ⊥/cos: the same along the ray (if the noise is in range alone, this is flat in incidence). smear %: neighbourhood a line along the ray.");
+    if !scan.tag.is_empty() {
+        let mut count: HashMap<u8, usize> = HashMap::new();
+        for &t in &scan.tag {
+            *count.entry(t).or_default() += 1;
+        }
+        let total = scan.tag.len() as f64;
+        let field = |shift: u32| -> String {
+            (0..4u8).map(|v| format!("{v}: {:.3}%", 100.0 * count.iter().filter(|(t, _)| (*t >> shift) & 3 == v).map(|(_, n)| *n).sum::<usize>() as f64 / total)).collect::<Vec<_>>().join(", ")
+        };
+        println!("\nTags over the whole scan: bits 0–1 (noise by position) {}\n  bits 2–3 (noise by intensity) {}\n  bits 4–5 (return) {}\n  bits 6–7 {}", field(0), field(2), field(4), field(6));
+        let flagged: Vec<Local> = rows.iter().filter(|l| scan.tag[l.i as usize] & 3 != 0).copied().collect();
+        println!("  sampled points flagged noise by position: {} of {}", flagged.len(), rows.len());
+        table("Flagged noise by position (bits 0–1 not 0), by range", &flagged, &[0.8, 1.5, 3.0, 6.0, 12.0], |l| l.range, "range m");
+    }
     table("By range", &rows, &[0.8, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 12.0], |l| l.range, "range m");
     table("By incidence (angle off the surface normal)", &rows, &[0.0, 15.0, 30.0, 45.0, 60.0, 70.0, 80.0, 90.0], |l| l.cos_inc.clamp(0.0, 1.0).acos().to_degrees(), "deg");
     table("By intensity", &rows, &[0.0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.01], |l| l.intensity, "intensity");
@@ -242,6 +258,38 @@ fn main() -> anyhow::Result<()> {
             img[k..k + 3].copy_from_slice(&[(60.0 + 195.0 * s) as u8, (60.0 * (1.0 - s)) as u8, (60.0 * (1.0 - s)) as u8]);
         }
         eprintln!("points by the share of rays through their cell (0.0–0.1, …, 0.9–1.0): {hist:?}");
+        // The lidar's own flags, against that: and a picture of them (bits 0–1, noise by position).
+        if !scan.tag.is_empty() {
+            let mut img = vec![255u8; w * h * 3];
+            let mut by: HashMap<u8, (usize, f64, usize)> = HashMap::new();
+            for &i in &inside {
+                let p = scan.xyz[i as usize];
+                let t = scan.tag[i as usize];
+                if let Some(c) = cell_of(p) {
+                    let score = pass[c] as f64 / (pass[c] + ends[c]).max(1) as f64;
+                    let e = by.entry(t & 3).or_default();
+                    e.0 += 1;
+                    e.1 += score;
+                    e.2 += (score > 0.5) as usize;
+                }
+                let (x, y) = (((p[0] - b[0]) * px) as usize, h - 1 - ((p[1] - b[2]) * px) as usize);
+                let k = (y * w + x) * 3;
+                img[k..k + 3].copy_from_slice(&[[80, 80, 80], [230, 30, 30], [240, 140, 0], [40, 90, 230]][(t & 3) as usize]);
+            }
+            let mut keys: Vec<_> = by.keys().copied().collect();
+            keys.sort();
+            println!("\nIn the box, by the position-noise bits (0 normal, 1 high, 2 moderate, 3 low confidence of noise):");
+            for k in keys {
+                let (n, sum, over) = by[&k];
+                println!("  {k}: {n:>7} points; mean share of rays through their cell {:.2}; {:.0}% over half", sum / n as f64, 100.0 * over as f64 / n as f64);
+            }
+            let out = args[1].replace(".png", "-tag.png");
+            let f = std::fs::File::create(&out)?;
+            let mut e = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
+            e.set_color(png::ColorType::Rgb);
+            e.write_header()?.write_image_data(&img)?;
+            eprintln!("wrote {out}");
+        }
         let f = std::fs::File::create(&args[1])?;
         let mut e = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
         e.set_color(png::ColorType::Rgb);
