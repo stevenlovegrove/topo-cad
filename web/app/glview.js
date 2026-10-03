@@ -39,11 +39,11 @@ function orthographic(hw, hh, near, far) {
 
 const FOVY = (45 * Math.PI) / 180;
 const D2R = Math.PI / 180;
-export const COLOURS = ["intensity", "height", "normal", "depth"];
+export const COLOURS = ["intensity", "height", "normal", "depth", "confidence"];
 
 const POINT_VS = `#version 300 es
-in vec3 a_pos; in float a_int; in vec3 a_nrm;
-uniform mat4 u_vp; uniform float u_size; uniform float u_persp; uniform int u_mode;
+in vec3 a_pos; in float a_int; in vec3 a_nrm; in float a_conf;
+uniform mat4 u_vp; uniform float u_size; uniform float u_persp; uniform int u_mode; uniform int u_doubt;
 uniform vec2 u_z; uniform vec3 u_bc; uniform mat3 u_bax; uniform vec3 u_bh; uniform float u_box; uniform vec3 u_toEye; uniform float u_floor;
 out vec3 v_col;
 vec3 hue(float h) { return clamp(abs(fract(h + vec3(0., 2. / 3., 1. / 3.)) * 6. - 3.) - 1., 0., 1.); }
@@ -51,7 +51,9 @@ void main() {
   // Where the point is in the box the view is clipped to (along its right, up and toward-the-viewer axes).
   vec3 q = (a_pos - u_bc) * u_bax;
   float off = q.z;
-  if (a_pos.z < u_z.x || a_pos.z > u_z.y || (u_box > 0. && any(greaterThan(abs(q), u_bh)))) { gl_Position = vec4(2., 2., 2., 1.); gl_PointSize = 0.; return; }
+  // A point the rays or the lidar's flags doubt (under half): shown, faded or left out.
+  bool doubt = a_conf < .5;
+  if (a_pos.z < u_z.x || a_pos.z > u_z.y || (u_box > 0. && any(greaterThan(abs(q), u_bh))) || (doubt && u_doubt == 2)) { gl_Position = vec4(2., 2., 2., 1.); gl_PointSize = 0.; return; }
   gl_Position = u_vp * vec4(a_pos, 1.);
   gl_PointSize = u_persp > 0. ? clamp(u_size * 6. / max(gl_Position.w, .5), 1., u_size * 2.) : u_size;
   bool surf = dot(a_nrm, a_nrm) > .2;
@@ -60,8 +62,10 @@ void main() {
   if (u_mode == 1) v_col = hue(.66 - .66 * clamp((a_pos.z - u_floor) / 3.6, 0., 1.)) * (.35 + .65 * lit);
   else if (u_mode == 2) v_col = surf ? .2 + .8 * abs(normalize(a_nrm)) : vec3(.42);
   else if (u_mode == 3) { float t = u_box > 0. ? clamp(off / u_bh.z, -1., 1.) : 0.; v_col = hue(.33 - .33 * t) * (.55 + .45 * lit); }
-  else if (u_mode == 4) v_col = vec3(1., .82, .1);
+  else if (u_mode == 4) v_col = hue(.33 * a_conf) * (.55 + .45 * lit);
+  else if (u_mode == 9) v_col = vec3(1., .82, .1);
   else v_col = vec3(.12 + .88 * pow(a_int, .55)) * vec3(1., .98, .94) * lit;
+  if (doubt && u_doubt == 1 && u_mode != 4) { v_col *= .3; gl_PointSize = max(1., .6 * gl_PointSize); }
 }`;
 const POINT_FS = `#version 300 es
 precision mediump float;
@@ -128,6 +132,8 @@ export function defaultState() {
     // Whether a window dragged in the view takes every point in it, not only the surface nearest the viewer.
     selectAll: false,
     colour: "intensity",
+    // Points the rays or the lidar's flags doubt (in a slab): "show", "fade" or "hide".
+    doubt: "fade",
     // Height cuts, in the model's frame (null: none).
     zMin: null, zMax: null,
     layers: { scan: true, model: true, marks: true, issues: true },
@@ -210,6 +216,7 @@ export class GLView {
     attr("a_pos", c.xyz, 3, gl.FLOAT, false);
     attr("a_int", c.intensity, 1, gl.UNSIGNED_BYTE, true);
     attr("a_nrm", c.normal, 3, gl.BYTE, true);
+    attr("a_conf", c.confidence ?? new Uint8Array(c.count).fill(255), 1, gl.UNSIGNED_BYTE, true);
     gl.bindVertexArray(null);
     return { vao, count: c.count };
   }
@@ -571,6 +578,7 @@ export class GLView {
       gl.uniform1f(u.u_size, s.pointSize * dpr);
       gl.uniform1f(u.u_persp, cam.ortho ? 0 : 1);
       gl.uniform1i(u.u_mode, Math.max(0, COLOURS.indexOf(s.colour)));
+      gl.uniform1i(u.u_doubt, { show: 0, fade: 1, hide: 2 }[s.doubt] ?? 1);
       gl.uniform3f(u.u_toEye, -cam.forward[0], -cam.forward[1], -cam.forward[2]);
       gl.uniform1f(u.u_floor, this.floorZ);
       gl.bindVertexArray(cloud.vao);
@@ -582,7 +590,8 @@ export class GLView {
       gl.useProgram(this.points.p);
       cuts(u);
       gl.uniform1f(u.u_persp, cam.ortho ? 0 : 1);
-      gl.uniform1i(u.u_mode, 4);
+      gl.uniform1i(u.u_mode, 9);
+      gl.uniform1i(u.u_doubt, 0);
       gl.uniform1f(u.u_size, (s.pointSize + 1) * dpr);
       for (const h of this.highlights.values()) { gl.bindVertexArray(h.vao); gl.drawArrays(gl.POINTS, 0, h.count); }
     }

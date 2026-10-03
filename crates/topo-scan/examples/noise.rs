@@ -258,6 +258,24 @@ fn main() -> anyhow::Result<()> {
             img[k..k + 3].copy_from_slice(&[(60.0 + 195.0 * s) as u8, (60.0 * (1.0 - s)) as u8, (60.0 * (1.0 - s)) as u8]);
         }
         eprintln!("points by the share of rays through their cell (0.0–0.1, …, 0.9–1.0): {hist:?}");
+        // As the workspace weighs them (`confidence`): red doubted, grey believed.
+        {
+            let conf = topo_scan::confidence::confidence(&scan, &inside);
+            let mut img = vec![255u8; w * h * 3];
+            for (&i, &c) in inside.iter().zip(&conf) {
+                let p = scan.xyz[i as usize];
+                let (x, y) = (((p[0] - b[0]) * px) as usize, h - 1 - ((p[1] - b[2]) * px) as usize);
+                let s = (1.0 - c).clamp(0.0, 1.0);
+                let k = (y * w + x) * 3;
+                img[k..k + 3].copy_from_slice(&[(60.0 + 195.0 * s) as u8, (60.0 * (1.0 - s)) as u8, (60.0 * (1.0 - s)) as u8]);
+            }
+            let out = args[1].replace(".png", "-confidence.png");
+            let f = std::fs::File::create(&out)?;
+            let mut e = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
+            e.set_color(png::ColorType::Rgb);
+            e.write_header()?.write_image_data(&img)?;
+            eprintln!("{} of {} doubted (under 0.5); wrote {out}", conf.iter().filter(|&&c| c < 0.5).count(), conf.len());
+        }
         // The lidar's own flags, against that: and a picture of them (bits 0–1, noise by position).
         if !scan.tag.is_empty() {
             let mut img = vec![255u8; w * h * 3];

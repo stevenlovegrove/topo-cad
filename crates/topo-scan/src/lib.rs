@@ -18,6 +18,7 @@ use std::collections::HashMap;
 pub mod axes;
 pub mod chat;
 pub mod cloud;
+pub mod confidence;
 pub mod fit;
 pub mod git;
 pub mod issues;

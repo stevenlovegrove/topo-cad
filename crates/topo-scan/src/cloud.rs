@@ -5,8 +5,11 @@
 //! where the cell is not a clean surface), so a viewer can colour by
 //! height, intensity, normal or offset from a plane without asking again.
 //!
+//! A slab's points also carry their confidence (`confidence`: how much the
+//! rays and the lidar's flags let them be believed, ×255).
+//!
 //! As bytes (little-endian): `u32 n`, `n × 3 f32` positions, `n u8`
-//! intensities, `n × 3 i8` normals (×127).
+//! intensities, `n × 3 i8` normals (×127), and for a slab `n u8` confidences.
 
 use std::collections::HashMap;
 
@@ -23,6 +26,8 @@ pub struct Cloud {
     pub xyz: Vec<V3>,
     pub intensity: Vec<u8>,
     pub normal: Vec<[i8; 3]>,
+    /// ×255; empty for the thinned cloud.
+    pub confidence: Vec<u8>,
 }
 
 impl Cloud {
@@ -49,6 +54,9 @@ impl Cloud {
         b.extend_from_slice(&self.intensity);
         for nm in &self.normal {
             b.extend(nm.iter().map(|&x| x as u8));
+        }
+        if self.confidence.len() == n {
+            b.extend_from_slice(&self.confidence);
         }
         b
     }
@@ -150,15 +158,17 @@ impl ScanIndex {
     }
 
     /// Every used point in an oriented box (centre, unit axes, half sizes; scan
-    /// frame), thinned evenly to at most `max`.
+    /// frame), thinned evenly to at most `max`, each with its confidence.
     pub fn in_box(&self, scan: &Scan, c: V3, axes: [V3; 3], half: V3, max: usize) -> Cloud {
         let idx: Vec<u32> = scan.used.par_iter().copied().filter(|&i| inside(scan.xyz[i as usize], c, &axes, half)).collect();
         let step = idx.len().div_ceil(max.max(1)).max(1);
+        let idx: Vec<u32> = idx.into_iter().step_by(step).collect();
         let mut c = Cloud::default();
-        for &i in idx.iter().step_by(step) {
+        for &i in &idx {
             let p = scan.xyz[i as usize];
             c.push(p, scan.intensity.get(i as usize).map_or(128, |&x| (x * 255.0).round().clamp(0.0, 255.0) as u8), self.normals.get(&key(p, CELL)).copied().unwrap_or([0; 3]));
         }
+        c.confidence = crate::confidence::confidence(scan, &idx).iter().map(|&x| (x * 255.0).round() as u8).collect();
         c
     }
 }
@@ -195,5 +205,8 @@ mod tests {
         // A slab about the wall holds the wall's points (and the floor's edge), thinned to the cap.
         let s = ix.in_box(&scan, [0.0, 0.0, 0.0], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.003, 100.0, 100.0], 5000);
         assert!(s.len() <= 5000 && s.len() > 4000 && s.xyz.iter().all(|p| p[0].abs() <= 0.003), "{}", s.len());
+        // With their confidence: these are on a surface the rays end at.
+        assert_eq!(s.confidence.len(), s.len());
+        assert_eq!(s.bytes().len(), 4 + 17 * s.len());
     }
 }

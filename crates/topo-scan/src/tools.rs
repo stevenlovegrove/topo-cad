@@ -307,6 +307,19 @@ impl Workspace {
         if let Some(pf) = &st.plane {
             s += &format!("best plane: normal {}, n·p = {:.4}, rms {:.1} mm\n", f3(pf.normal), pf.d, pf.rms * 1e3);
         }
+        // The same, each point weighted by how much it is to be believed (its range, the rays, the lidar's flags).
+        let kept: Vec<u32> = idx.iter().copied().filter(|&i| (i as usize) < scan.xyz.len()).collect();
+        let conf = crate::confidence::confidence(scan, &kept);
+        let wts = crate::confidence::weights(scan, &kept, &conf);
+        if let Some((c, mut n, rms)) = crate::confidence::weighted_plane(&pts, &wts) {
+            if let Some(pf) = &st.plane {
+                if crate::dot(n, pf.normal) < 0.0 {
+                    n = crate::scale(n, -1.0);
+                }
+            }
+            let low = conf.iter().filter(|&&c| c < 0.5).count();
+            s += &format!("weighted by confidence: normal {}, n·p = {:.4}, rms {:.1} mm; {low} of the points doubted ({:.0}%: other rays pass where they are, or the lidar flags them)\n", f3(n), crate::dot(n, c), rms * 1e3, 100.0 * low as f32 / conf.len().max(1) as f32);
+        }
         s += &format!("principal spreads (σ, m): {:.3}, {:.3}, {:.4} along {}, {}, {}\n", st.sigma[0], st.sigma[1], st.sigma[2], f3(st.axes[0]), f3(st.axes[1]), f3(st.axes[2]));
         // Nearest members (model frame).
         let mut near: std::collections::HashMap<usize, (u32, f32)> = Default::default();
@@ -679,7 +692,13 @@ impl Workspace {
             }).collect(),
         };
         let pts: Vec<V3> = cand.iter().map(|c| c.1).collect();
-        let mut f = fit_plane(&pts, &spec).with_context(|| format!("too few points near the seed {} to fit ({} candidates in the support)", f3(seed), pts.len()))?;
+        // Each point weighted by how much it is to be believed (its range; the rays; the lidar's flags), unless not.
+        let weighted = args.get("weighted").and_then(|v| v.as_bool()).unwrap_or(true);
+        let idx: Vec<u32> = cand.iter().map(|c| c.0).collect();
+        let conf = if weighted { crate::confidence::confidence(&scan, &idx) } else { vec![] };
+        let wts = weighted.then(|| crate::confidence::weights(&scan, &idx, &conf));
+        let mut f = fit_plane(&pts, wts.as_deref(), &spec).with_context(|| format!("too few points near the seed {} to fit ({} candidates in the support)", f3(seed), pts.len()))?;
+        let plain = if weighted { fit_plane(&pts, None, &spec) } else { None };
         // The normal toward where the surface was seen from.
         let mut seen = None;
         if let Some(sensor) = &scan.sensor {
@@ -712,6 +731,15 @@ impl Workspace {
             if from_selection { format!("selection {}", sel.unwrap()) } else { format!("box {} – {}", f3(lo), f3(hi)) },
             f.count, spec.thickness * 1e3, if spec.cell_normals { ", only where the points' own 5 cm neighbourhood faces the same way" } else { "" },
             if f.held { "; THE NORMAL WAS HELD at the one given (the points wanted to turn it further than the tolerance: check the support)" } else { "" });
+        if weighted {
+            let low = conf.iter().filter(|&&c| c < 0.5).count();
+            s += &format!("  weighted by confidence: {low} of the {} candidates doubted (under 0.5: other rays pass where they are, or the lidar flags them){}\n", conf.len(),
+                plain.as_ref().map_or(String::new(), |p| {
+                    // (Where the unweighted plane is at this one's centre, along this one's normal.)
+                    let t = (p.d - crate::dot(p.normal, f.centre)) / crate::dot(p.normal, f.normal);
+                    format!("; unweighted, at the patch's middle the plane is {:+.1} mm along n from this one", t * 1e3)
+                }));
+        }
         s += &format!("  spread: rms {:.1} mm; the offset's standard error from scatter alone is {:.2} mm (range bias, registration and what the surface really is are not in that)\n", f.rms * 1e3, f.rms * 1e3 / (f.count as f32).sqrt());
         s += &format!("  patch: u [{:.2}, {:.2}] × v [{:.2}, {:.2}] m about that point (u = {}, v = {}); inliers in {:.0}% of its 10 cm cells\n", f.ext[0], f.ext[1], f.ext[2], f.ext[3], f3(f.u), f3(f.v), 100.0 * f.cover);
         s += &format!("  offset by quadrant (−u−v, +u−v, −u+v, +u+v), mm: {} (a spread here is a tilt, a warp, or two surfaces taken as one)\n", f.quadrants.iter().map(|q| q.map_or("-".to_string(), |x| format!("{:+.1}", x * 1e3))).collect::<Vec<_>>().join(", "));

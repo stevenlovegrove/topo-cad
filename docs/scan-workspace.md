@@ -146,6 +146,31 @@ A proposal belongs to an issue. Selecting it shows it, one at a time:
 
 Apply or Reject is recorded in the thread.
 
+## How much a point is believed
+
+Lidar points are noisy (about 2.4 mm + 0.45 mm per metre of range off their
+surface, measured on the garage scan), and where the beam straddles an edge
+the return mixes the near and far surfaces: points smear along the ray
+behind occlusion edges. Each point of a box (a slab's, a fit's support, a
+measured box) gets a confidence from the scan's own rays
+(`topo-scan/src/confidence.rs`): a point on a surface the points about it make
+is doubted by the rays that go through that surface there (cross its plane
+and end well behind it); one off any surface by the rays that pass where it
+is and end well beyond. Rays skimming along a wall do not count against it.
+The lidar's own flags (Livox: noise by position, by intensity) lower it too.
+
+- **Fits** (`fit_surface`, and `measure`'s plane) weight each point by its
+  confidence over σ² of its range; the report says how many were doubted and
+  where the unweighted plane would be (`weighted: false` for the old fit).
+- **Slab views** have a "Doubtful points faded / hidden / shown" control
+  and a colour by confidence.
+
+Known limits: a surface too small or too noisy to be found as one (the
+38 mm end of a stud at an edge; the sheathing seen obliquely through a
+narrow bay) is judged as points off any surface, so its noise toward the
+viewer is doubted more than its noise away, and a fit to it may sit a few
+millimetres deep. Evidence per member does not weight yet.
+
 ## Faces placed by hand
 
 Where something is plainer to see than to describe (a stud's side face among
@@ -467,6 +492,7 @@ Details that were decided in the building:
 | Proposals: text diff, before / after / changed / both, apply, reject, revert | built |
 | Participants: names, badges, presence | built |
 | Faces placed by hand (drag a face; `seen`): readings beside the model | built, tested (the workspace side); the drag tried in the app |
+| Confidence per point (rays, range, the lidar's flags) in fits, `measure` and slab views | built, tested (synthetic); checked on the garage scan |
 | 3D pictures for agents (`render_view`, feature `pango`) | built, run on a real scan |
 
 Not built yet:

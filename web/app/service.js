@@ -29,6 +29,8 @@ export function parseCloud(buf) {
     xyz: new Float32Array(buf, 4, 3 * n),
     intensity: new Uint8Array(buf, 4 + 12 * n, n),
     normal: new Int8Array(buf, 4 + 13 * n, 3 * n),
+    // (A slab's points also say how much they are to be believed.)
+    confidence: buf.byteLength >= 4 + 17 * n ? new Uint8Array(buf, 4 + 16 * n, n) : null,
   };
 }
 

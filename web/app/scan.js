@@ -1680,6 +1680,7 @@ function renderTools(v) {
     `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}</span>` +
     (sb
       ? `<span class="grp">${btn("square", ICON.square, "Look square on at the slab, fitted in the view")}${btn("flat", ICON.lock, "Held square on: a drag slides the view. Off: a drag turns it", s.flat)}${st?.scan.rays ? btn("free", ICON.free, "Free space: where the scanner's rays pass in the slab, under the points. Brighter: more rays. Where it is dark, something was in the way, or nothing looked. It is made for what the view sees, a cell a pixel: zoom in for finer." + (s.free ? v.freeInfo ?? "" : ""), s.free) : ""}</span>` +
+        `<select data-k="doubt" title="Points the scan's rays or the lidar's flags doubt (other rays pass where they are: smears behind edges, stray returns). Colour by confidence to see them.">${["show", "fade", "hide"].map((d) => `<option value="${d}" ${d === (s.doubt ?? "fade") ? "selected" : ""}>${{ show: "Doubtful points shown", fade: "Doubtful points faded", hide: "Doubtful points hidden" }[d]}</option>`).join("")}</select>` +
         `<span class="grp" title="The slab: its thickness (m), and stepping it back and forward by half of that">${btn("back", ICON.back, "Slab back (away from the viewer)")}<input type="number" step="0.05" min="0.01" value="${(2 * sb.half[2]).toFixed(2)}" data-a="thick">${btn("fwd", ICON.fwd, "Slab forward (toward the viewer)")}</span>`
       : "") +
     `<span class="grp">${btn("line", ICON.line, "Draw a polyline: click its points (on the scan, or in the slab seen square on)", drawing?.view === v.name)}${btn("cut", ICON.cut, "Cut a slab: drag a line across the building, seen from above, to look at what it cuts through", v.tool === "line")}</span>` +
@@ -1704,6 +1705,8 @@ function renderTools(v) {
   };
   for (const b of v.tools.querySelectorAll("button[data-a]")) b.onclick = () => { acts[b.dataset.a](); renderTools(v); };
   v.tools.querySelector("select[data-k=colour]").onchange = (e) => v.set({ colour: e.target.value });
+  const doubt = v.tools.querySelector("select[data-k=doubt]");
+  if (doubt) doubt.onchange = (e) => v.set({ doubt: e.target.value });
   v.tools.querySelector("select[data-k=slab]").onchange = async (e) => {
     const id = e.target.value;
     active = v.name;

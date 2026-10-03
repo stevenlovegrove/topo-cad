@@ -63,8 +63,25 @@ pub struct Fit {
 }
 
 /// Fits a plane to `pts` (the candidates: the points of the support region)
-/// from a seed. None when too few points lie near the seed.
-pub fn fit_plane(pts: &[V3], spec: &FitSpec) -> Option<Fit> {
+/// from a seed, each weighted as `weights` has it if given (`confidence`:
+/// a point the rays or the lidar doubt counts for little, one under 0.05 not
+/// at all). None when too few points lie near the seed.
+pub fn fit_plane(pts: &[V3], weights: Option<&[f32]>, spec: &FitSpec) -> Option<Fit> {
+    let w = |i: u32| weights.map_or(1.0, |w| w[i as usize]);
+    // The plane of some of the points: weighted, or as they are.
+    let plane = |idx: &[u32]| -> Option<(V3, V3)> {
+        match weights {
+            Some(_) => {
+                let p: Vec<V3> = idx.iter().map(|&i| pts[i as usize]).collect();
+                let ws: Vec<f32> = idx.iter().map(|&i| w(i)).collect();
+                crate::confidence::weighted_plane(&p, &ws).map(|(c, n, _)| (c, n))
+            }
+            None => {
+                let s = point_stats(idx.iter().map(|&i| pts[i as usize]));
+                Some((s.centroid, s.plane?.normal))
+            }
+        }
+    };
     let unit = |a: V3| scale(a, 1.0 / norm(a).max(1e-12));
     // Where to start: the expected normal, or the plane of what is by the seed.
     let n0 = match spec.normal {
@@ -106,12 +123,11 @@ pub fn fit_plane(pts: &[V3], spec: &FitSpec) -> Option<Fit> {
     for it in 0..10 {
         // A wider band at first, to find the surface from an imprecise seed.
         let band = if it < 2 { 2.0 * spec.thickness } else { spec.thickness };
-        inliers = (0..pts.len() as u32).filter(|&i| (dot(n, pts[i as usize]) - d).abs() <= band && agrees(pts[i as usize], n)).collect();
+        inliers = (0..pts.len() as u32).filter(|&i| w(i) >= 0.05 && (dot(n, pts[i as usize]) - d).abs() <= band && agrees(pts[i as usize], n)).collect();
         if inliers.len() < 20 {
             return None;
         }
-        let s = point_stats(inliers.iter().map(|&i| pts[i as usize]));
-        let mut m = s.plane.as_ref()?.normal;
+        let (centroid, mut m) = plane(&inliers)?;
         if dot(m, n) < 0.0 {
             m = scale(m, -1.0);
         }
@@ -120,16 +136,17 @@ pub fn fit_plane(pts: &[V3], spec: &FitSpec) -> Option<Fit> {
             m = n0;
             held = true;
         }
-        let d_new = dot(m, s.centroid);
+        let d_new = dot(m, centroid);
         let moved = (d_new - d).abs() + norm(sub(m, n));
         (n, d) = (m, d_new);
         if it >= 2 && moved < 1e-5 {
             break;
         }
     }
-    let s = point_stats(inliers.iter().map(|&i| pts[i as usize]));
-    let centre = sub(s.centroid, scale(n, dot(n, s.centroid) - d));
-    let rms = (inliers.iter().map(|&i| (dot(n, pts[i as usize]) - d).powi(2)).sum::<f32>() / inliers.len() as f32).sqrt();
+    let (centroid, _) = plane(&inliers)?;
+    let centre = sub(centroid, scale(n, dot(n, centroid) - d));
+    let sw: f32 = inliers.iter().map(|&i| w(i)).sum();
+    let rms = (inliers.iter().map(|&i| w(i) * (dot(n, pts[i as usize]) - d).powi(2)).sum::<f32>() / sw.max(1e-12)).sqrt();
     // In-plane axes: v up where the plane is not level, u = v × n.
     let up = if n[2].abs() < 0.9 { [0.0, 0.0, 1.0] } else { [0.0, 1.0, 0.0] };
     let v = unit(sub(up, scale(n, dot(up, n))));
@@ -218,14 +235,14 @@ mod tests {
     fn fits_the_surface_at_the_seed_and_not_its_neighbour() {
         let pts = wall();
         let spec = FitSpec { seed: [1.2, 2.01, 1.0], normal: None, normal_tol: 15f32.to_radians(), thickness: 0.03, cell_normals: false };
-        let f = fit_plane(&pts, &spec).expect("a fit");
+        let f = fit_plane(&pts, None, &spec).expect("a fit");
         assert!((f.d * f.normal[1].signum() - 2.0).abs() < 0.002, "sheathing at y = 2.0, got {}", f.d * f.normal[1].signum());
         assert!(f.normal[1].abs() > 0.9999);
         assert!(f.rms < 0.004);
         // The stud faces show in the profile, 14 cm in front.
         assert!(f.profile.iter().any(|p| (p.0.abs() - 0.14).abs() < 0.01), "{:?}", f.profile);
         // Seeded on a stud's face, the studs' plane is found instead.
-        let f = fit_plane(&pts, &FitSpec { seed: [0.415, 1.86, 1.0], normal: Some([0.0, 1.0, 0.0]), ..spec.clone() }).expect("a fit");
+        let f = fit_plane(&pts, None, &FitSpec { seed: [0.415, 1.86, 1.0], normal: Some([0.0, 1.0, 0.0]), ..spec.clone() }).expect("a fit");
         assert!((f.d - 1.86).abs() < 0.002, "{}", f.d);
         // In strips, so thinly covered.
         assert!(f.cover < 0.5, "{}", f.cover);
@@ -235,8 +252,8 @@ mod tests {
     fn the_normal_filter_drops_what_crosses_the_band() {
         let pts = wall();
         let spec = FitSpec { seed: [1.2, 2.0, 1.0], normal: Some([0.0, 1.0, 0.0]), normal_tol: 15f32.to_radians(), thickness: 0.05, cell_normals: false };
-        let plain = fit_plane(&pts, &spec).unwrap();
-        let filtered = fit_plane(&pts, &FitSpec { cell_normals: true, ..spec }).unwrap();
+        let plain = fit_plane(&pts, None, &spec).unwrap();
+        let filtered = fit_plane(&pts, None, &FitSpec { cell_normals: true, ..spec }).unwrap();
         // The board's points in the band are among the plain fit's inliers, and not the filtered one's.
         let board = |f: &Fit| f.inliers.iter().filter(|&&i| i as usize >= 16000).count();
         assert!(board(&plain) > 20, "{}", board(&plain));
@@ -248,7 +265,7 @@ mod tests {
     fn a_normal_far_from_the_expected_is_held() {
         let pts = wall();
         // Expecting a wall facing x where the surface faces y: held, and said so.
-        let f = fit_plane(&pts, &FitSpec { seed: [1.2, 2.0, 1.0], normal: Some([1.0, 0.0, 0.0]), normal_tol: 10f32.to_radians(), thickness: 0.05, cell_normals: false }).unwrap();
+        let f = fit_plane(&pts, None, &FitSpec { seed: [1.2, 2.0, 1.0], normal: Some([1.0, 0.0, 0.0]), normal_tol: 10f32.to_radians(), thickness: 0.05, cell_normals: false }).unwrap();
         assert!(f.held);
         assert!(f.normal[0] > 0.999);
     }
