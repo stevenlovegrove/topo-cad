@@ -74,6 +74,42 @@ mod tests {
         assert!(issues.is_empty(), "{issues:#?}");
     }
 
+    /// A shed whose side walls' tops slope: the sloping plates bear on their studs, and the caps
+    /// on them, as level ones do.
+    #[test]
+    fn sloping_walls_bear_on_their_studs() {
+        use topo_core::units::ft;
+        use topo_core::Vec2;
+        use topo_timber::{Perimeter, Side, Wall};
+        let mut m = topo_core::Model::new("shed");
+        let dfl = m.add_material(topo_timber::lumber::graded("DFL", "No.2"));
+        let w = Wall::template(ft(8.0), dfl);
+        let mut p = Perimeter::start("Shed", Vec2::new(0.0, 0.0))
+            .to(Vec2::new(ft(12.0), 0.0), Side::Wall(w.clone().named("Front")))
+            .to(Vec2::new(ft(12.0), ft(10.0)), Side::Wall(w.clone().named("Right")))
+            .to(Vec2::new(0.0, ft(10.0)), Side::Wall(w.clone().named("Back")))
+            .close(Side::Wall(w.clone().named("Left")));
+        p.heights = vec![Some((ft(8.0), ft(8.0))), Some((ft(8.0), ft(10.0))), Some((ft(10.0), ft(10.0))), Some((ft(10.0), ft(8.0)))];
+        let parts = p.build(&mut m);
+        for wp in parts.walls.iter().flatten() {
+            for &b in &wp.bottom_plates {
+                for &n in &m.member(b).path.clone() {
+                    m.supports.push(topo_core::Support { node: n, restraint: topo_core::Restraint::PINNED, description: None });
+                }
+            }
+        }
+        let topo = Topology::build(&m);
+        let g = Geometry::build(&m, &topo);
+        let issues = load_path_issues(&m, &topo, &g);
+        assert!(issues.is_empty(), "{issues:#?}");
+        let edges = support_graph(&m, &topo, &g);
+        let right = parts.walls[1].as_ref().unwrap();
+        assert!(edges.iter().any(|e| e.member == right.top_plate && role(&m, e.by) == "stud" && e.transfer == Transfer::Bearing));
+        assert!(edges.iter().any(|e| e.member == right.cap_plates[0] && e.by == right.top_plate && e.transfer == Transfer::Bearing));
+        // (And no stud is held up by the sloping plate over it.)
+        assert!(!edges.iter().any(|e| role(&m, e.member) == "stud" && e.by == right.top_plate));
+    }
+
     #[test]
     fn as_built_garage_header_is_flagged() {
         let m = topo_timber::examples::garage_as_built();
