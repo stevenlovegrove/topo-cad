@@ -512,7 +512,7 @@ impl Builder {
 
     /// A perimeter: written by its generator where it is drawn, and a body of the scene (fixed
     /// there, or free and moved to where the relations to its nodes put it).
-    fn perimeter(&mut self, p: &PerimeterSpec, sc: &mut scene::Scene, on_studs: &[&ItemSpec]) -> Result<(), String> {
+    fn perimeter(&mut self, p: &PerimeterSpec, sc: &mut scene::Scene) -> Result<(), String> {
         let before = (self.m.nodes.len(), self.m.members.len(), self.m.groups.len());
         let mut per = Perimeter::start(&p.name, Vec2::new(p.start.0, p.start.1));
         per.z = p.z;
@@ -532,57 +532,8 @@ impl Builder {
                 per = per.to(Vec2::new(s.to.0, s.to.1), side);
             }
         }
-        let mut walls = per.walls();
-        // A wall's common studs are numbers of the wall: where they are is a hint (the layout), a
-        // reading (`studsAt`) or fixed (against a wall at an end), they keep their order and stay in
-        // the wall. Their ends are nodes (`Walls/Front/stud#3:bottom`, `:top`). Relations among
-        // them (readings, datums) are solved, and the walls are built with their studs there.
-        let mine: Vec<&&ItemSpec> = on_studs.iter().filter(|i| i.nodes().iter().all(|n| n.starts_with(&format!("{}/", p.name)))).collect();
-        if !mine.is_empty() {
-            let mut ss = scene::Scene::new(&format!("Studs of {}", p.name));
-            let mut numbers: Vec<Option<Vec<scene::ScalarId>>> = vec![];
-            for w in &walls {
-                let Some(w) = w.as_ref().filter(|w| w.survey.is_none()) else {
-                    numbers.push(None);
-                    continue;
-                };
-                let (len, x) = (w.start.distance(w.end), (w.end - w.start).normalized());
-                let body = ss.body(&format!("{}/{}", p.name, w.name), "wall", Frame { origin: w.start, x, y: Vec3::Z.cross(x), z: Vec3::Z }, false, None);
-                let b = topo_core::units::inch(topo_timber::lumber::dressed_in(w.stud.0));
-                let mut ids: Vec<scene::ScalarId> = vec![];
-                for (k, (at, from)) in w.common_studs().into_iter().enumerate() {
-                    let name = format!("{}/{}/stud#{}", p.name, w.name, k + 1);
-                    let s = ss.number(&name, body, at);
-                    match from {
-                        topo_timber::StudFrom::End => ss.number_is(&format!("{name} at the end of the wall"), s, at, scene::Tier::Hard),
-                        topo_timber::StudFrom::Layout => ss.number_is(&format!("{name} where the layout puts it"), s, at, scene::Tier::Hint),
-                        topo_timber::StudFrom::Read => {
-                            ss.number_is(&format!("{name} where the layout puts it"), s, at, scene::Tier::Hint);
-                            ss.number_is(&format!("{name} where it was read to be"), s, at, scene::Tier::Reading(0.001));
-                        }
-                    }
-                    ss.bound(s, b / 2.0, len - b / 2.0);
-                    if let Some(&before) = ids.last() {
-                        ss.at_least(&format!("{name} clear of the stud before it"), s, before, b);
-                    }
-                    ss.node_with(&format!("{name}:bottom"), body, Vec3::ZERO, &[(s, Vec3::X)])?;
-                    ss.node_with(&format!("{name}:top"), body, Vec3::Z * (w.height - b), &[(s, Vec3::X)])?;
-                    ids.push(s);
-                }
-                numbers.push(Some(ids));
-            }
-            for item in &mine {
-                relate(&mut ss, item, &mut |sc: &mut scene::Scene, name: &str| sc.node_named(name).ok_or_else(|| format!("no stud node {name} (studs are numbered along each wall from its start: stud#1, stud#2, …)")))?;
-            }
-            let report = ss.solve()?;
-            self.m.solves.push(ss.solved(&report));
-            for (w, ids) in walls.iter_mut().zip(&numbers) {
-                if let (Some(w), Some(ids)) = (w, ids) {
-                    w.studs_solved = Some(ids.iter().map(|&s| ss.value(s)).collect());
-                }
-            }
-        }
-        let parts = per.try_build_walls(&mut self.m, walls)?;
+        let walls = per.walls();
+        let parts = per.try_build_walls(&mut self.m, walls.clone())?;
         self.m.group_mut(parts.group).parent = Some(self.root);
         // Every bottom plate bears on the foundation.
         let mut nodes: Vec<NodeId> = parts.bottom_plates().iter().flat_map(|&b| self.m.member(b).path.clone()).collect();
@@ -597,7 +548,46 @@ impl Builder {
             nodes: (before.0..self.m.nodes.len()).map(|n| NodeId(n as u32)).collect(),
             members: (before.1..self.m.members.len()).map(|m| MemberId(m as u32)).collect(),
         };
-        sc.body_written(&p.name, Frame { origin: v3(p.start.0, p.start.1, p.z), ..Frame::WORLD }, p.free, content);
+        let origin = v3(p.start.0, p.start.1, p.z);
+        let body = sc.body_written(&p.name, Frame { origin, ..Frame::WORLD }, p.free, content);
+        // A wall's common studs are numbers of the wall, in the one solve: where the layout puts
+        // each is a hint, a stud given by `studsAt` a reading, one against the wall at an end
+        // fixed; they keep their order and stay in the wall. Their ends are the built studs' end
+        // nodes (`Walls/Front/stud#3:bottom`, `:top`): anything related to them can move them, and
+        // the studs are moved (along their plates) to where the solve puts them.
+        for (w, wp) in walls.iter().zip(&parts.walls) {
+            let (Some(w), Some(wp)) = (w.as_ref().filter(|w| w.survey.is_none()), wp) else { continue };
+            let commons: Vec<MemberId> = wp.studs.iter().copied().filter(|&id| self.m.member(id).role == "stud").collect();
+            let planned = w.common_studs();
+            if commons.len() != planned.len() {
+                continue;
+            }
+            let (len, dir) = (w.start.distance(w.end), (w.end - w.start).normalized());
+            let b = topo_core::units::inch(topo_timber::lumber::dressed_in(w.stud.0));
+            let mut before: Option<scene::ScalarId> = None;
+            for (k, (&id, &(at, from))) in commons.iter().zip(&planned).enumerate() {
+                let name = format!("{}/{}/stud#{}", p.name, w.name, k + 1);
+                let (bottom, top) = (self.m.member(id).start(), self.m.member(id).end());
+                let s = sc.number(&name, body, at);
+                match from {
+                    topo_timber::StudFrom::End => sc.number_is(&format!("{name} at the end of the wall"), s, at, scene::Tier::Hard),
+                    topo_timber::StudFrom::Layout => sc.number_is(&format!("{name} where the layout puts it"), s, at, scene::Tier::Hint),
+                    topo_timber::StudFrom::Read => {
+                        sc.number_is(&format!("{name} where the layout puts it"), s, at, scene::Tier::Hint);
+                        sc.number_is(&format!("{name} where it was read to be"), s, at, scene::Tier::Reading(0.001));
+                    }
+                }
+                sc.bound(s, b / 2.0, len - b / 2.0);
+                if let Some(before) = before {
+                    sc.at_least(&format!("{name} clear of the stud before it"), s, before, b);
+                }
+                before = Some(s);
+                let base = w.start - origin;
+                sc.node_built(&format!("{name}:bottom"), body, base, &[(s, dir)], bottom)?;
+                sc.node_built(&format!("{name}:top"), body, base + (self.m.pos(top) - self.m.pos(bottom)), &[(s, dir)], top)?;
+                sc.moves_nodes(s, body, vec![bottom, top], dir);
+            }
+        }
         self.perimeters.insert(p.name.clone(), (parts, top));
         Ok(())
     }
@@ -1022,9 +1012,6 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
     // their own; the perimeter is then built on the corners where they are.
     let is_corner = |name: &str| spec.items.iter().any(|i| matches!(i, ItemSpec::Perimeter(p) if name.strip_prefix(&format!("{}/corner ", p.name)).is_some_and(|k| k.parse::<usize>().is_ok())));
     let on_corners: Vec<&ItemSpec> = spec.items.iter().filter(|i| !i.nodes().is_empty() && i.nodes().iter().all(|n| is_corner(n))).collect();
-    // (Relations among studs' ends are solved with the studs, before the walls are built.)
-    let is_stud = |name: &str| (name.ends_with(":bottom") || name.ends_with(":top")) && name.contains("/stud#") && spec.items.iter().any(|i| matches!(i, ItemSpec::Perimeter(p) if name.starts_with(&format!("{}/", p.name))));
-    let on_studs: Vec<&ItemSpec> = spec.items.iter().filter(|i| !i.nodes().is_empty() && i.nodes().iter().all(|n| is_stud(n))).collect();
     let mut perimeters: Vec<PerimeterSpec> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(p.clone()) } else { None }).collect();
     if !on_corners.is_empty() {
         let mut cs = scene::Scene::new("Corners of the walls");
@@ -1052,7 +1039,7 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
     }
     let mut sc = scene::Scene::new("The building's parts and the relations between them");
     for p in &perimeters {
-        b.perimeter(p, &mut sc, &on_studs)?;
+        b.perimeter(p, &mut sc)?;
     }
     let mut declared = vec![];
     for item in &spec.items {
@@ -1090,7 +1077,7 @@ fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
             node(&mut sc, &b.m, at)?;
         }
     }
-    for item in spec.items.iter().filter(|i| !on_corners.iter().chain(&on_studs).any(|c| std::ptr::eq(*c, *i))) {
+    for item in spec.items.iter().filter(|i| !on_corners.iter().any(|c| std::ptr::eq(*c, *i))) {
         relate(&mut sc, item, &mut |sc: &mut scene::Scene, name: &str| node(sc, &b.m, name))?;
     }
     let written = sc.write(&mut b.m)?;

@@ -364,13 +364,14 @@ where the layout puts each is a hint, a stud given by `studsAt` is a
 reading, and a stud against the wall it meets at an end is fixed. They
 keep their order (one-sided: no two overlap) and stay in the wall
 (bounds). Their ends are nodes, `walls.stud("Front", 3, "bottom")` (or
-`"top"`), numbered along each wall from its start. Readings and datums on
-stud ends are solved with the studs, before the walls are built, and the
-walls are built with their studs there
+`"top"`), numbered along each wall from its start. They are in the one
+solve with everything else: the wall is built where the layout puts its
+studs, their ends are the built studs' end nodes, and once solved, a
+stud whose number changed is moved there along its plates
 (`examples/primitives/08-studs-on-readings.ts`): a tape between two
-studs moves both (each a hint), a survey on one moves it, and one pushed
-past its neighbour pushes the neighbour along. Once built, a stud's ends
-are nodes like any member's, for anything else to be joined to. `examples/primitives/04-placed-by-nodes.ts` places a free beam on
+studs moves both (each a hint), a survey on one moves it, one pushed
+past its neighbour pushes the neighbour along, and a post joined to a
+stud's top moves the stud to it. `examples/primitives/04-placed-by-nodes.ts` places a free beam on
 two posts by its end nodes alone.
 
 ## Seeing it

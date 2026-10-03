@@ -66,7 +66,7 @@ positions because the solve found them.
 | A perimeter is one body; its walls are not each a body | Walls follow their corners, which are nodes (see step 5) |
 | (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
 | A surveyed wall is framed from its survey, outside the solve | Its posts as numbers of the wall with readings, as common studs now are |
-| Studs (and corners) are solved before their walls are built, so only relations among them can move them | Generators publish their nodes as expressions of their numbers and build after the one solve, so anything related to a stud can move it |
+| Corners are solved before their walls are built, so only relations among corners can move them | A perimeter's corners as numbers in the one solve, as studs now are |
 | The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier (needs generators inside the solve: the fit re-runs the script) |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
 | Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
@@ -125,12 +125,15 @@ Each step leaves everything working and removes one row above.
    studs there. *Not yet:* surveyed walls (framed from their survey, not
    as numbers), and the truss-shape fit (it re-runs the whole script for
    each unknown).
-6½. **Generators of numbers, in one solve.** Studs and corners are solved
-   before their walls are built (only relations among them move them).
-   The next shape: a generator publishes its nodes as expressions of its
-   numbers (a stud's top: the top plate at `x₃` along it), everything is
-   solved once, and then it builds. Then a header bearing on a stud, or
-   scan evidence on one, moves it.
+6½. **Generators of numbers, in one solve.** *Done for studs.* A wall's
+   studs are numbers in the one solve with everything else. The wall is
+   built where the layout puts its studs; their ends are nodes that join
+   to the built ends; and once solved, any stud whose number changed is
+   moved there along its plates (whose nodes are then put back in order).
+   So a post joined to a stud's top moves the stud, and a stud taped to
+   it comes along. *Not yet:* a perimeter's corners (still solved first,
+   on their own: a corner's move changes a wall's length, and so what the
+   generator builds, not only where).
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them.

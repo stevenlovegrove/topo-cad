@@ -113,6 +113,11 @@ pub struct Scene {
     same: Vec<usize>,
     /// The `rest` relations: upper member, lower member, their node, and its name.
     rests: Vec<(usize, usize, usize, String)>,
+    /// Numbers of what a generator built: a number, nodes of the model it placed (as built,
+    /// at the number's starting value), and the way they move with it, in its body.
+    moves: Vec<(ScalarId, usize, Vec<NodeId>, Vec3)>,
+    /// Each number's starting value.
+    starts: Vec<(ScalarId, f64)>,
 }
 
 fn arr(v: Vec3) -> [f64; 3] {
@@ -132,7 +137,7 @@ fn frame(p: &ts::Pose) -> Frame {
 impl Scene {
     /// A scene; `name` names its solve.
     pub fn new(name: &str) -> Scene {
-        Scene { name: name.into(), sys: ts::System::new(), bodies: vec![], nodes: vec![], members: vec![], same: vec![], rests: vec![] }
+        Scene { name: name.into(), sys: ts::System::new(), bodies: vec![], nodes: vec![], members: vec![], same: vec![], rests: vec![], moves: vec![], starts: vec![] }
     }
 
     /// A body (written as a group named `name`, of `kind`, in `parent`), put at `start`: fixed
@@ -210,7 +215,9 @@ impl Scene {
 
     /// A number of a body (a parameter of what is made in it), starting at `value`.
     pub fn number(&mut self, name: &str, body: BodyRef, value: f64) -> ScalarId {
-        self.sys.scalar(self.bodies[body.0].frame, name, value)
+        let s = self.sys.scalar(self.bodies[body.0].frame, name, value);
+        self.starts.push((s, value));
+        s
     }
 
     pub fn value(&self, s: ScalarId) -> f64 {
@@ -247,6 +254,21 @@ impl Scene {
         self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: None, faces: vec![], along: None });
         self.same.push(self.nodes.len() - 1);
         Ok(NodeRef(self.nodes.len() - 1))
+    }
+
+    /// A number of what a generator built (in a body with written content): the model's nodes
+    /// it placed were built at its starting value, and are moved along `dir` (in the body) by as
+    /// much as it changes. A node made of it (`node_built`) is such a node.
+    pub fn moves_nodes(&mut self, s: ScalarId, body: BodyRef, nodes: Vec<NodeId>, dir: Vec3) {
+        self.moves.push((s, body.0, nodes, dir));
+    }
+
+    /// A node that a generator built, whose place is a point of its body plus so much of some of
+    /// its numbers (that move it: `moves_nodes`): relations to it join to the built node, and move it.
+    pub fn node_built(&mut self, name: &str, body: BodyRef, at: Vec3, along: &[(ScalarId, Vec3)], built: NodeId) -> Result<NodeRef, String> {
+        let n = self.node_with(name, body, at, along)?;
+        self.nodes[n.0].model = Some(built);
+        Ok(n)
     }
 
     /// The body whose written content has this member of the model.
@@ -423,6 +445,11 @@ impl Scene {
         Ok(NodeRef(n))
     }
 
+    /// Where a number started (as what it placed was built).
+    fn start_of(&self, s: ScalarId) -> f64 {
+        self.starts.iter().find(|(x, _)| *x == s).map_or(0.0, |(_, v)| *v)
+    }
+
     /// Solves, and writes the result into `model`. Hard relations that cannot all hold are
     /// refused: nothing is written, and the error names them.
     pub fn write(mut self, model: &mut Model) -> Result<Written, String> {
@@ -469,6 +496,28 @@ impl Scene {
                     groups.push(c.group);
                 }
                 None => groups.push(model.add_group(&b.name, &b.kind, at, b.parent)),
+            }
+        }
+        // What a generator built is moved by its numbers' changes: those nodes along their
+        // directions, and the members they are in put back in order.
+        let mut touched = vec![];
+        for (s, body, nodes, dir) in &self.moves {
+            let b = &self.bodies[*body];
+            let at = frame(&self.sys.in_world(b.frame));
+            let change = self.sys.value(*s) - self.start_of(*s);
+            if change.abs() > 1e-12 {
+                let d = at.dir_to_world(*dir) * change;
+                for &n in nodes {
+                    model.nodes[n.idx()].pos = model.nodes[n.idx()].pos + d;
+                    touched.push(n);
+                }
+            }
+        }
+        if !touched.is_empty() {
+            model.reset_index();
+            let members: Vec<MemberId> = model.members.iter().filter(|m| m.path.iter().any(|n| touched.contains(n))).map(|m| m.id).collect();
+            for m in members {
+                model.sort_path(m);
             }
         }
         // A model node for each node, one for nodes made one (a node brought in is itself; nodes

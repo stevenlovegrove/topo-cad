@@ -754,6 +754,24 @@ impl Model {
         (t, off)
     }
 
+    /// Puts a member's path back in order along it, its ends first and last (after nodes in
+    /// it have moved along it).
+    pub fn sort_path(&mut self, m: MemberId) {
+        let path = &self.members[m.idx()].path;
+        if path.len() < 3 {
+            return;
+        }
+        let (a, b) = (self.pos(path[0]), self.pos(*path.last().unwrap()));
+        let dir = (b - a).normalized();
+        let mut inner: Vec<NodeId> = path[1..path.len() - 1].to_vec();
+        inner.sort_by(|x, y| (self.pos(*x) - a).dot(dir).total_cmp(&(self.pos(*y) - a).dot(dir)));
+        let (first, last) = (path[0], *path.last().unwrap());
+        let mut sorted = vec![first];
+        sorted.extend(inner);
+        sorted.push(last);
+        self.members[m.idx()].path = sorted;
+    }
+
     /// Inserts an existing node into a member's path (making it a connection
     /// point). No-op if already present.
     pub fn insert_node_on(&mut self, m: MemberId, node: NodeId) -> Result<(), ModelError> {

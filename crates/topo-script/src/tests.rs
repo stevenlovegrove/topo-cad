@@ -302,8 +302,8 @@ fn the_primitives_examples_show_what_they_say() {
     // The survey: the 4th is at 5 ft; the others are where the layout puts them.
     assert!((stud_x(&m, 4) - ft(5.0)).abs() < 1e-9);
     assert!((stud_x(&m, 5) - stud_x(&plain, 5)).abs() < 1e-9 && (stud_x(&m, 1) - stud_x(&plain, 1)).abs() < 1e-9);
-    let studs = m.solves.iter().find(|s| s.name == "Studs of Walls").unwrap();
-    let n = studs.nodes.iter().find(|n| n.name == "Walls/Front/stud#4:bottom").unwrap();
+    // (In the one solve with everything else.)
+    let n = m.solves.iter().flat_map(|s| &s.nodes).find(|n| n.name == "Walls/Front/stud#4:bottom").unwrap();
     assert_eq!((n.kind.as_str(), n.numbers[0].settled.as_str()), ("on a line", "measured"));
     // A stud's end is a node to other things too, as built: a free post's top made one with the top of the 2nd.
     let post = src.replace("import { Building,", "import { Assembly, Building, coincide,").replace(
@@ -316,6 +316,23 @@ fn the_primitives_examples_show_what_they_say() {
     let m2 = run(&post, "post.ts").unwrap();
     let p = m2.members.iter().find(|x| x.role == "post").unwrap();
     assert_eq!(p.end(), m2.member(m2.find_member("Walls/Front/stud#2").unwrap()).end(), "the post's top is the stud's top node");
+    // In the one solve, something else can move a stud: a fixed post 2 inches along from where the layout puts the
+    // 2nd stud, its top made one node with that stud's top. The stud (a hint) goes to the post; the wall's plates
+    // keep their nodes in order, and the model is sound.
+    let x2 = stud_x(&plain, 2);
+    let pulled = src.replace("import { Building,", "import { Assembly, Building, coincide,").replace(
+        "export default Building.named(\"Studs on readings\").add(",
+        &format!("const p = Assembly.named(\"Post\").point(\"foot\", [{x}, -0.3, 0]).point(\"top\", [{x}, -0.3, ft(8) - inch(1.5)]).member(\"post\", [\"foot\", \"top\"], {{ size: [4, 4], grade: DFL.No2 }});\nexport default Building.named(\"Studs on readings\").add(\n  p,", x = x2 + inch(2.0)),
+    ).replace("  tape(walls.stud", "  coincide(p.node(\"top\"), walls.stud(\"Front\", 2, \"top\")),\n  tape(walls.stud");
+    let e = run(&pulled, "pulled.ts").map(|_| ()).unwrap_err().to_string();
+    // (The post stands 0.3 m off the wall's line, so its top cannot be the stud's: refused, and said.)
+    assert!(e.contains("Post/top is Walls/Front/stud#2:top"), "{e}");
+    let pulled = pulled.replace("-0.3, 0]", "0, 0]").replace("-0.3, ft(8)", "0, ft(8)");
+    let m3 = run(&pulled, "pulled.ts").unwrap();
+    sound(&m3);
+    assert!((stud_x(&m3, 2) - (x2 + inch(2.0))).abs() < 1e-9, "{} {}", stud_x(&m3, 2), x2 + inch(2.0));
+    // (Its neighbour, taped at 15" from it, came along.)
+    assert!((stud_x(&m3, 3) - stud_x(&m3, 2) - inch(15.0)).abs() < 1e-9);
     // A survey that would put the 4th past the 5th: the 5th (a hint) is pushed along to stay clear of it.
     let far = run(&src.replace("{ x: ft(5) }", "{ x: inch(70) }"), "far.ts").unwrap();
     assert!((stud_x(&far, 4) - inch(70.0)).abs() < 1e-9 && (stud_x(&far, 5) - inch(71.5)).abs() < 1e-9, "{} {}", stud_x(&far, 4), stud_x(&far, 5));
@@ -324,7 +341,8 @@ fn the_primitives_examples_show_what_they_say() {
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
     sound(&m);
-    assert!(m.attachments.is_empty() && m.solves.len() == 1);
+    // (Two solves: the walls' studs, in the building's solve; then the roof's.)
+    assert!(m.attachments.is_empty() && m.solves.len() == 2 && m.solves.iter().any(|s| s.name.ends_with("trusses on what is under them")));
 }
 
 fn roof_on_beams(far: Option<f64>) -> topo_core::Model {
