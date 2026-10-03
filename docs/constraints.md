@@ -343,7 +343,21 @@ a utility: each of the assembly's members that crosses a cap plate rests
 on it (`examples/primitives/05-joists-on-walls.ts`). `Perimeter.free()`
 and `TrussRoof.of(shape, { at: node, ... })` let a building be placed by
 a datum on a corner, with the roof going where the walls go
-(`examples/primitives/06-placed-by-a-corner.ts`). `examples/primitives/04-placed-by-nodes.ts` places a free beam on
+(`examples/primitives/06-placed-by-a-corner.ts`).
+
+**Readings** are measured constraints between nodes: `tape(a, b,
+distance)` (two nodes this far apart) and `survey(node, { x, y, z })` (a
+node here along whichever axes are given), each to a tolerance (3 mm by
+default). They give way to anything hard, share a misfit among themselves
+by their tolerances, and the solve says how far each is off.
+
+A perimeter's **corners are nodes** (`walls.corner(1)` is its start, then
+each corner in turn). Where a corner is drawn is a hint. Relations among
+corners (datums, readings) are solved first, on their own, and the walls
+are then built on the corners where they are
+(`examples/primitives/07-walls-on-readings.ts`). A truss's station is a
+node too: where the layout puts it along the ridge is a hint, and
+`shifted` is a reading of how far from it the truss is. `examples/primitives/04-placed-by-nodes.ts` places a free beam on
 two posts by its end nodes alone.
 
 ## Seeing it

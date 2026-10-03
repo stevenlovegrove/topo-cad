@@ -63,10 +63,10 @@ positions because the solve found them.
 | --- | --- |
 | Constraints are between anonymous points; bearing points are made after the solve, by geometry | Nodes are first class in the solve, named; a model's nodes are the solve's nodes |
 | `TrussRoof.bearingOn` finds what is under each truss inside the roof generator | An explicit utility the script calls, returning nodes; the roof rests on nodes |
-| Walls inside a perimeter, floors, roofs: written straight into the model by their generators | Bodies with published nodes in the scene, placed by datums and relations |
-| `TrussRoof` can still be given a plan `origin` (the garage's script does) | Set out from a node (`at`), which it can be now |
-| `shifted`, `studsAt`, surveyed walls: as-built numbers written over the layout rule | Readings: measured constraints on the same unknowns the layout rule hints |
-| The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier |
+| A perimeter is one body; its walls are not each a body | Walls follow their corners, which are nodes (see step 5) |
+| (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
+| `studsAt`, surveyed walls: as-built numbers inside the wall generator | Readings on stud nodes (needs the wall generator's studs in the solve) |
+| The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier (needs generators inside the solve: the fit re-runs the script) |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
 | Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
 | The scan is compared with the model after the fact | Scan evidence is measured constraints |
@@ -99,21 +99,27 @@ Each step leaves everything working and removes one row above.
    bays are now joined by `coincide`). `Assembly.bearingOn` is a utility
    that makes a `rest` for each member crossing a cap plate, and says so
    where one does not touch.
-5. **Walls and perimeters publish nodes.** *Largely done.* A perimeter is
-   a body of the scene: its generator writes it where it is drawn, and if
-   it is `free()`, relations to its nodes place it and everything it made
-   moves with it. Any point of a member a generator made is a node a
-   script can name: an end (`walls.node("Front/cap_plate", "start")`) or
-   a distance along it (`walls.node("Front/cap_plate", 1.2)`, which
-   becomes a node in the member's path). A roof can be set out from a
-   node (`at`) instead of a point, so it goes where the walls go. Still
-   to go: the walls inside a perimeter as bodies of their own (today the
-   perimeter is one rigid body); `TrussRoof.origin` removed once the
-   garage's script uses `at`; the roof's stations as nodes along the
-   plates (today: a node for the first, the spacing for the rest).
-6. **Readings as measured constraints.** `shifted`, `studsAt`, surveyed
-   walls and the truss-shape fit move onto the measured tier; the layout
-   rules become hints.
+5. **Walls and perimeters publish nodes.** *Done.* A perimeter is a body
+   of the scene: its generator writes it where it is drawn, and if it is
+   `free()`, relations to its nodes place it and everything it made moves
+   with it. Its corners are nodes (`walls.corner(1)`, …): where they are
+   drawn is a hint; datums and readings among corners are solved first,
+   and the walls are built on the corners where they then are. Any point
+   of a member a generator made is a node a script can name: an end
+   (`walls.node("Front/cap_plate", "start")`) or a distance along it
+   (`walls.node("Front/cap_plate", 1.2)`, a node in the member's path). A
+   roof can be set out from a node (`at`); each truss's station is a node.
+   *Decided:* walls are not each a body: at a corner the plates lap and
+   share nodes, so a wall cannot move alone; a wall moves by its corners.
+   `TrussRoof.origin` stays, as a datum.
+6. **Readings as measured constraints.** *Done for what is in the solve.*
+   `tape(a, b, distance)` and `survey(node, {x, y, z})` are measured
+   constraints on any nodes (corners, assemblies' points). A truss's
+   `shifted` is a reading of where it is along the ridge from its station,
+   whose layout is now a hint. *Not yet:* `studsAt` and surveyed walls
+   (their quantities are inside the wall generator, not in the solve), and
+   the truss-shape fit (it re-runs the whole script for each unknown); both
+   wait for generators whose insides are in the solve.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them.
