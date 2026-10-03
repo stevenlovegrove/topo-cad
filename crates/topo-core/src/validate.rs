@@ -103,7 +103,8 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
 
     for j in &model.joints {
         let junction = topo.junction(j.node);
-        let at = |m: MemberId| junction.get(m).is_some();
+        // (A member is at a node that is on its axis or on one of its faces.)
+        let at = |m: MemberId| junction.get(m).is_some() || model.attached_at(j.node).any(|a| a.member == m);
         for r in &j.rules {
             let ms: Vec<MemberId> = match r {
                 JointRule::Butt { member, against } => vec![*member, *against],
@@ -124,8 +125,6 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
             }
         }
         for c in &j.connections {
-            // (A member is at a node that is on its axis or on one of its faces.)
-            let at = |m: MemberId| at(m) || model.attached_at(j.node).any(|a| a.member == m);
             if !at(c.member) || c.to.is_some_and(|t| !at(t)) {
                 out.push(
                     Issue::new(Severity::Error, "connection-not-incident", format!("connection at {} names a member that does not meet there", j.node))

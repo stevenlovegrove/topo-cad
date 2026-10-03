@@ -73,9 +73,14 @@ impl Opening {
 #[derive(Clone, Debug)]
 pub struct Wall {
     pub name: String,
+    /// Where it starts and ends: on its line, at the bottom of its bottom plate (the two need not
+    /// be at one height: the bottom plate then slopes).
     pub start: Vec3,
     pub end: Vec3,
+    /// To the top of the double top plate, above its bottom, at its start.
     pub height: f64,
+    /// The same at its end, if it is not `height` (the top then slopes: a rake wall).
+    pub height_end: Option<f64>,
     /// Stud nominal size, e.g. (2, 4).
     pub stud: (u32, u32),
     pub material: MaterialId,
@@ -194,6 +199,7 @@ impl Wall {
             start,
             end,
             height,
+            height_end: None,
             stud: (2, 4),
             material,
             header_material: None,
@@ -290,14 +296,32 @@ impl Wall {
         }
     }
 
-    /// The openings, with flush headers resolved against the wall height.
+    /// Its length on plan (along its line), from start to end.
+    pub fn length(&self) -> f64 {
+        Vec2::new(self.end.x - self.start.x, self.end.y - self.start.y).norm()
+    }
+
+    /// The bottom of the bottom plate, `x` along the wall, above the bottom at its start.
+    pub fn base_at(&self, x: f64) -> f64 {
+        (self.end.z - self.start.z) * x / self.length()
+    }
+
+    /// The top of the double top plate, `x` along the wall, above the bottom at its start.
+    pub fn top_at(&self, x: f64) -> f64 {
+        let h1 = self.height_end.unwrap_or(self.height);
+        self.base_at(x) + self.height + (h1 - self.height) * x / self.length()
+    }
+
+    /// The openings, with flush headers resolved against the wall height (under the lower end of
+    /// the top plate over them, where it slopes).
     fn resolved_openings(&self) -> Vec<Opening> {
-        let (h, b) = (self.height, inch(dressed_in(self.stud.0)));
+        let b = inch(dressed_in(self.stud.0));
         self.openings
             .iter()
             .map(|o| {
                 let mut o = o.clone();
                 if o.header_flush {
+                    let h = self.top_at(o.center - o.width / 2.0).min(self.top_at(o.center + o.width / 2.0));
                     o.head = h - 2.0 * b - inch(dressed_in(o.header.2));
                     if o.kind == OpeningKind::Door {
                         o.height = o.head;
@@ -310,7 +334,7 @@ impl Wall {
 
     /// Where the layout puts studs along the wall (sorted): by the layout rules, or `studs_at`.
     fn layout(&self, openings: &[Opening]) -> Vec<f64> {
-        let len = self.start.distance(self.end);
+        let len = self.length();
         let grid = |from: f64, lo: f64, hi: f64| -> Vec<f64> {
             let from = from.rem_euclid(self.spacing);
             (0..).map(|k| from + k as f64 * self.spacing).take_while(|&x| x < hi).filter(|&x| x > lo + 1e-9).collect()
@@ -351,7 +375,7 @@ impl Wall {
     /// the layout puts it, and why it is there. The wall's numbers, for a solve: built as
     /// `stud#1`, `stud#2`, … in this order. (Not for a surveyed wall: it is framed as surveyed.)
     pub fn common_studs(&self) -> Vec<(f64, StudFrom)> {
-        let len = self.start.distance(self.end);
+        let len = self.length();
         let b = inch(dressed_in(self.stud.0));
         let openings = self.resolved_openings();
         let layout = self.layout(&openings);
@@ -367,7 +391,7 @@ impl Wall {
     }
 
     fn build_generated(&self, m: &mut Model) -> WallParts {
-        let len = self.start.distance(self.end);
+        let len = self.length();
         let doors: Vec<(f64, f64)> = self
             .openings
             .iter()
@@ -423,7 +447,7 @@ impl Wall {
     /// Builds the wall exactly as surveyed: each post where it was measured,
     /// openings between the posts either side of them.
     fn build_surveyed(&self, m: &mut Model, survey: &Survey) -> Result<WallParts, String> {
-        let len = self.start.distance(self.end);
+        let len = self.length();
         let b = inch(dressed_in(self.stud.0));
         let d = (self.end - self.start) / len;
         let cx = WallContext { len, ply: b, inside: self.corner_inside, dir: [d.x, d.y] };
@@ -710,6 +734,10 @@ impl Wall {
 /// off them.
 struct Framing {
     frame: Frame,
+    /// Its length on plan; how much its bottom rises from start to end; its height at each end.
+    len: f64,
+    rise: f64,
+    tops: (f64, f64),
     g: GroupId,
     parts: WallParts,
     segs: Vec<(f64, f64, MemberId)>,
@@ -734,8 +762,9 @@ struct Framing {
 impl Framing {
     /// Group, sections, connections and plates; `doors` interrupt the bottom plate.
     fn new(w: &Wall, m: &mut Model, doors: &[(f64, f64)]) -> Framing {
-        let len = w.start.distance(w.end);
-        let dir = (w.end - w.start) / len;
+        let len = w.length();
+        // (Its line on plan: x along it, z up. Where its bottom slopes, `bottom` says how high it is.)
+        let dir = v3(w.end.x - w.start.x, w.end.y - w.start.y, 0.0) / len;
         let inward = if w.interior_left { Vec3::Z.cross(dir) } else { dir.cross(Vec3::Z) };
         let frame = Frame { origin: w.start, x: dir, y: inward, z: Vec3::Z };
         let (h, b, t) = (w.height, inch(dressed_in(w.stud.0)), w.thickness());
@@ -752,6 +781,9 @@ impl Framing {
         let hdr_mat = w.header_material.unwrap_or(mat);
         let mut f = Framing {
             frame,
+            len,
+            rise: w.end.z - w.start.z,
+            tops: (w.height, w.height_end.unwrap_or(w.height)),
             g,
             parts: WallParts { group: g, ..Default::default() },
             segs: vec![],
@@ -797,13 +829,13 @@ impl Framing {
         segs.push((x, len));
         for (k, &(a, bx)) in segs.iter().enumerate() {
             let name = if segs.len() == 1 { "bottom_plate".to_string() } else { format!("bottom_plate#{}", k + 1) };
-            let id = m.add_member_between(wp(a, 0.0), wp(bx, 0.0), &bottom.clone().named(&name));
+            let id = m.add_member_between(wp(a, f.bottom(a)), wp(bx, f.bottom(bx)), &bottom.clone().named(&name));
             f.segs.push((a, bx, id));
             f.parts.bottom_plates.push(id);
         }
         // Double top plate as two members: lower ply (axis on its top face)
         // and cap plate(s) above, face-nailed together.
-        f.parts.top_plate = m.add_member_between(wp(0.0, f.ht), wp(len, f.ht), &top.clone().named("top_plate"));
+        f.parts.top_plate = m.add_member_between(wp(0.0, f.under_top(0.0)), wp(len, f.under_top(len)), &top.clone().named("top_plate"));
         let cap = MemberSpec { role: "cap_plate".into(), ..top.clone() };
         let c_dbl = m.add_connection(fx::double_top_plate());
         let mut breaks: Vec<f64> = w.cap_breaks.iter().copied().filter(|&x| x > 1e-6 && x < len - 1e-6).collect();
@@ -812,7 +844,7 @@ impl Framing {
         let n_caps = breaks.len() + 1;
         for (k, x1) in breaks.into_iter().chain([len]).enumerate() {
             let name = if n_caps == 1 { "cap_plate".to_string() } else { format!("cap_plate#{}", k + 1) };
-            let id = m.add_member_between(wp(x0, h), wp(x1, h), &cap.clone().named(&name));
+            let id = m.add_member_between(wp(x0, f.top(x0)), wp(x1, f.top(x1)), &cap.clone().named(&name));
             m.bond(id, f.parts.top_plate, c_dbl);
             f.parts.cap_plates.push(id);
             x0 = x1;
@@ -822,6 +854,23 @@ impl Framing {
 
     fn w(&self, x: f64, z: f64) -> Vec3 {
         self.frame.to_world(v3(x, 0.0, z))
+    }
+
+    /// The bottom of the bottom plate, `x` along (above the bottom at the start).
+    fn bottom(&self, x: f64) -> f64 {
+        self.rise * x / self.len
+    }
+
+    /// The top of the double top plate, `x` along.
+    fn top(&self, x: f64) -> f64 {
+        self.bottom(x) + self.tops.0 + (self.tops.1 - self.tops.0) * x / self.len
+    }
+
+    /// The underside of the double top plate (where studs end), `x` along. (Where the top slopes, a
+    /// ply is thicker measured plumb: its thickness over the slope's cosine.)
+    fn under_top(&self, x: f64) -> f64 {
+        let slope = (self.top(self.len) - self.top(0.0)) / self.len;
+        self.top(x) - self.b * (1.0 + slope * slope).sqrt()
     }
 
     fn bottom_at(&self, x: f64) -> Result<MemberId, String> {
@@ -853,15 +902,16 @@ impl Framing {
     /// Full-height stud or king at `x`.
     fn full(&mut self, m: &mut Model, x: f64, role: &str, name: Option<&str>) -> Result<MemberId, String> {
         let lo = self.bottom_at(x)?;
-        let (top, ht, c0, c1) = (self.parts.top_plate, self.ht, self.c_bot, self.c_top);
-        self.vertical(m, x, 0.0, ht, lo, top, role, c0, c1, name)
+        let (top, z0, z1, c0, c1) = (self.parts.top_plate, self.bottom(x), self.under_top(x), self.c_bot, self.c_top);
+        self.vertical(m, x, z0, z1, lo, top, role, c0, c1, name)
     }
 
     /// Jack at `x` under `header`, bonded to the post beside it.
     fn jack(&mut self, m: &mut Model, x: f64, head: f64, header: MemberId, beside: MemberId, name: Option<&str>) -> Result<MemberId, String> {
         let lo = self.bottom_at(x)?;
         let (c0, c1, cj) = (self.c_bot, self.c_crip, self.c_jack);
-        let id = self.vertical(m, x, 0.0, head, lo, header, "jack_stud", c0, c1, name)?;
+        let z0 = self.bottom(x);
+        let id = self.vertical(m, x, z0, head, lo, header, "jack_stud", c0, c1, name)?;
         m.bond(id, beside, cj);
         Ok(id)
     }
@@ -888,7 +938,7 @@ impl Framing {
         m.connect(hn1, header, Some(king1), self.c_hdr);
         self.parts.headers.push(header);
         // Header tight to the top plate: face-to-face bearing contact.
-        let clear = self.h - 2.0 * b - (o.head + m.section(hdr_sec).props.depth);
+        let clear = self.top(xk0 + 0.5 * b).min(self.top(xk1 - 0.5 * b)) - 2.0 * b - (o.head + m.section(hdr_sec).props.depth);
         if clear.abs() < 1e-6 {
             m.bond(self.parts.top_plate, header, self.c_plate_hdr);
         }
@@ -918,14 +968,14 @@ impl Framing {
     /// Returns how many were built.
     fn cripples(&mut self, m: &mut Model, x: f64, o: &Opening, header: MemberId, sill: Option<MemberId>, name: Option<&str>) -> Result<usize, String> {
         let mut n = 0;
-        let (c_bot, c_crip, c_top, top, ht) = (self.c_bot, self.c_crip, self.c_top, self.parts.top_plate, self.ht);
+        let (c_bot, c_crip, c_top, top, ht, z0) = (self.c_bot, self.c_crip, self.c_top, self.parts.top_plate, self.under_top(x), self.bottom(x));
         if let Some(s) = sill {
             let lo = self.bottom_at(x)?;
-            self.vertical(m, x, 0.0, o.sill(), lo, s, "cripple", c_bot, c_crip, name)?;
+            self.vertical(m, x, z0, o.sill(), lo, s, "cripple", c_bot, c_crip, name)?;
             n += 1;
         }
         let depth = m.section(m.member(header).section).props.depth;
-        if self.h - 2.0 * self.b - (o.head + depth) >= self.b {
+        if self.top(x) - 2.0 * self.b - (o.head + depth) >= self.b {
             self.vertical(m, x, o.head, ht, header, top, "cripple", c_crip, c_top, name)?;
             n += 1;
         }

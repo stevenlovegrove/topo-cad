@@ -191,6 +191,8 @@ pub struct Point {
     pub along: Vec<(ScalarId, V3)>,
     /// The node this is, if it is one (see `System::node`).
     pub node: Option<usize>,
+    /// A point between two others instead (`a + t (b - a)`, in the world): then the rest is unused.
+    pub between: Option<Box<(Point, Point, ScalarId)>>,
 }
 
 /// A node: a named point of the system. It is fixed in its frame, or has numbers of its own
@@ -201,7 +203,12 @@ pub struct NodeId(pub usize);
 impl Point {
     /// At these coordinates of the frame.
     pub fn at(frame: FrameId, at: V3) -> Point {
-        Point { frame, at, along: vec![], node: None }
+        Point { frame, at, along: vec![], node: None, between: None }
+    }
+
+    /// Between two points: `t` of the way from `a` to `b` (0 at `a`, 1 at `b`), wherever they are.
+    pub fn between(a: Point, b: Point, t: ScalarId) -> Point {
+        Point { frame: WORLD, at: [0.0; 3], along: vec![], node: None, between: Some(Box::new((a, b, t))) }
     }
 
     /// And `s` (in the frame's unit) times `dir`.
@@ -269,10 +276,20 @@ impl Kind {
     /// The frames and the scalars it reads.
     fn touches(&self) -> (Vec<usize>, Vec<usize>) {
         let (mut frames, mut scalars) = (vec![], vec![]);
-        let mut point = |p: &Point, frames: &mut Vec<usize>| {
-            frames.push(p.frame.0);
-            scalars.extend(p.along.iter().map(|(s, _)| s.0));
-        };
+        fn reads(p: &Point, frames: &mut Vec<usize>, scalars: &mut Vec<usize>) {
+            match &p.between {
+                Some(b) => {
+                    reads(&b.0, frames, scalars);
+                    reads(&b.1, frames, scalars);
+                    scalars.push(b.2 .0);
+                }
+                None => {
+                    frames.push(p.frame.0);
+                    scalars.extend(p.along.iter().map(|(s, _)| s.0));
+                }
+            }
+        }
+        let mut point = |p: &Point, frames: &mut Vec<usize>| reads(p, frames, &mut scalars);
         let mut nums: Vec<&Num> = vec![];
         match self {
             Kind::Coincident(a, b) => {
@@ -835,7 +852,13 @@ impl System {
     }
 
     fn point_in(&self, world: &[Pose], p: &Point) -> V3 {
-        world[p.frame.0].apply(self.local(p))
+        match &p.between {
+            Some(b) => {
+                let (a, c, t) = (self.point_in(world, &b.0), self.point_in(world, &b.1), self.value(b.2));
+                add(a, scale(sub(c, a), t))
+            }
+            None => world[p.frame.0].apply(self.local(p)),
+        }
     }
 
     fn dir_in(&self, world: &[Pose], d: &Dir) -> V3 {
@@ -885,6 +908,15 @@ impl System {
 
     /// What moving a point asks: `grads` is, for each residual, how it changes with the point's place in the world.
     fn point_terms(&self, world: &[Pose], p: &Point, grads: &[V3], out: &mut Terms) {
+        if let Some(b) = &p.between {
+            // a + t (b - a): so much of what moves a, and of what moves b, and of t.
+            let t = self.value(b.2);
+            let span = sub(self.point_in(world, &b.1), self.point_in(world, &b.0));
+            self.point_terms(world, &b.0, &grads.iter().map(|g| scale(*g, 1.0 - t)).collect::<Vec<_>>(), out);
+            self.point_terms(world, &b.1, &grads.iter().map(|g| scale(*g, t)).collect::<Vec<_>>(), out);
+            out.scalars.push((b.2 .0, Col(grads.iter().map(|g| dot(*g, span)).collect())));
+            return;
+        }
         let (f, x) = (p.frame.0, self.local(p));
         // The same, in the frame's own axes: a turn w and a shift v move the point by v + w × x.
         let own: Vec<V3> = grads.iter().map(|g| world[f].rotate_back(*g)).collect();
@@ -1527,6 +1559,13 @@ impl System {
             out.variables.push(Variable { name: scalar.name.clone(), kind: "scalar", at, value: Some(scalar.value), node, freedoms: vec![Freedom { what: "change".into(), dir, turn: false, settled: report.scalars.get(s).copied().flatten() }] });
         }
         for (name, p) in &self.nodes {
+            if let Some(b) = &p.between {
+                let (a, c) = (self.point_in(&world, &b.0), self.point_in(&world, &b.1));
+                let s = b.2 .0;
+                let number = Number { name: self.scalars[s].name.clone(), value: self.scalars[s].value, dir: unit(sub(c, a)), bounds: self.bounds.iter().find(|x| x.0 == s).map(|x| (x.1, x.2)), settled: report.scalars.get(s).copied().flatten() };
+                out.nodes.push(ShownNode { name: name.clone(), at: self.point_in(&world, p), of: "the points it is between".into(), kind: "between two points", numbers: vec![number] });
+                continue;
+            }
             let numbers: Vec<Number> = (p.along.iter())
                 .map(|(s, u)| Number { name: self.scalars[s.0].name.clone(), value: self.scalars[s.0].value, dir: world[p.frame.0].rotate(*u), bounds: self.bounds.iter().find(|b| b.0 == s.0).map(|b| (b.1, b.2)), settled: report.scalars.get(s.0).copied().flatten() })
                 .collect();
@@ -1668,7 +1707,8 @@ impl Instance {
                 Err(value) => at = add(at, scale(*u, value)),
             }
         }
-        Point { frame, at: from.apply(at), along, node: None }
+        assert!(p.between.is_none(), "a definition's points between points are not used through an instance yet");
+        Point { frame, at: from.apply(at), along, node: None, between: None }
     }
 
     /// A direction of the definition, here.
@@ -1778,6 +1818,11 @@ mod tests {
         s.constrain("i", Tier::Measured { sigma: 0.05 }, Kind::Parallel(Dir(peg, [0.0, 0.0, 1.0]), Dir(sketch, [0.0, 1.0, 1.0])));
         s.constrain("j", Tier::Default, Kind::Aligned(Dir(peg, [1.0, 0.0, 1.0]), Dir(corner, [0.0, 1.0, 0.0])));
         s.constrain("k", Tier::Measured { sigma: 0.1 }, Kind::Aligned(Dir(rider, [1.0, 0.0, 0.0]), Dir(WORLD, [0.0, 0.0, 1.0])));
+        // A point between a point of the wall and one of the peg (itself moved by the sketch's width), 0.3 of the way.
+        let t = s.scalar(WORLD, "how far between", 0.3);
+        let between = Point::between(Point::at(wall, [0.2, 0.1, 0.4]), Point::at(peg, [0.3, 0.0, 0.1]).plus(width, [0.0, 1.0, 0.0]), t);
+        s.constrain("l", Tier::Hard, Kind::Coincident(between.clone(), Point::at(corner, [0.5, 0.5, 0.0])));
+        s.constrain("m", Tier::Measured { sigma: 0.02 }, Kind::distance(between, Point::at(truss, [1.0, 0.0, 0.0]), 3.0));
         s
     }
 
@@ -1797,7 +1842,7 @@ mod tests {
         let s = a_bit_of_everything();
         let all = s.everything();
         let n = s.unknowns(&all).len();
-        assert_eq!(n, 6 + 1 + 1 + 3 + 6 + 6 + 3);
+        assert_eq!(n, 6 + 1 + 1 + 3 + 6 + 6 + 4);
         let rows = s.linearised(&all.constraints).rows();
         const H: f64 = 1e-6;
         for tier in 0..3 {
