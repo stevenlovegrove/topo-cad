@@ -69,20 +69,32 @@ impl Workspace {
     }
     /// Scores a new placement against the old; keeps it unless `dry_run`.
     pub(crate) fn try_placement(&mut self, who: &str, before: Placement, p: Placement, args: &Value, what: &str) -> Result<Vec<Value>> {
-        let dry = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        // Where the model has the scan in its Scan frame, that is where it is: the placement is
+        // the script's, changed by changing the frame's placement there (a proposal).
+        let in_script = self.model()?.pred.scan_frame.is_some();
+        let dry = in_script || args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
         let sb = self.score_text(&before)?;
         let sa = self.score_text(&p)?;
         let ev_before = self.evidence()?;
-        self.placement = Some(p);
-        let ev_after = self.evidence()?;
-        self.placement = Some(before);
+        self.trial = Some(p);
+        let ev_after = self.evidence();
+        self.trial = None;
+        let ev_after = ev_after?;
         if !dry {
             self.set_placement(p, who)?;
         }
-        Ok(vec![json!({"type": "text", "text": format!(
+        let mut said = format!(
             "{what}{}:\n  before: {}\n          {sb}\n          {}\n  after:  {}\n          {sa}\n          {}",
             if dry { " (dry run: not kept)" } else { "" },
-            describe(&before), Self::tally(&ev_before), describe(&p), Self::tally(&ev_after))})])
+            describe(&before), Self::tally(&ev_before), describe(&p), Self::tally(&ev_after));
+        if in_script {
+            // The Scan frame that puts the scan there: model → scan, turned back.
+            let o = p.inverse([0.0; 3]);
+            said += &format!(
+                "\n\nThe model places the scan with its Scan frame, so the placement is the script's. To keep this one, propose the frame placed so:\n  Frame.named(\"Scan\").placed(Placement.at([{:.4}, {:.4}, {:.4}], {:.4}))",
+                o[0], o[1], o[2], -p.yaw.to_degrees());
+        }
+        Ok(vec![json!({"type": "text", "text": said})])
     }
     pub(crate) fn members(&mut self, args: &Value) -> Result<Vec<Value>> {
         // The model as it is, or as a proposal or a trial of some edits would have it.

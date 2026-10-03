@@ -97,6 +97,9 @@ pub struct Prediction {
     pub members: Vec<PredMember>,
     /// The fit report text when the script has unknowns or measurements.
     pub report: Option<String>,
+    /// Where the model has the scan, if it says: its frame named `Scan` (the scan's frame, placed
+    /// where the scan is registered), as the model's placement in the scan.
+    pub scan_frame: Option<Placement>,
 }
 
 fn v(p: topo_core::math::Vec3) -> V3 {
@@ -148,7 +151,15 @@ pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -
             PredMember { id: k, path: model.member_path(m.id), role: m.role.clone(), faces, obb }
         })
         .collect();
-    Ok(Prediction { name: model.info.name.clone(), members, report: report.map(|r| r.text()) })
+    // The scan's frame, if the model has one: model → scan is its placement, turned back.
+    let scan_frame = model.groups.iter().find(|g| g.kind == "frame" && g.name == "Scan").map(|g| {
+        let f = g.frame;
+        let yaw = -(f.x.y.atan2(f.x.x)) as f32;
+        let p = Placement { yaw, t: [0.0; 3] };
+        let o = p.rotate(v(f.origin));
+        Placement { yaw, t: [-o[0], -o[1], -o[2]] }
+    });
+    Ok(Prediction { name: model.info.name.clone(), members, report: report.map(|r| r.text()), scan_frame })
 }
 
 // ----- small vector helpers ---------------------------------------------------

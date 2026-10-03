@@ -190,8 +190,8 @@ impl Scene {
     }
 
     /// A point of a frame (a body, or the world), as a node: at `at` in it along the axes given;
-    /// along any not given, a number of its own, as it is in the frame (where it starts, 0, is a
-    /// hint). A datum is a point of the world; a reference in a scan, a point of the scan's frame.
+    /// along any not given, a number of its own, as it is in the frame (0 unless anything else,
+    /// even a hint, says otherwise). A datum is a point of the world; a reference in a scan, a point of the scan's frame.
     pub fn frame_point(&mut self, name: &str, body: Option<BodyRef>, at: [Option<f64>; 3]) -> Result<NodeRef, String> {
         if self.node_named(name).is_some() {
             return Err(format!("two nodes named {name}"));
@@ -204,7 +204,8 @@ impl Scene {
                 let axis = ["x", "y", "z"][k];
                 let s = self.sys.scalar(frame, &format!("{name}: {axis}"), 0.0);
                 self.starts.push((s, 0.0));
-                self.sys.constrain(&format!("{name}: {axis}, unless told"), ts::Tier::Default, ts::Kind::equal(s, 0.0));
+                // (A fallback: any hint, such as where what it is made one with is drawn, decides first.)
+                self.sys.constrain(&format!("{name}: {axis}, unless told"), ts::Tier::Fallback, ts::Kind::equal(s, 0.0));
                 let mut d = [0.0; 3];
                 d[k] = 1.0;
                 point = point.plus(s, d);

@@ -208,6 +208,8 @@ pub struct Workspace {
     /// Why the model as it is on disk does not evaluate.
     pub model_error: Option<String>,
     pub placement: Option<Placement>,
+    /// A placement being tried (the evidence at it is computed, nothing kept).
+    pub(crate) trial: Option<Placement>,
     /// Bumped whenever the model is re-evaluated.
     pub model_rev: u64,
     ev: Option<((u64, [u32; 4]), Vec<Evidence>)>,
@@ -284,7 +286,7 @@ impl Workspace {
         }
         let placement = items.placement.map(Into::into);
         let chat = repo.git_dir().map(|d| crate::chat::Chat::open(d.join("topo-chat.json"))).unwrap_or_default();
-        let mut w = Workspace { chat, repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
+        let mut w = Workspace { chat, repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, trial: None, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
         if changed {
             w.save_items("topo-cad")?;
         }
@@ -424,8 +426,15 @@ impl Workspace {
         self.model.as_ref().with_context(|| format!("the model does not evaluate: {}", self.model_error.as_deref().unwrap_or("not loaded")))
     }
 
-    /// The placement, registering the model in the scan when there is none.
+    /// The placement: where the model's Scan frame has the scan, if it has one; else the one kept,
+    /// registering the model in the scan when there is none.
     pub fn placement(&mut self) -> Result<Placement> {
+        if let Some(p) = self.trial {
+            return Ok(p);
+        }
+        if let Some(p) = self.model.as_ref().and_then(|m| m.pred.scan_frame) {
+            return Ok(p);
+        }
         if let Some(p) = self.placement {
             return Ok(p);
         }
@@ -445,7 +454,8 @@ impl Workspace {
     /// The evidence of the current model and placement, if computed.
     pub fn current_evidence(&self) -> Option<&[Evidence]> {
         let (k, ev) = self.ev.as_ref()?;
-        (k.0 == self.model_rev && Some(k.1) == self.placement.as_ref().map(pkey)).then_some(&ev[..])
+        let pl = self.trial.or_else(|| self.model.as_ref().and_then(|m| m.pred.scan_frame)).or(self.placement);
+        (k.0 == self.model_rev && Some(k.1) == pl.as_ref().map(pkey)).then_some(&ev[..])
     }
 
     pub fn evidence(&mut self) -> Result<Vec<Evidence>> {
@@ -658,7 +668,11 @@ impl Workspace {
     fn evaluate(&mut self, files: &HashMap<String, String>) -> Result<Evaluated> {
         let pred = predict_with(&self.model_abs, &mut |id| files.get(id).cloned().or_else(|| std::fs::read_to_string(id).ok()))?;
         let samples = FaceSamples::new(&pred, 0.05);
-        let pl = self.placement()?;
+        // (Where this model has the scan, if it says: else where the scan is now.)
+        let pl = match pred.scan_frame {
+            Some(p) => p,
+            None => self.placement()?,
+        };
         self.scan()?;
         let scan = self.scan.as_ref().unwrap();
         let ev = evidence(&pred, &samples, &pl, &scan.xyz, &scan.used, scan.sensor.as_deref(), 0.05, 4);
