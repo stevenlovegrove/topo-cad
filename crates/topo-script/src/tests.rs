@@ -288,6 +288,39 @@ fn the_primitives_examples_show_what_they_say() {
     let survey_gap = c.constraints.iter().find(|x| x.name == "Walls/corner 1 surveyed: x = 0.0000").unwrap();
     assert!(tape_gap.tier == "measured" && (tape_gap.gap + survey_gap.gap - inch(1.0)).abs() < 1e-6 && (tape_gap.gap - survey_gap.gap).abs() < 1e-6, "{tape_gap:?} {survey_gap:?}");
 
+    // Studs on readings: the walls are built with their studs where the readings put them.
+    let src = include_str!("../../../examples/primitives/08-studs-on-readings.ts");
+    let m = run(src, "08-studs-on-readings.ts").unwrap();
+    sound(&m);
+    all_clean(&m);
+    let inch = topo_core::units::inch;
+    let stud_x = |m: &topo_core::Model, k: usize| m.pos(m.member(m.find_member(&format!("Walls/Front/stud#{k}")).unwrap()).start()).x;
+    let (plain, _) = (run(&src.replace("  tape(walls.stud(\"Front\", 2, \"bottom\"), walls.stud(\"Front\", 3, \"bottom\"), inch(15)),\n  survey(walls.stud(\"Front\", 4, \"bottom\"), { x: ft(5) }),\n", ""), "plain.ts").unwrap(), ());
+    // The tape: the 2nd and 3rd each give way half an inch toward each other.
+    assert!((stud_x(&m, 2) - (stud_x(&plain, 2) + inch(0.5))).abs() < 1e-9 && (stud_x(&m, 3) - (stud_x(&plain, 3) - inch(0.5))).abs() < 1e-9, "{} {}", stud_x(&m, 2), stud_x(&m, 3));
+    assert!((stud_x(&m, 3) - stud_x(&m, 2) - inch(15.0)).abs() < 1e-9);
+    // The survey: the 4th is at 5 ft; the others are where the layout puts them.
+    assert!((stud_x(&m, 4) - ft(5.0)).abs() < 1e-9);
+    assert!((stud_x(&m, 5) - stud_x(&plain, 5)).abs() < 1e-9 && (stud_x(&m, 1) - stud_x(&plain, 1)).abs() < 1e-9);
+    let studs = m.solves.iter().find(|s| s.name == "Studs of Walls").unwrap();
+    let n = studs.nodes.iter().find(|n| n.name == "Walls/Front/stud#4:bottom").unwrap();
+    assert_eq!((n.kind.as_str(), n.numbers[0].settled.as_str()), ("on a line", "measured"));
+    // A stud's end is a node to other things too, as built: a free post's top made one with the top of the 2nd.
+    let post = src.replace("import { Building,", "import { Assembly, Building, coincide,").replace(
+        "  survey(walls.stud(\"Front\", 4, \"bottom\"), { x: ft(5) }),\n",
+        "  survey(walls.stud(\"Front\", 4, \"bottom\"), { x: ft(5) }),\n  Assembly.named(\"Post\").point(\"foot\", [1, 1, 0]).point(\"top\", [1, 1, ft(8) - inch(1.5)]).member(\"post\", [\"foot\", \"top\"], { size: [4, 4], grade: DFL.No2 }).free(),\n",
+    ).replace(
+        "export default Building.named(\"Studs on readings\").add(",
+        "const p = Assembly.named(\"Post\").point(\"foot\", [1, 1, 0]).point(\"top\", [1, 1, ft(8) - inch(1.5)]);\nexport default Building.named(\"Studs on readings\").add(\n  coincide(p.node(\"top\"), walls.stud(\"Front\", 2, \"top\")),",
+    );
+    let m2 = run(&post, "post.ts").unwrap();
+    let p = m2.members.iter().find(|x| x.role == "post").unwrap();
+    assert_eq!(p.end(), m2.member(m2.find_member("Walls/Front/stud#2").unwrap()).end(), "the post's top is the stud's top node");
+    // A survey that would put the 4th past the 5th: the 5th (a hint) is pushed along to stay clear of it.
+    let far = run(&src.replace("{ x: ft(5) }", "{ x: inch(70) }"), "far.ts").unwrap();
+    assert!((stud_x(&far, 4) - inch(70.0)).abs() < 1e-9 && (stud_x(&far, 5) - inch(71.5)).abs() < 1e-9, "{} {}", stud_x(&far, 4), stud_x(&far, 5));
+    sound(&far);
+
     // Trusses on walls: every bearing point is on both axes; none is on a face.
     let m = run(include_str!("../../../examples/primitives/03-trusses-on-walls.ts"), "03-trusses-on-walls.ts").unwrap();
     sound(&m);

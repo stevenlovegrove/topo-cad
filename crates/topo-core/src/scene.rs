@@ -25,6 +25,7 @@ use crate::ids::{GroupId, MemberId, NodeId};
 use crate::math::{Frame, Vec3};
 use crate::model::{face_plane, Face, MemberAxes, MemberSpec, Model, Solved, SolvedConstraint, SolvedFreedom, SolvedNode, SolvedNumber, SolvedVariable};
 use topo_solve as ts;
+pub use topo_solve::ScalarId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyRef(pub usize);
@@ -91,6 +92,15 @@ pub struct Written {
     pub names: Vec<String>,
     pub members: Vec<MemberId>,
     pub open: Vec<String>,
+}
+
+/// How firmly a number is held to a value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Tier {
+    Hard,
+    /// A reading, to about this tolerance.
+    Reading(f64),
+    Hint,
 }
 
 pub struct Scene {
@@ -196,6 +206,47 @@ impl Scene {
                 self.sys.constrain(&format!("{name}: {which} = {v:.4}"), ts::Tier::Measured { sigma: tolerance }, ts::Kind::offset(ts::Point::at(ts::WORLD, [0.0; 3]), p.clone(), ts::Dir(ts::WORLD, axis), *v));
             }
         }
+    }
+
+    /// A number of a body (a parameter of what is made in it), starting at `value`.
+    pub fn number(&mut self, name: &str, body: BodyRef, value: f64) -> ScalarId {
+        self.sys.scalar(self.bodies[body.0].frame, name, value)
+    }
+
+    pub fn value(&self, s: ScalarId) -> f64 {
+        self.sys.value(s)
+    }
+
+    /// A number is this: `hard` (it must be), a reading (`Some(tolerance)`: it should be), or a hint (`None`).
+    pub fn number_is(&mut self, name: &str, s: ScalarId, value: f64, how: Tier) {
+        let tier = match how {
+            Tier::Hard => ts::Tier::Hard,
+            Tier::Reading(tolerance) => ts::Tier::Measured { sigma: tolerance },
+            Tier::Hint => ts::Tier::Default,
+        };
+        self.sys.constrain(name, tier, ts::Kind::equal(s, value));
+    }
+
+    /// A number is kept between two values.
+    pub fn bound(&mut self, s: ScalarId, lo: f64, hi: f64) {
+        self.sys.bound(s, lo, hi);
+    }
+
+    /// One number is at least `gap` more than another.
+    pub fn at_least(&mut self, name: &str, more: ScalarId, less: ScalarId, gap: f64) {
+        self.sys.constrain(name, ts::Tier::Hard, ts::Kind::at_least(ts::Num::from(more).plus(less, -1.0), gap));
+    }
+
+    /// A node of a body at `at` in it, plus so much of each of some numbers along directions of it.
+    pub fn node_with(&mut self, name: &str, body: BodyRef, at: Vec3, along: &[(ScalarId, Vec3)]) -> Result<NodeRef, String> {
+        if self.node_named(name).is_some() {
+            return Err(format!("two nodes named {name}"));
+        }
+        let p = along.iter().fold(ts::Point::at(self.bodies[body.0].frame, arr(at)), |p, &(s, d)| p.plus(s, arr(d)));
+        let id = self.sys.node(name, p);
+        self.nodes.push(Node { name: name.into(), of: vec![id], model: None, fixed: None, faces: vec![], along: None });
+        self.same.push(self.nodes.len() - 1);
+        Ok(NodeRef(self.nodes.len() - 1))
     }
 
     /// The body whose written content has this member of the model.

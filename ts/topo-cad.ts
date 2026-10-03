@@ -612,6 +612,16 @@ export class Perimeter {
   corner(i: number): NodeHandle {
     return new NodeHandle(`${this.name}/corner ${i}`);
   }
+  /**
+   * An end of a common stud of one of its walls, as a node (`walls.stud("Front", 3, "bottom")`):
+   * studs are numbered along each wall from its start. A wall's studs are
+   * numbers of it: where the layout puts them is a hint, `studsAt` a reading.
+   * Readings and datums on stud ends (`tape`, `survey`) move them, and the
+   * wall is built with its studs there.
+   */
+  stud(wall: string, k: number, end: "bottom" | "top"): NodeHandle {
+    return new NodeHandle(`${this.name}/${wall}/stud#${k}:${end}`);
+  }
   node(member: string, at: "start" | "end" | Length): NodeHandle {
     return new NodeHandle(typeof at === "number" ? `${this.name}/${member}@${at}` : `${this.name}/${member}:${at}`);
   }

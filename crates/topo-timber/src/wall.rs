@@ -106,6 +106,20 @@ pub struct Wall {
     /// Inside faces of the walls met at the start and end, as x along this
     /// wall; set by the perimeter (datums for surveys).
     pub corner_inside: [Option<f64>; 2],
+    /// The common studs' centres, exactly, as solved (one for each of `common_studs`, in order):
+    /// built there instead of where the layout puts them.
+    pub studs_solved: Option<Vec<f64>>,
+}
+
+/// Why a common stud is where it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StudFrom {
+    /// At an end of the wall (against the wall it meets): fixed.
+    End,
+    /// Where the layout rule puts it: a hint.
+    Layout,
+    /// Where it was read to be (`studs_at`): a reading.
+    Read,
 }
 
 /// Handles to the generated members.
@@ -195,6 +209,7 @@ impl Wall {
             parent: None,
             survey: None,
             corner_inside: [None, None],
+            studs_solved: None,
         }
     }
     /// A wall with no position yet, to be placed by a `Perimeter` (or `between`).
@@ -275,20 +290,10 @@ impl Wall {
         }
     }
 
-    fn build_generated(&self, m: &mut Model) -> WallParts {
-        let len = self.start.distance(self.end);
-        let doors: Vec<(f64, f64)> = self
-            .openings
-            .iter()
-            .filter(|o| o.kind == OpeningKind::Door)
-            .map(|o| (o.center - o.width / 2.0, o.center + o.width / 2.0))
-            .collect();
-        let mut f = Framing::new(self, m, &doors);
-        let (h, b, ht) = (f.h, f.b, f.ht);
-
-        // Openings (flush headers resolved against the wall height first).
-        let openings: Vec<Opening> = self
-            .openings
+    /// The openings, with flush headers resolved against the wall height.
+    fn resolved_openings(&self) -> Vec<Opening> {
+        let (h, b) = (self.height, inch(dressed_in(self.stud.0)));
+        self.openings
             .iter()
             .map(|o| {
                 let mut o = o.clone();
@@ -300,8 +305,12 @@ impl Wall {
                 }
                 o
             })
-            .collect();
-        let mut blocked: Vec<(f64, f64)> = vec![];
+            .collect()
+    }
+
+    /// Where the layout puts studs along the wall (sorted): by the layout rules, or `studs_at`.
+    fn layout(&self, openings: &[Opening]) -> Vec<f64> {
+        let len = self.start.distance(self.end);
         let grid = |from: f64, lo: f64, hi: f64| -> Vec<f64> {
             let from = from.rem_euclid(self.spacing);
             (0..).map(|k| from + k as f64 * self.spacing).take_while(|&x| x < hi).filter(|&x| x > lo + 1e-9).collect()
@@ -322,12 +331,60 @@ impl Wall {
             layout.extend((1..).map(|k| hi + k as f64 * self.spacing).take_while(|&x| x < len));
         }
         layout.sort_by(|a, b| a.total_cmp(b));
+        layout
+    }
+
+    /// Where the openings' posts block common studs (from the outside of one king to the other).
+    fn blocked(&self, openings: &[Opening]) -> Vec<(f64, f64)> {
+        let b = inch(dressed_in(self.stud.0));
+        openings
+            .iter()
+            .map(|o| {
+                let (x0, x1) = (o.center - o.width / 2.0, o.center + o.width / 2.0);
+                let nj = o.jacks as f64;
+                (x0 - (nj + 0.5) * b - b, x1 + (nj + 0.5) * b + b)
+            })
+            .collect()
+    }
+
+    /// The common (full-height, not king) studs, in order along the wall: each one's centre as
+    /// the layout puts it, and why it is there. The wall's numbers, for a solve: built as
+    /// `stud#1`, `stud#2`, … in this order. (Not for a surveyed wall: it is framed as surveyed.)
+    pub fn common_studs(&self) -> Vec<(f64, StudFrom)> {
+        let len = self.start.distance(self.end);
+        let b = inch(dressed_in(self.stud.0));
+        let openings = self.resolved_openings();
+        let layout = self.layout(&openings);
+        let blocked = self.blocked(&openings);
+        let first = self.start_inset + 0.5 * b;
+        let last = len - self.end_inset - 0.5 * b;
+        let read = |x: f64| self.studs_at.iter().any(|&r| (r - x).abs() < 1e-9);
+        let mut xs = vec![(first, StudFrom::End)];
+        xs.extend(layout.iter().copied().filter(|&x| x - first >= b && last - x >= b).map(|x| (x, if read(x) { StudFrom::Read } else { StudFrom::Layout })));
+        xs.push((last, StudFrom::End));
+        xs.retain(|&(x, _)| !blocked.iter().any(|&(a, bx)| x > a && x < bx));
+        xs
+    }
+
+    fn build_generated(&self, m: &mut Model) -> WallParts {
+        let len = self.start.distance(self.end);
+        let doors: Vec<(f64, f64)> = self
+            .openings
+            .iter()
+            .filter(|o| o.kind == OpeningKind::Door)
+            .map(|o| (o.center - o.width / 2.0, o.center + o.width / 2.0))
+            .collect();
+        let mut f = Framing::new(self, m, &doors);
+        let (h, b, ht) = (f.h, f.b, f.ht);
+
+        // Openings (flush headers resolved against the wall height first).
+        let openings = self.resolved_openings();
+        let layout = self.layout(&openings);
         for o in &openings {
             let (x0, x1) = (o.center - o.width / 2.0, o.center + o.width / 2.0);
             let nj = o.jacks as f64;
             // Posts each side, innermost first: jacks then the king.
             let (xk0, xk1) = (x0 - (nj + 0.5) * b, x1 + (nj + 0.5) * b);
-            blocked.push((xk0 - b, xk1 + b));
             let king0 = f.full(m, xk0, "king_stud", None).unwrap();
             let king1 = f.full(m, xk1, "king_stud", None).unwrap();
             let header = f.header(m, o, xk0, xk1, king0, king1);
@@ -348,18 +405,15 @@ impl Wall {
             }
         }
 
-        // Common studs: end studs plus layout positions clear of openings.
-        let first = self.start_inset + 0.5 * b;
-        let last = len - self.end_inset - 0.5 * b;
-        let mut xs = vec![first];
-        xs.extend(layout.iter().copied().filter(|&x| x - first >= b && last - x >= b));
-        xs.push(last);
+        // Common studs: end studs plus layout positions clear of openings (or where they were solved to be).
+        let xs: Vec<f64> = match &self.studs_solved {
+            Some(xs) => xs.clone(),
+            None => self.common_studs().into_iter().map(|(x, _)| x).collect(),
+        };
         for x in xs {
-            if blocked.iter().any(|&(a, bx)| x > a && x < bx) {
-                continue;
-            }
             f.full(m, x, "stud", None).unwrap();
         }
+        let _ = len;
         let _ = ht;
         let (g, parts) = (f.g, f.parts);
         self.annotate(m, g, len, h, &openings);

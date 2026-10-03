@@ -111,13 +111,14 @@ impl Perimeter {
         [meet(prev), meet(next)]
     }
 
-    pub fn try_build(&self, m: &mut Model) -> Result<PerimeterParts, String> {
+    /// Its walls as it would build them (placed, with their insets at corners), side by side;
+    /// none for an open side.
+    pub fn walls(&self) -> Vec<Option<Wall>> {
         let ns = self.sides.len();
         assert_eq!(ns, if self.closed { self.points.len() } else { self.points.len() - 1 }, "one side per segment");
         // Orientation decides which side is the interior.
         let signed = if self.closed { polygon_area(&self.points) } else { 1.0 };
         let interior_left = signed > 0.0;
-        let g = m.add_group(&self.name, "perimeter", Frame::WORLD, None);
 
         let mut start_inset = vec![0.0; ns];
         let mut wall_corners = vec![];
@@ -157,24 +158,48 @@ impl Perimeter {
             }
         }
 
+        let _ = &wall_corners;
+        (self.sides.iter().enumerate())
+            .map(|(i, side)| {
+                let Side::Wall(template) = side else { return None };
+                let (p0, p1) = self.seg(i);
+                let mut w = template.clone();
+                if w.name.is_empty() {
+                    w.name = format!("{} wall {}", self.name, i + 1);
+                }
+                w.start = v3(p0.x, p0.y, self.z);
+                w.end = v3(p1.x, p1.y, self.z);
+                w.interior_left = interior_left;
+                w.start_inset = start_inset[i];
+                w.end_inset = end_inset[i];
+                w.corner_inside = self.corner_inside(i, interior_left);
+                Some(w)
+            })
+            .collect()
+    }
+
+    /// The corners where two walls meet (incoming side, outgoing side).
+    fn wall_corners(&self) -> Vec<(usize, usize)> {
+        let ns = self.sides.len();
+        let corners: Vec<(usize, usize)> = if self.closed { (0..ns).map(|k| ((k + ns - 1) % ns, k)).collect() } else { (1..ns).map(|k| (k - 1, k)).collect() };
+        corners.into_iter().filter(|&(a, b)| matches!((&self.sides[a], &self.sides[b]), (Side::Wall(_), Side::Wall(_)))).collect()
+    }
+
+    pub fn try_build(&self, m: &mut Model) -> Result<PerimeterParts, String> {
+        self.try_build_walls(m, self.walls())
+    }
+
+    /// Builds it with these walls (as `walls` gives them, perhaps with their studs solved).
+    pub fn try_build_walls(&self, m: &mut Model, planned: Vec<Option<Wall>>) -> Result<PerimeterParts, String> {
+        let g = m.add_group(&self.name, "perimeter", Frame::WORLD, None);
+        let wall_corners = self.wall_corners();
         let mut walls = vec![];
-        for (i, side) in self.sides.iter().enumerate() {
-            let Side::Wall(template) = side else {
+        for w in planned {
+            let Some(mut w) = w else {
                 walls.push(None);
                 continue;
             };
-            let (p0, p1) = self.seg(i);
-            let mut w = template.clone();
-            if w.name.is_empty() {
-                w.name = format!("{} wall {}", self.name, i + 1);
-            }
-            w.start = v3(p0.x, p0.y, self.z);
-            w.end = v3(p1.x, p1.y, self.z);
-            w.interior_left = interior_left;
-            w.start_inset = start_inset[i];
-            w.end_inset = end_inset[i];
             w.parent = Some(g);
-            w.corner_inside = self.corner_inside(i, interior_left);
             walls.push(Some(w.try_build(m)?));
         }
         // Interleave the top plate plies at every corner: the wall built first

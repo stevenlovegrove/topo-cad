@@ -1273,6 +1273,18 @@ impl System {
             mark(&free, &mut out.settled, tier);
         }
         let _ = world;
+        // The lower tiers' steps must not cross an inactive one-sided constraint either: those
+        // they would are taken as met, and the step asked again (they then move what is beyond it).
+        if !probe || out.add.is_empty() {
+            let crossed: Vec<usize> = lines.iter().enumerate().filter(|(k, line)| room[*k] + along(line, &dx) < -1e-9).map(|(k, _)| which[k]).filter(|i| !out.add.contains(i)).collect();
+            if !crossed.is_empty() {
+                out.add.extend(crossed);
+                out.descending = false;
+                out.dx = vec![0.0; n];
+                out.free = free;
+                return out;
+            }
+        }
         out.dx = dx;
         out.free = free;
         out
@@ -2121,6 +2133,20 @@ mod tests {
         let r = s.solve();
         let names: Vec<&str> = r.conflicts.iter().flat_map(|c| c.constraints.iter().map(|g| g.constraint.as_str())).collect();
         assert!(r.refused && names.contains(&"x is 5") && names.contains(&"x: at most 3"), "{r:#?}");
+    }
+
+    #[test]
+    fn a_reading_pushes_what_is_only_hinted_out_of_its_way() {
+        // Two numbers kept at least 1 apart, in order. A reading puts the first at 5; the second's hint is 4.
+        // The reading holds, and the second is pushed along to stay clear: at 6, as near its hint as it may be.
+        let mut s = System::new();
+        let (a, b) = (s.scalar(WORLD, "a", 1.0), s.scalar(WORLD, "b", 4.0));
+        s.constrain("in order", Tier::Hard, Kind::at_least(Num::from(b).plus(a, -1.0), 1.0));
+        s.constrain("a, read", Tier::Measured { sigma: 0.001 }, Kind::equal(a, 5.0));
+        s.constrain("b, by the layout", Tier::Default, Kind::equal(b, 4.0));
+        let r = s.solve();
+        assert!(!r.refused && (s.value(a) - 5.0).abs() < 1e-9 && (s.value(b) - 6.0).abs() < 1e-9, "{} {} {r:#?}", s.value(a), s.value(b));
+        assert_eq!(r.touching, ["in order"]);
     }
 
     /// A bar 4 long (along its x, its middle at 2), free to move in the upright plane through the

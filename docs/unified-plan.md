@@ -65,7 +65,8 @@ positions because the solve found them.
 | `TrussRoof.bearingOn` finds what is under each truss inside the roof generator | An explicit utility the script calls, returning nodes; the roof rests on nodes |
 | A perimeter is one body; its walls are not each a body | Walls follow their corners, which are nodes (see step 5) |
 | (Kept, deliberately) `TrussRoof` can be given a plan `origin` | It is a datum: allowed. The garage's heel line is where the scan has it, not at a wall node |
-| `studsAt`, surveyed walls: as-built numbers inside the wall generator | Readings on stud nodes (needs the wall generator's studs in the solve) |
+| A surveyed wall is framed from its survey, outside the solve | Its posts as numbers of the wall with readings, as common studs now are |
+| Studs (and corners) are solved before their walls are built, so only relations among them can move them | Generators publish their nodes as expressions of their numbers and build after the one solve, so anything related to a stud can move it |
 | The truss-shape fit from field measurements is its own least-squares code | The same solve, measured tier (needs generators inside the solve: the fit re-runs the script) |
 | Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
 | Members are perfectly rigid; a sagging or racked building cannot be modelled | Bodies may deform: deflection under the same loads, in the same solve |
@@ -112,14 +113,24 @@ Each step leaves everything working and removes one row above.
    *Decided:* walls are not each a body: at a corner the plates lap and
    share nodes, so a wall cannot move alone; a wall moves by its corners.
    `TrussRoof.origin` stays, as a datum.
-6. **Readings as measured constraints.** *Done for what is in the solve.*
+6. **Readings as measured constraints.** *Done, but for surveyed walls and the truss-shape fit.*
    `tape(a, b, distance)` and `survey(node, {x, y, z})` are measured
    constraints on any nodes (corners, assemblies' points). A truss's
    `shifted` is a reading of where it is along the ridge from its station,
-   whose layout is now a hint. *Not yet:* `studsAt` and surveyed walls
-   (their quantities are inside the wall generator, not in the solve), and
-   the truss-shape fit (it re-runs the whole script for each unknown); both
-   wait for generators whose insides are in the solve.
+   whose layout is now a hint. A wall's common studs are numbers of the
+   wall: the layout is a hint on each, `studsAt` a reading, a stud
+   against the wall at an end fixed; they keep their order and stay in
+   the wall. Their ends are nodes (`walls.stud("Front", 3, "bottom")`):
+   readings and datums on them move them, and the wall is built with its
+   studs there. *Not yet:* surveyed walls (framed from their survey, not
+   as numbers), and the truss-shape fit (it re-runs the whole script for
+   each unknown).
+6½. **Generators of numbers, in one solve.** Studs and corners are solved
+   before their walls are built (only relations among them move them).
+   The next shape: a generator publishes its nodes as expressions of its
+   numbers (a stud's top: the top plate at `x₃` along it), everything is
+   solved once, and then it builds. Then a header bearing on a stud, or
+   scan evidence on one, moves it.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them.

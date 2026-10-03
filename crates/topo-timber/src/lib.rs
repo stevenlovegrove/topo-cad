@@ -13,4 +13,4 @@ pub use floor::{Floor, FloorParts};
 pub use perimeter::{Perimeter, PerimeterParts, Side};
 pub use survey::Survey;
 pub use truss::{RoofParts, ShapeMember, ShapePoint, ShapeRole, StandardTruss, Truss, TrussParts, TrussRoof, TrussShape};
-pub use wall::{Justify, Opening, OpeningKind, Wall, WallParts};
+pub use wall::{Justify, Opening, OpeningKind, StudFrom, Wall, WallParts};
