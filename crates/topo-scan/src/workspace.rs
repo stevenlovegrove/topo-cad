@@ -755,19 +755,22 @@ impl Workspace {
             Ok(e) => e,
             Err(e) => bail!("the model with this change does not evaluate (nothing proposed): {e:#}"),
         };
-        let ev_before = self.evidence()?;
+        // (The model as it is may not evaluate: a change that mends it is proposed all the same.)
+        let evaluates = self.model().is_ok();
+        let ev_before = if evaluates { self.evidence()? } else { vec![] };
         let (tb, ta) = (tally_counts(&ev_before), tally_counts(&after.ev));
-        let before_paths: std::collections::BTreeSet<&str> = self.model()?.pred.members.iter().map(|m| m.path.as_str()).collect();
-        let after_paths: std::collections::BTreeSet<&str> = after.pred.members.iter().map(|m| m.path.as_str()).collect();
-        let added: Vec<String> = after_paths.difference(&before_paths).map(|s| s.to_string()).collect();
-        let removed: Vec<String> = before_paths.difference(&after_paths).map(|s| s.to_string()).collect();
+        let before_paths: std::collections::BTreeSet<String> = if evaluates { self.model()?.pred.members.iter().map(|m| m.path.clone()).collect() } else { Default::default() };
+        let after_paths: std::collections::BTreeSet<String> = after.pred.members.iter().map(|m| m.path.clone()).collect();
+        let added: Vec<String> = after_paths.difference(&before_paths).cloned().collect();
+        let removed: Vec<String> = before_paths.difference(&after_paths).cloned().collect();
+        let before_tally = if evaluates { Self::tally(&ev_before) } else { format!("the model as it is does not evaluate ({})", self.model_error.as_deref().unwrap_or("not loaded").lines().next().unwrap_or("")) };
         // A trial: what it would do, without posting it.
         if args.get("dry").and_then(|v| v.as_bool()).unwrap_or(false) {
             let list = |v: &[String]| v.iter().take(12).map(String::as_str).collect::<Vec<_>>().join(", ");
             return Ok(text(format!(
                 "TRIAL (nothing posted): {title}\nmembers: {} → {} (added: {}; removed: {})\nbefore: {}\nafter:  {}\n\n{}\nThe scores do not say where things landed: look, with the same edits, in render_section (a slab or section through the place) and members (their extents), and compare with what you measured. Post it (without dry) when it is right.\n",
                 before_paths.len(), after_paths.len(), if added.is_empty() { "none".into() } else { list(&added) }, if removed.is_empty() { "none".into() } else { list(&removed) },
-                Self::tally(&ev_before), Self::tally(&after.ev), group_table(&after.pred, &after.ev))));
+                before_tally, Self::tally(&after.ev), group_table(&after.pred, &after.ev))));
         }
         let n = self.store.get(issue)?.entries.iter().filter(|e| matches!(e.body, Body::Proposal { .. })).count() as u32 + 1;
         let rels: Vec<(String, String)> = texts.iter().map(|(p, t)| Ok((self.repo.rel(p)?, t.clone()))).collect::<Result<_>>()?;
@@ -782,7 +785,7 @@ impl Workspace {
         if !removed.is_empty() {
             s += &format!("  removed: {}{}\n", list(&removed), if removed.len() > 12 { ", …" } else { "" });
         }
-        s += &format!("before: {}\nafter:  {}\n\n{}", Self::tally(&ev_before), Self::tally(&after.ev), group_table(&after.pred, &after.ev));
+        s += &format!("before: {}\nafter:  {}\n\n{}", before_tally, Self::tally(&after.ev), group_table(&after.pred, &after.ev));
         s += "\nNot applied: people see it in the issue as a diff (before / after / changed). `proposal` applies or withdraws it.\n";
         self.store.push(issue, who, Body::Proposal { n, title: title.clone(), commit: commit.clone(), files: st.files, added: st.added, removed: st.removed, members_added: added, members_removed: removed, before: tb, after: ta, state: "open".into(), applied_as: None })?;
         self.proposals.insert(commit, Arc::new(after));
