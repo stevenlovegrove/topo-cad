@@ -21,6 +21,16 @@ pub struct DiffStat {
     pub removed: u32,
 }
 
+/// What a change would leave of the files as they are now.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Trial {
+    /// It applies: the files it changes (path from the root, new text; none if they already are
+    /// as it leaves them), and whether the scripts have changed since it was made.
+    Clean { files: Vec<(String, String)>, moved: bool },
+    /// It does not: the files where it and what happened since both changed the same lines.
+    Conflict(Vec<String>),
+}
+
 fn identity(who: &str) -> [(&'static str, String); 4] {
     let slug: String = who.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
     let email = format!("{}@topo-cad.invalid", if slug.is_empty() { "someone" } else { &slug });
@@ -167,6 +177,62 @@ impl Repo {
         self.run(&["show", &format!("{rev}:{path}")]).ok()
     }
 
+    /// The files as they are on disk, as a commit (HEAD, if nothing tracked differs from it):
+    /// made without touching the working tree, the index or any branch.
+    fn snapshot(&self) -> Result<String> {
+        let head = self.head().context("the repository has no commit yet")?;
+        if self.ok(&["diff", "--quiet"]) {
+            return Ok(head);
+        }
+        let index = self.git_dir()?.join(format!("trial-index-{}", std::process::id()));
+        let mut env: Vec<(&str, String)> = identity("trial").into_iter().collect();
+        env.push(("GIT_INDEX_FILE", index.display().to_string()));
+        let made = (|| -> Result<String> {
+            self.run_env(&["read-tree", &head], &env, None)?;
+            self.run_env(&["add", "-u"], &env, None)?;
+            let tree = self.run_env(&["write-tree"], &env, None)?;
+            Ok(self.run_env(&["commit-tree", tree.trim(), "-p", &head, "-m", "the files as they are"], &env, None)?.trim().to_string())
+        })();
+        let _ = std::fs::remove_file(&index);
+        made
+    }
+
+    /// What the change from `base` to `theirs` would leave of the files as they are now (on
+    /// disk: edits made outside the app included), tried without touching anything. Applying a
+    /// proposal is the change from its parent to it; reverting an applied one, from it to its
+    /// parent: `apply` and `revert` do the same merge for real.
+    pub fn trial(&self, base: &str, theirs: &str) -> Result<Trial> {
+        let ours = self.snapshot()?;
+        let out = self.command(&["merge-tree", "--write-tree", "--name-only", &format!("--merge-base={base}"), &ours, theirs], &[]).stdin(Stdio::null()).output().context("running git")?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut lines = text.lines();
+        let tree = lines.next().unwrap_or("").trim().to_string();
+        match out.status.code() {
+            Some(0) => {}
+            // (The files in conflict are named up to the first blank line.)
+            Some(1) => return Ok(Trial::Conflict(lines.take_while(|l| !l.is_empty()).map(String::from).collect())),
+            _ => bail!("git merge-tree: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        }
+        let mut files = Vec::new();
+        for line in self.run(&["diff", "--name-status", &ours, &tree])?.lines() {
+            // (A file the change removes is left as it is: a model's files are edited, not deleted.)
+            if let Some((status, path)) = line.split_once('\t').filter(|(s, _)| !s.starts_with('D')) {
+                let _ = status;
+                files.push((path.to_string(), self.run(&["show", &format!("{tree}:{path}")])?));
+            }
+        }
+        // Whether the scripts have moved on since `base` (issues and notes are commits too, and do not count).
+        let moved = !self.ok(&["diff", "--quiet", base, &ours, "--", "*.ts"]);
+        Ok(Trial::Clean { files, moved })
+    }
+
+    /// Who made a commit, and how long ago (as git says it: "2 hours ago").
+    pub fn committed(&self, commit: &str) -> Option<(String, String)> {
+        let out = self.run(&["show", "-s", "--format=%cn%x09%cr", commit]).ok()?;
+        let (who, when) = out.trim().split_once('\t')?;
+        Some((who.to_string(), when.to_string()))
+    }
+
     /// Applies a proposal's commit onto the working branch. Edits made
     /// outside the app are committed first; a proposal that no longer
     /// applies (the files moved on) changes nothing and says so.
@@ -210,6 +276,46 @@ pub(crate) mod tests {
         }
         repo.commit(&paths, "start", "tester").unwrap().unwrap();
         repo
+    }
+
+    #[test]
+    fn a_change_is_tried_on_the_files_as_they_are_without_touching_them() {
+        let lines = |at: &[(usize, &str)]| (1..=9).map(|k| at.iter().find(|x| x.0 == k).map_or(format!("line {k}"), |x| x.1.to_string()) + "\n").collect::<String>();
+        let repo = temp_repo("trial", &[("model.ts", &lines(&[])), ("notes.md", "n\n")]);
+        let p = repo.propose("1-1", &[("model.ts".into(), lines(&[(2, "TWO")]))], "two", "claude").unwrap();
+        let base = format!("{p}^");
+        // As it was made: it applies, and the scripts have not moved.
+        assert_eq!(repo.trial(&base, &p).unwrap(), Trial::Clean { files: vec![("model.ts".into(), lines(&[(2, "TWO")]))], moved: false });
+        // A note committed since (an issue's thread, say) is not the scripts moving.
+        std::fs::write(repo.root.join("notes.md"), "m\n").unwrap();
+        repo.commit(&["notes.md"], "a note", "steven").unwrap();
+        assert!(matches!(repo.trial(&base, &p).unwrap(), Trial::Clean { moved: false, .. }));
+        // The script edited elsewhere, on disk and not yet committed: tried on that, which is left as it is.
+        std::fs::write(repo.root.join("model.ts"), lines(&[(8, "EIGHT")])).unwrap();
+        let head = repo.head().unwrap();
+        assert_eq!(repo.trial(&base, &p).unwrap(), Trial::Clean { files: vec![("model.ts".into(), lines(&[(2, "TWO"), (8, "EIGHT")]))], moved: true });
+        assert_eq!((repo.head().unwrap(), std::fs::read_to_string(repo.root.join("model.ts")).unwrap()), (head, lines(&[(8, "EIGHT")])));
+        assert!(!repo.ok(&["diff", "--quiet"]), "the edit on disk is still uncommitted");
+        // The same line changed since: it does not apply, and the file is named.
+        std::fs::write(repo.root.join("model.ts"), lines(&[(2, "two")])).unwrap();
+        assert_eq!(repo.trial(&base, &p).unwrap(), Trial::Conflict(vec!["model.ts".into()]));
+        // The same edit made by hand: it applies, changing nothing.
+        std::fs::write(repo.root.join("model.ts"), lines(&[(2, "TWO")])).unwrap();
+        assert_eq!(repo.trial(&base, &p).unwrap(), Trial::Clean { files: vec![], moved: true });
+        std::fs::remove_dir_all(&repo.root).unwrap();
+
+        // Reverting an applied one is the change from it to its parent.
+        let repo = temp_repo("trial_revert", &[("model.ts", &lines(&[]))]);
+        let p = repo.propose("1-1", &[("model.ts".into(), lines(&[(2, "TWO")]))], "two", "claude").unwrap();
+        let applied = repo.apply(&p, "steven").unwrap();
+        assert_eq!(repo.trial(&applied, &format!("{applied}^")).unwrap(), Trial::Clean { files: vec![("model.ts".into(), lines(&[]))], moved: false });
+        assert_eq!(repo.committed(&applied).unwrap().0, "steven");
+        // A later change elsewhere stays; one on the same line stops the revert.
+        std::fs::write(repo.root.join("model.ts"), lines(&[(2, "TWO"), (8, "EIGHT")])).unwrap();
+        assert_eq!(repo.trial(&applied, &format!("{applied}^")).unwrap(), Trial::Clean { files: vec![("model.ts".into(), lines(&[(8, "EIGHT")]))], moved: true });
+        std::fs::write(repo.root.join("model.ts"), lines(&[(2, "two again")])).unwrap();
+        assert_eq!(repo.trial(&applied, &format!("{applied}^")).unwrap(), Trial::Conflict(vec!["model.ts".into()]));
+        std::fs::remove_dir_all(&repo.root).unwrap();
     }
 
     #[test]

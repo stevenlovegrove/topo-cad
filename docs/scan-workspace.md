@@ -146,6 +146,30 @@ A proposal belongs to an issue. Selecting it shows it, one at a time:
 
 Apply or Reject is recorded in the thread.
 
+**A view of a proposal shows what its button would do, to the model as it
+is now.** The strip in each view names the proposal (click: its card in the
+thread, which is outlined while it is shown), says its state, and carries
+the action, so what is seen can be kept where it is seen. A chip in a
+comment that shows a proposal names it and its state.
+
+| The proposal | The view shows | The action |
+|---|---|---|
+| open, the scripts as when it was made | now, and with it | Apply |
+| open, the scripts changed since, still applies | now, and now with it merged in (later changes stay) | Apply |
+| open, no longer applies (the same lines changed), or already in the files, or the model would not then evaluate | as it was proposed (the files then), and why | Apply, disabled |
+| applied | now, and if reverted: what would move back; who applied it, and when | Revert |
+| applied, cannot be reverted cleanly (later changes build on it) | as it was proposed, and why | Revert, disabled |
+| rejected, reverted | as it was proposed | none |
+
+How: applying and reverting are one operation, a change tried on the files
+as they are (`Repo::trial`: the three-way merge `apply` and `revert` do for
+real, done with `git merge-tree`, touching nothing; files edited outside the
+app and not yet committed count). The result is evaluated (`Workspace::effect`),
+and `offer` (one table: state and outcome in; label, the sides' names, the
+action and whether it can be done out) says what a view is to show. The app
+draws that and decides nothing. One that as proposed no longer evaluates
+(the script's API has moved on) is not shown, and says so.
+
 ## How much a point is believed
 
 Lidar points are noisy (about 2.4 mm + 0.45 mm per metre of range off their

@@ -211,6 +211,14 @@
   /* (Its top is set under the view's toolbar, however many rows that has wrapped to: see placeDiffbar.) */
   .diffbar { position: absolute; left: 50%; top: 42px; transform: translateX(-50%); z-index: 2; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; align-items: center; max-width: calc(100% - 16px); box-sizing: border-box; background: rgba(255,255,255,.95); border-radius: 6px; padding: 4px 8px; font-size: 12px; }
   .diffbar span { white-space: nowrap; }
+  .diffbar { border: 2px solid var(--accent); }
+  .diffbar .pname { font-weight: 600; color: var(--accent); text-decoration: none; }
+  .diffbar .pname:hover { text-decoration: underline; }
+  .diffbar .pstate { color: #555; }
+  .diffbar .pstate.applied { color: #1a7f37; font-weight: 600; }
+  .diffbar .pnote { flex-basis: 100%; white-space: normal; color: #8a4b00; font-size: 11.5px; max-width: 520px; text-align: center; }
+  .diffbar button.go { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .diffbar button:disabled { opacity: .45; cursor: default; }
   .diffbar button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   /* An issue's pin: a dot at its place, its label up and to the right on a leader. */
   .pin { position: absolute; left: 0; top: 0; width: 0; height: 0; }
@@ -242,7 +250,7 @@
   .entry.tool { font-size: 11px; color: var(--muted); border-bottom: 0; padding: 2px 0; } .entry.tool code { display: inline; }
   .entry.card { border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; margin: 6px 0; }
   .entry.card .k { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 3px; }
-  .entry.proposal { border-left: 4px solid var(--accent); } .entry.proposal.on { background: #f2f6ff; }
+  .entry.proposal { border-left: 4px solid var(--accent); } .entry.proposal.on { background: #f2f6ff; outline: 2px solid var(--accent); outline-offset: -1px; }
   .entry.proposal.applied { border-left-color: var(--ok); } .entry.proposal.rejected, .entry.proposal.reverted { border-left-color: #b9b9b2; }
   .entry .tally { font-size: 12px; margin-top: 2px; } .entry .row { margin-top: 6px; gap: 4px; }
   .entry button.go { background: var(--accent); color: #fff; border-color: var(--accent); }

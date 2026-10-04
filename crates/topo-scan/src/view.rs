@@ -88,32 +88,44 @@ impl Workspace {
     /// proposal's commit: `before` and `after`, and per member path what
     /// the proposal does to it ("added", "removed" or "moved").
     pub fn members_json(&mut self, proposal: Option<&str>) -> Result<Value> {
-        let ev = self.evidence()?;
-        let before = members_of(&self.model()?.pred, &ev);
         let Some(commit) = proposal else {
-            return Ok(json!({"model_rev": self.model_rev, "members": before}));
+            let ev = self.evidence()?;
+            return Ok(json!({"model_rev": self.model_rev, "members": members_of(&self.model()?.pred, &ev)}));
         };
-        let after = self.proposal_evaluated(commit)?;
-        let now = &self.model()?.pred;
+        // What it would do now (`effect`): the model on each side of it, and what it offers.
+        let e = self.effect(commit)?;
+        // (Before: as the effect has it, else the model as it is: nothing, if that does not evaluate.)
+        let ev_now = if e.before.is_none() { self.evidence().ok() } else { None };
+        let now: Option<(&Prediction, &[Evidence])> = match &e.before {
+            Some(b) => Some((&b.pred, &b.ev[..])),
+            None => match (self.model.as_ref(), ev_now.as_ref()) {
+                (Some(m), Some(ev)) => Some((&m.pred, &ev[..])),
+                _ => None,
+            },
+        };
+        let none = vec![];
+        let (before, after) = (now.map_or(&none, |b| &b.0.members), &e.after.pred.members);
         let mut changes = serde_json::Map::new();
-        for m in &after.pred.members {
-            match now.members.iter().find(|x| x.path == m.path) {
+        for m in after {
+            match before.iter().find(|x| x.path == m.path) {
                 None => changes.insert(m.path.clone(), json!("added")),
                 Some(x) if !same_solid(x, m) => changes.insert(m.path.clone(), json!("moved")),
                 _ => None,
             };
         }
-        for m in &now.members {
-            if !after.pred.members.iter().any(|x| x.path == m.path) {
+        for m in before {
+            if !after.iter().any(|x| x.path == m.path) {
                 changes.insert(m.path.clone(), json!("removed"));
             }
         }
         Ok(json!({
             "model_rev": self.model_rev,
-            "before": before,
-            "after": members_of(&after.pred, &after.ev),
+            "before": now.map_or(vec![], |b| members_of(b.0, b.1)),
+            "after": members_of(&e.after.pred, &e.after.ev),
             "changes": changes,
             "diff": self.repo.diff(commit)?,
+            "offer": e.offer,
+            "tally": {"before": now.map(|b| tally_counts(b.1)), "after": tally_counts(&e.after.ev)},
         }))
     }
 
@@ -274,6 +286,13 @@ mod tests {
         assert!(changes.iter().any(|(k, v)| k.contains("North wall") && v == "moved"), "{changes:?}");
         assert!(!changes.keys().any(|k| k.contains("South wall")), "{changes:?}");
         assert!(d["diff"].as_str().unwrap().contains("+const depth = ft(16);"));
+        // What it offers: to be applied, shown on the model as it is.
+        assert_eq!((d["offer"]["action"].as_str(), d["offer"]["enabled"].as_bool(), d["offer"]["as_proposed"].as_bool()), (Some("apply"), Some(true), Some(false)), "{}", d["offer"]);
+        assert_eq!(d["tally"]["after"]["contradicted"], json!(after.contradicted));
+        // Another proposal for the same line (17 ft), for later.
+        ws.call("claude", "propose", &json!({"issue": 1, "title": "North leg is 17 ft", "edits": [{"old": "const depth = ft(15);", "new": "const depth = ft(17);"}]})).unwrap();
+        let other = ws.store.get(1).unwrap().entries.iter().filter_map(|e| match &e.body { Body::Proposal { n: 2, commit, .. } => Some(commit.clone()), _ => None }).next().unwrap();
+        assert_eq!(ws.members_json(Some(&other)).unwrap()["offer"]["enabled"], json!(true));
 
         // The person hears of it and applies it: the file, the model and the history change.
         assert!(ws.activity_for("p1").contains("proposed"));
@@ -281,7 +300,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("shed.ts")).unwrap(), shed(16));
         let st = ws.state_json();
         assert_eq!(st["tally"]["contradicted"], json!(after.contradicted));
-        assert_eq!(st["issues"][0]["entries"].as_array().unwrap().iter().filter(|e| e["kind"] == "proposal").map(|e| e["state"].clone()).collect::<Vec<_>>(), vec![json!("applied")]);
+        assert_eq!(st["issues"][0]["entries"].as_array().unwrap().iter().filter(|e| e["kind"] == "proposal").map(|e| e["state"].clone()).collect::<Vec<_>>(), vec![json!("applied"), json!("open")]);
         assert_eq!(st["participants"][0]["name"], "Steven");
         let log = std::process::Command::new("git").arg("-C").arg(&root).args(["log", "--format=%an/%cn: %s"]).output().unwrap();
         let log = String::from_utf8_lossy(&log.stdout).into_owned();
@@ -290,6 +309,17 @@ mod tests {
         // Nothing is left uncommitted.
         let dirty = std::process::Command::new("git").arg("-C").arg(&root).args(["status", "--porcelain"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&dirty.stdout), "");
+        // Applied, it says so, and shows what reverting it would do: the north wall back where it was.
+        let d = ws.members_json(Some(commit)).unwrap();
+        assert_eq!((d["offer"]["action"].as_str(), d["offer"]["enabled"].as_bool(), d["offer"]["after"].as_str()), (Some("revert"), Some(true), Some("If reverted")), "{}", d["offer"]);
+        assert!(d["offer"]["label"].as_str().unwrap().starts_with("applied by Steven"), "{}", d["offer"]);
+        assert!(d["changes"].as_object().unwrap().iter().any(|(k, v)| k.contains("North wall") && v == "moved"), "{}", d["changes"]);
+        assert_eq!(d["tally"]["after"]["contradicted"], json!(before.contradicted));
+        // The other proposal changed the same line: it is out of date now, shown as it was proposed, and cannot be applied.
+        let d = ws.members_json(Some(&other)).unwrap();
+        assert_eq!((d["offer"]["action"].as_str(), d["offer"]["enabled"].as_bool(), d["offer"]["as_proposed"].as_bool()), (Some("apply"), Some(false), Some(true)), "{}", d["offer"]);
+        assert!(d["offer"]["note"].as_str().unwrap().contains("shed.ts"), "{}", d["offer"]);
+        assert!(ws.call("p1", "proposal", &json!({"issue": 1, "n": 2, "action": "apply"})).is_err());
 
         // And reverted, it is as it was.
         ws.call("p1", "proposal", &json!({"issue": 1, "n": 1, "action": "revert"})).unwrap();

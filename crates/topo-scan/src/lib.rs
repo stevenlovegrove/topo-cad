@@ -23,6 +23,7 @@ pub mod fit;
 pub mod git;
 pub mod issues;
 pub mod mcp;
+pub mod offer;
 pub mod ply;
 pub mod rays;
 pub mod render;

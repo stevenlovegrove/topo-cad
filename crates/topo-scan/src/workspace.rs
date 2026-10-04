@@ -195,6 +195,16 @@ pub struct Evaluated {
     pub ev: Vec<Evidence>,
 }
 
+/// What a proposal would do now: what it offers, and the model on each side of it.
+pub struct Effect {
+    pub issue: u32,
+    pub n: u32,
+    pub offer: crate::offer::Offer,
+    /// The model before: none for the model as it is now.
+    pub before: Option<Arc<Evaluated>>,
+    pub after: Arc<Evaluated>,
+}
+
 pub struct Workspace {
     pub repo: Repo,
     /// The model's entry file, relative to the repository's root.
@@ -215,6 +225,8 @@ pub struct Workspace {
     ev: Option<((u64, [u32; 4]), Vec<Evidence>)>,
     pub(crate) sel_cache: HashMap<String, Arc<Vec<u32>>>,
     proposals: HashMap<String, Arc<Evaluated>>,
+    /// What each proposal would do to the model as it is (by its commit; for the model's revision it was worked out at).
+    effects: HashMap<String, (u64, Arc<Effect>)>,
     pub store: Store,
     pub items: Items,
     pub presence: HashMap<String, Presence>,
@@ -286,7 +298,7 @@ impl Workspace {
         }
         let placement = items.placement.map(Into::into);
         let chat = repo.git_dir().map(|d| crate::chat::Chat::open(d.join("topo-chat.json"))).unwrap_or_default();
-        let mut w = Workspace { chat, repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, trial: None, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
+        let mut w = Workspace { chat, repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, trial: None, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), effects: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
         if changed {
             w.save_items("topo-cad")?;
         }
@@ -696,6 +708,77 @@ impl Workspace {
         Ok(e)
     }
 
+    /// What a proposal (by its commit) would do to the model as it is now: applying an open one,
+    /// or reverting an applied one, tried on the files as they are (`Repo::trial`) and evaluated.
+    /// Where that cannot be done (see `offer`), the proposal as it was made: the files then.
+    pub fn effect(&mut self, commit: &str) -> Result<Arc<Effect>> {
+        if let Some((rev, e)) = self.effects.get(commit) {
+            if *rev == self.model_rev {
+                return Ok(e.clone());
+            }
+        }
+        let (issue, n, state, applied_as) = (self.store.issues.iter())
+            .find_map(|i| {
+                i.entries.iter().find_map(|e| match &e.body {
+                    Body::Proposal { n, commit: c, state, applied_as, .. } if c == commit => Some((i.id, *n, state.clone(), applied_as.clone())),
+                    _ => None,
+                })
+            })
+            .with_context(|| format!("no proposal is the commit {commit}"))?;
+        // The change to try: an open one, from its parent to it; an applied one, back from what it became.
+        let change = match (state.as_str(), &applied_as) {
+            ("open", _) => Some((format!("{commit}^"), commit.to_string())),
+            ("applied", Some(a)) => Some((a.clone(), format!("{a}^"))),
+            _ => None,
+        };
+        let mut after = None;
+        let outcome = match &change {
+            None => None,
+            Some((base, theirs)) => Some(match self.repo.trial(base, theirs)? {
+                crate::git::Trial::Conflict(files) => crate::offer::Outcome::Conflict(files),
+                crate::git::Trial::Clean { files, moved } => {
+                    let overlay: HashMap<String, String> = files.iter().map(|(p, t)| (self.repo.root.join(p).display().to_string(), t.clone())).collect();
+                    match self.evaluate(&overlay) {
+                        Ok(e) => {
+                            after = Some(Arc::new(e));
+                            crate::offer::Outcome::Clean { moved, empty: files.is_empty() }
+                        }
+                        Err(e) => crate::offer::Outcome::Broken(format!("{e:#}").lines().next().unwrap_or("").to_string()),
+                    }
+                }
+            }),
+        };
+        let who = applied_as.as_deref().filter(|_| state == "applied").and_then(|a| self.repo.committed(a));
+        let offer = crate::offer::offer(&state, outcome.as_ref(), who.as_ref().map(|(w, t)| (w.as_str(), t.as_str())));
+        let mut offer = offer;
+        let (before, after) = match after.filter(|_| !offer.as_proposed) {
+            Some(a) => (None, a),
+            // As it was proposed: the files at its parent, and at it. (If that no longer evaluates,
+            // nothing is shown: the model as it is, on both sides.)
+            None => match self.proposal_evaluated(commit) {
+                Ok(a) => (self.at_commit(&format!("{commit}^"), commit).ok().map(Arc::new), a),
+                Err(e) => {
+                    offer = offer.unshown(format!("{e:#}").lines().next().unwrap_or(""));
+                    (None, Arc::new(self.evaluate(&HashMap::new())?))
+                }
+            },
+        };
+        let e = Arc::new(Effect { issue, n, offer, before, after });
+        self.effects.insert(commit.to_string(), (self.model_rev, e.clone()));
+        Ok(e)
+    }
+
+    /// The model with the files a proposal touches as they are at `rev`.
+    fn at_commit(&mut self, rev: &str, proposal: &str) -> Result<Evaluated> {
+        let mut files = HashMap::new();
+        for rel in self.repo.stat(proposal)?.files {
+            if let Some(t) = self.repo.file_at(rev, &rel) {
+                files.insert(self.repo.root.join(&rel).display().to_string(), t);
+            }
+        }
+        self.evaluate(&files)
+    }
+
     fn find_proposal(&self, issue: u32, n: u32) -> Result<(usize, String, String, Option<String>)> {
         let i = self.store.get(issue)?;
         i.entries.iter().enumerate().find_map(|(k, e)| match &e.body {
@@ -712,7 +795,13 @@ impl Workspace {
         if let Some(p) = args.get("proposal").filter(|p| p.is_object()) {
             let (issue, n) = (p["issue"].as_u64().context("proposal.issue")? as u32, p["n"].as_u64().context("proposal.n")? as u32);
             let (_, commit, state, _) = self.find_proposal(issue, n)?;
-            return Ok(Some((self.proposal_evaluated(&commit)?, format!("as proposal {n} of #{issue} ({state}) has it"))));
+            // (An open one that still applies: on the model as it is now. Else as it was proposed.)
+            let e = self.effect(&commit)?;
+            if state == "open" && !e.offer.as_proposed {
+                return Ok(Some((e.after.clone(), format!("as proposal {n} of #{issue} would have it, on the model as it is now"))));
+            }
+            let why = if e.offer.note.is_empty() { String::new() } else { format!(": {}", e.offer.note) };
+            return Ok(Some((self.proposal_evaluated(&commit)?, format!("as proposal {n} of #{issue} ({state}) had it when it was proposed{why}"))));
         }
         if args.get("edits").is_some() || args.get("files").is_some() {
             let texts = self.texts_from(args)?;

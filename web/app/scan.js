@@ -342,7 +342,7 @@ function followLink(link) {
   if (link.proposal) {
     const i = st.issues.find((x) => x.id === link.proposal.issue);
     const p = i?.entries.find((e) => e.kind === "proposal" && e.n === link.proposal.n);
-    if (p) selectProposal({ issue: i.id, n: p.n, commit: p.commit, mode: link.proposal.mode || "changed" }, true);
+    if (p) selectProposal({ issue: i.id, n: p.n, commit: p.commit, mode: link.proposal.mode || "changed" });
   }
   renderLayers(); rebuildMarks();
 }
@@ -471,7 +471,7 @@ async function loadMembers() {
       for (const v of Object.values(views)) if (!v.slab) v.set({ target: toScan(b.centre), dist: b.radius * 2.6, half: b.radius * 1.1 }, true);
     }
   }
-  if (sel.proposal) await loadDiff();
+  if (sel.proposal) { await loadDiff(); renderDiffBars(); }
   freshPlaces();
   rebuildModel(); rebuildMarks();
   // (The tree was drawn before they came, if the state came first.)
@@ -1462,17 +1462,55 @@ function placeDiffbar(v) {
   if (!v.diffbar.hidden) v.diffbar.style.top = `${v.tools.offsetTop + v.tools.offsetHeight + 8}px`;
 }
 
+/** The entry of a proposal in its issue's thread (the service's state has it). */
+const proposalEntry = (p) => st?.issues.find((i) => i.id === p.issue)?.entries.find((e) => e.kind === "proposal" && e.n === p.n) ?? null;
+
+/// The strip in each view for the proposal shown: which it is (click: its card in the thread), what the
+/// service says it offers now (`offer`: its state, what the two sides are, what can be done), the sides to
+/// look at, and the action itself: so what is seen can be kept, or taken back, where it is seen.
 function renderDiffBars() {
   for (const v of Object.values(views)) {
     const p = sel.proposal;
     v.diffbar.hidden = !p;
     if (!p) continue;
-    const n = diff ? Object.keys(diff.changes).length : 0;
-    v.diffbar.innerHTML = `<span>#${p.issue} proposal ${p.n}${diff ? ` · ${n} member${n === 1 ? "" : "s"} change` : " · loading"}</span>` +
-      ["before", "after", "changed", "both"].map((m) => `<button data-m="${m}" class="${m === p.mode ? "on" : ""}">${m[0].toUpperCase() + m.slice(1)}</button>`).join("") + `<button data-m="">×</button>`;
-    for (const b of v.diffbar.querySelectorAll("button")) b.onclick = () => (b.dataset.m ? selectProposal({ ...p, mode: b.dataset.m }) : selectProposal(null));
+    const e = proposalEntry(p), o = diff?.offer, n = diff ? Object.keys(diff.changes).length : 0;
+    const names = { before: o?.before ?? "Before", after: o?.after ?? "After", changed: "Changed", both: "Both" };
+    const sure = sel.sure?.commit === p.commit && Date.now() < sel.sure.until;
+    const act = !o?.action ? "" : o.action === "apply"
+      ? `<button data-act="apply" class="go" ${o.enabled ? "" : "disabled"} title="${esc(o.enabled ? "Apply it to the model's files" : o.note)}">${sure ? "Apply to the files?" : "Apply"}</button>${o.state === "open" ? `<button data-act="reject" title="Reject it (nothing changes)">Reject</button>` : ""}`
+      : `<button data-act="revert" class="go" ${o.enabled ? "" : "disabled"} title="${esc(o.enabled ? "Undo it in the model's files" : o.note)}">${sure ? "Revert in the files?" : "Revert"}</button>`;
+    v.diffbar.innerHTML =
+      `<a href="#" class="pname" title="${esc(e?.title ?? "")} — show it in the thread">#${p.issue} proposal ${p.n}</a>` +
+      `<span class="pstate ${esc(o?.state ?? "")}">${!diff ? "loading" : esc(o?.label || o?.state || "")}</span>` +
+      (diff ? `<span class="muted">${n} member${n === 1 ? "" : "s"} ${o?.action === "revert" && !o.as_proposed ? "would change back" : "change"}</span>` : "") +
+      ["before", "after", "changed", "both"].map((m) => `<button data-m="${m}" class="${m === p.mode ? "on" : ""}">${esc(names[m])}</button>`).join("") + act + `<button data-m="">×</button>` +
+      (o?.note ? `<div class="pnote">${esc(o.note)}</div>` : "");
+    for (const b of v.diffbar.querySelectorAll("button[data-m]")) b.onclick = () => (b.dataset.m ? selectProposal({ ...p, mode: b.dataset.m }) : selectProposal(null));
+    for (const b of v.diffbar.querySelectorAll("button[data-act]")) b.onclick = () => actOnProposal(p, b.dataset.act);
+    v.diffbar.querySelector(".pname").onclick = async (ev) => {
+      ev.preventDefault();
+      await openIssue(p.issue);
+      $(`prop-${p.issue}-${p.n}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    };
     placeDiffbar(v);
   }
+}
+
+/// Applies, rejects or reverts a proposal (from its card or from a view's strip). Applying and reverting
+/// change the model's files: asked twice, in place. It stays shown: its strip then says what it has become.
+async function actOnProposal(p, action) {
+  if (action !== "reject" && !(sel.sure?.commit === p.commit && Date.now() < sel.sure.until)) {
+    sel.sure = { commit: p.commit, until: Date.now() + 5000 };
+    setTimeout(() => { renderIssues(); renderDiffBars(); }, 5100);
+    renderIssues(); renderDiffBars();
+    return;
+  }
+  sel.sure = null;
+  const r = await service.call("proposal", { issue: p.issue, n: p.n, action });
+  if (r.error) { alert(r.error); renderIssues(); renderDiffBars(); return; }
+  // (What it offers has changed: asked for again.)
+  if (sel.proposal?.commit === p.commit) { diff = null; renderDiffBars(); await loadDiff(); renderDiffBars(); rebuildModel(); }
+  renderIssues();
 }
 
 async function selectProposal(p, quiet) {
@@ -1962,18 +2000,18 @@ function objectRefs(text) {
 
 function entryHtml(issue, e, k) {
   const who = `${badge(e.who, true)} <b>${esc(service.participant(e.who).name)}</b> <span class="muted">${when(e.time)}</span>`;
-  if (e.kind === "comment") return `<div class="entry comment">${who}<div class="text">${refs(e.text, issue)}</div>${e.view ? `<button class="viewlink" data-view="${k}" title="Show this in a pane (Back returns to your view)">Show: ${esc(e.view_label || "view")}</button>` : ""}</div>`;
+  if (e.kind === "comment") return `<div class="entry comment">${who}<div class="text">${refs(e.text, issue)}</div>${e.view ? `<button class="viewlink" data-view="${k}" title="Show this in a pane (Back returns to your view)">Show: ${esc(e.view_label || "view")}${(() => { const q = e.view.proposal && issue.entries.find((x) => x.kind === "proposal" && x.n === e.view.proposal.n && (e.view.proposal.issue ?? issue.id) === issue.id); return q ? ` · proposal ${q.n} (${esc(q.state)})` : ""; })()}</button>` : ""}</div>`;
   if (e.kind === "tool") return `<div class="entry tool">${badge(e.who, true)} ran <code>${esc(e.name)}</code> <span class="muted">${esc(e.summary)}</span></div>`;
   if (e.kind === "change") return `<div class="entry tool">${badge(e.who, true)} <span class="muted">${esc(e.what)} · ${when(e.time)}</span></div>`;
   if (e.kind === "evidence") return `<div class="entry card">${who}<div class="k">Evidence</div><b>${esc(e.title)}</b><div class="text">${refs(e.text, issue)}</div></div>`;
   if (e.kind === "proposal") {
     const on = sel.proposal?.commit === e.commit;
     const d = (a, b) => (a === b ? `${a}` : `${a} → <b>${b}</b>`);
-    return `<div class="entry card proposal ${e.state}${on ? " on" : ""}">${who}
+    return `<div class="entry card proposal ${e.state}${on ? " on" : ""}" id="prop-${issue.id}-${e.n}">${who}
       <div class="k">Proposal ${e.n} · ${e.state}</div><b>${esc(e.title)}</b>
       <div class="muted">${e.files.map(esc).join(", ")} <span class="add">+${e.added}</span> <span class="del">−${e.removed}</span>${e.members_added.length || e.members_removed.length ? ` · members +${e.members_added.length} −${e.members_removed.length}` : ""}</div>
       <div class="tally">supported ${d(e.before.supported, e.after.supported)} · contradicted ${d(e.before.contradicted, e.after.contradicted)} · unseen ${d(e.before.unseen, e.after.unseen)}</div>
-      <div class="row"><button data-p="${e.n}" data-a="show">${on ? "Hide" : "Show in views"}</button><button data-p="${e.n}" data-a="diff">Text diff</button>${e.state === "open" ? `<button data-p="${e.n}" data-a="apply" class="go">${sel.sure?.commit === e.commit && Date.now() < sel.sure.until ? "Apply to the files?" : "Apply"}</button><button data-p="${e.n}" data-a="reject">Reject</button>` : e.state === "applied" ? `<button data-p="${e.n}" data-a="revert">Revert</button>` : ""}</div>
+      <div class="row"><button data-p="${e.n}" data-a="show">${on ? "Hide" : "Show in views"}</button><button data-p="${e.n}" data-a="diff">Text diff</button>${e.state === "open" ? `<button data-p="${e.n}" data-a="apply" class="go">${sel.sure?.commit === e.commit && Date.now() < sel.sure.until ? "Apply to the files?" : "Apply"}</button><button data-p="${e.n}" data-a="reject">Reject</button>` : e.state === "applied" ? `<button data-p="${e.n}" data-a="revert">${sel.sure?.commit === e.commit && Date.now() < sel.sure.until ? "Revert in the files?" : "Revert"}</button>` : ""}</div>
       <pre class="difftext" id="diff-${issue.id}-${e.n}" hidden></pre></div>`;
   }
   return "";
@@ -2051,17 +2089,7 @@ function renderThread(box, i) {
       if (!pre.hidden && !pre.innerHTML) pre.innerHTML = diffHtml((await service.call("proposal", { issue: i.id, n: p.n, action: "diff" })).text);
       return;
     }
-    // Applying changes the model's files: asked twice, in place.
-    if (a === "apply" && !(sel.sure?.commit === p.commit && Date.now() < sel.sure.until)) {
-      sel.sure = { commit: p.commit, until: Date.now() + 5000 };
-      setTimeout(renderIssues, 5100);
-      return renderIssues();
-    }
-    sel.sure = null;
-    b.disabled = true;
-    const r = await service.call("proposal", { issue: i.id, n: p.n, action: a });
-    if (r.error) alert(r.error);
-    else if (sel.proposal?.commit === p.commit) selectProposal(null);
+    return actOnProposal({ issue: i.id, n: p.n, commit: p.commit }, a);
   };
   // Something new in the thread: show it.
   const seen = `${i.id}:${i.entries.length}`;
@@ -2125,6 +2153,8 @@ function onState(s) {
   const cloudKey = `${s.scan.min_range}|${s.cloud}|${(s.selections || []).filter((x) => x.ignored).map((x) => x.id).join()}`;
   if (s.cloud && cloudLoaded !== cloudKey) loadCloud(cloudKey);
   loadMembers();
+  // (The proposal shown was applied, rejected or reverted by someone: what it offers is asked for again.)
+  if (sel.proposal && diff?.offer && proposalEntry(sel.proposal) && proposalEntry(sel.proposal).state !== diff.offer.state) loadDiff().then(() => { renderDiffBars(); rebuildModel(); });
   freshPlaces();
   app.setStatus(s.loading ? `scan: ${s.loading}…` : !service.connected ? "the workspace service is not answering" : null);
   if (sel.issue != null && !s.issues.some((i) => i.id === sel.issue)) sel.issue = null;
