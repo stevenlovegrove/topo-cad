@@ -408,6 +408,51 @@ fn the_primitives_examples_show_what_they_say() {
 }
 
 #[test]
+fn a_floor_sits_on_the_walls_under_it() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let src = include_str!("../../../examples/primitives/11-a-floor-on-walls.ts");
+    let m = run(src, "11-a-floor-on-walls.ts").unwrap();
+    all_clean(&m);
+    let group = |name: &str| m.groups.iter().find(|g| g.name == name).unwrap();
+    let of = |role: &str| -> Vec<&topo_core::Member> { group("Floor").members.iter().map(|&id| m.member(id)).filter(|x| x.role == role).collect() };
+    // Two rims, a band joist at each side, and commons at 16" between them (12 ft: 8 of them).
+    assert_eq!((of("rim_joist").len(), of("band_joist").len(), of("joist").len()), (2, 2, 8));
+    // It was drawn at zero and is free: it sits on the walls, the underside of its joists at their top.
+    for j in of("joist").iter().chain(&of("band_joist")).chain(&of("rim_joist")) {
+        for n in &j.path {
+            assert!((m.pos(*n).z - ft(8.0)).abs() < 1e-6, "{} {:?}", j.role, m.pos(*n));
+        }
+    }
+    // Where it was drawn on plan, it stays: the joists run front to back, the first common 16" from the right wall.
+    let first = of("joist")[0];
+    let (a, b) = (m.pos(first.start()), m.pos(first.end()));
+    // (Between the middles of the rims, each 3/4" in from the walls' lines.)
+    assert!((a.x - (ft(12.0) - inch(16.0))).abs() < 1e-6 && (a.y - inch(0.75)).abs() < 1e-6 && (b.y - (ft(10.0) - inch(0.75))).abs() < 1e-6 && (a.x - b.x).abs() < 1e-6, "{a:?} {b:?}");
+    // Each common joist bears on the front and back walls' cap plates: a bearing point on both.
+    let bearing = m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.name.starts_with("Floor/joist#") && c.name.ends_with(": on both")).count();
+    assert_eq!(bearing, 16, "{:#?}", m.solves.iter().flat_map(|s| &s.constraints).map(|c| &c.name).filter(|n| n.starts_with("Floor/")).collect::<Vec<_>>());
+    // Its loads are on its joists: 40 psf live at 16" on each common, half that on each band joist.
+    let live = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Live).unwrap().id;
+    let w = |id: topo_core::MemberId| m.loads.iter().find_map(|l| match l { topo_core::Load::MemberUniform { case, member, w, .. } if *case == live && *member == id => Some(-w.z), _ => None }).unwrap();
+    let psf40 = 40.0 * 47.880259;
+    assert!((w(first.id) - psf40 * inch(16.0)).abs() < 1e-6 && (w(of("band_joist")[0].id) - psf40 * inch(8.0)).abs() < 1e-6);
+    // The back wall surveyed half an inch taller (both its ends): the side walls' tops slope up to it, and the
+    // floor sits on them as they are, tilted.
+    let back = |end: &str| format!("survey(walls.node(\"Back/cap_plate\", \"{end}\"), {{ z: ft(8) + inch(0.5) }})");
+    let taller = src.replace("Building, DFL,", "Building, DFL, survey,").replace(".add(walls, floor)", &format!(".add(walls, floor, {}, {})", back("start"), back("end")));
+    let t = run(&taller, "taller.ts").unwrap();
+    let group = t.groups.iter().find(|g| g.name == "Floor").unwrap();
+    let first = group.members.iter().map(|&id| t.member(id)).find(|x| x.role == "joist").unwrap();
+    let (a, b) = (t.pos(first.start()), t.pos(first.end()));
+    assert!(a.z - ft(8.0) < inch(0.05) && b.z > ft(8.0) + inch(0.45), "{a:?} {b:?}");
+    // It is one rigid thing: on walls whose tops are not in one plane (the back wall taller at one end only) it
+    // cannot sit, and that is said, with how far each joist is off, not built wrong.
+    let warped = src.replace("Building, DFL,", "Building, DFL, survey,").replace(".add(walls, floor)", &format!(".add(walls, floor, {})", back("start")));
+    let e = run(&warped, "warped.ts").unwrap_err().to_string();
+    assert!(e.contains("does not rest on"), "{e}");
+}
+
+#[test]
 fn walls_stand_on_a_slab_and_a_curb() {
     let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);
     let src = include_str!("../../../examples/primitives/10-walls-on-a-slab-and-a-curb.ts");

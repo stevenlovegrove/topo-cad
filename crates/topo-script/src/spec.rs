@@ -288,6 +288,10 @@ pub struct AssemblySpec {
     /// Free: its placement is only where it starts; relations place it.
     #[serde(default)]
     pub free: bool,
+    /// Free, but on plan where it is drawn unless anything says otherwise (a fallback): a floor,
+    /// whose height is that of what it sits on.
+    #[serde(default)]
+    pub on_plan: bool,
 }
 
 /// A frame with points in it.
@@ -1192,6 +1196,11 @@ impl Builder {
             }
             points.insert(p.name.clone(), sc.node(&format!("{}/{}", a.name, p.name), body, v3(p.at[0], p.at[1], p.at[2]))?);
         }
+        if a.free && a.on_plan {
+            if let Some(p) = a.points.first() {
+                sc.stays_on_plan(&format!("{} where it is drawn on plan", a.name), points[&p.name], f.to_world(v3(p.at[0], p.at[1], p.at[2])));
+            }
+        }
         let mut members = vec![];
         for (i, mm) in a.members.iter().enumerate() {
             let path: Vec<scene::NodeRef> = mm.path.iter().map(|n| points.get(n).copied().ok_or(format!("assembly {}: member {i} uses unknown point {n}", a.name))).collect::<Result<_, _>>()?;
@@ -1347,7 +1356,10 @@ fn crosses_on_plan(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
         return false;
     }
     let (s, t) = ((w.x * d2.y - w.y * d2.x) / den, (w.x * d1.y - w.y * d1.x) / den);
-    (-1e-9..=1.0 + 1e-9).contains(&s) && (-1e-9..=1.0 + 1e-9).contains(&t)
+    // (The first may end an inch short of the other's line: a joist that runs to a wall's line bears on its
+    // plate, wherever the solve has since put the wall.)
+    let short = 0.025 / Vec2::new(d1.x, d1.y).norm().max(1e-9);
+    (-short..=1.0 + short).contains(&s) && (-1e-9..=1.0 + 1e-9).contains(&t)
 }
 
 /// Expands a scene spec into a model. Each building is built in its own

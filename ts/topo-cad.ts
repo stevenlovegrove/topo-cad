@@ -1359,6 +1359,103 @@ export class Assembly {
   }
 }
 
+// ----- floors ---------------------------------------------------------------
+
+/**
+ * A floor platform: rim joists across the ends of the joists, a band joist
+ * along each side, and common joists between them at a spacing. Its
+ * rectangle is given on plan; its height is not: it sits on what it bears on
+ * (`bearingOn`), each joist resting on each wall plate it crosses, as trusses
+ * sit on what is under them.
+ *
+ *   const floor = Floor.of({ joists: [2, 10], grade: DFL.No2 }).named("Floor")
+ *     .from([0, 0], { along: [0, 1], length: ft(10), width: -ft(12) })
+ *     .bearingOn(walls)
+ *     .load("dead", psf(10)).load("live", psf(40));
+ *
+ * It is an assembly (`floor.assembly()`): its members are `rim_joist`,
+ * `band_joist` and `joist`, and its corners are points of it
+ * (`floor.node("corner 1")`: where the middle of a rim meets the middle of a
+ * band joist, at their underside; in the order start, along, along + across,
+ * across). On plan it stays where it is drawn unless something moves it.
+ */
+export class Floor {
+  private constructor(
+    readonly name: string,
+    readonly framing: { readonly joists: Nominal; readonly spacing: Length; readonly grade: Grade },
+    readonly rect: { readonly corner: Point; readonly along: Point; readonly length: Length; readonly width: Length; readonly z: Length } | undefined,
+    readonly bearsOn: readonly Perimeter[],
+    readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
+  ) {}
+  static of(o: { joists: Nominal; grade: Grade; spacing?: Length }): Floor {
+    return new Floor("Floor", { joists: o.joists, spacing: o.spacing ?? inch(16), grade: o.grade }, undefined, [], []);
+  }
+  named(name: string): Floor {
+    return new Floor(name, this.framing, this.rect, this.bearsOn, this.loads);
+  }
+  /**
+   * Its rectangle on plan: from `corner`, the joists run `along` (a
+   * direction) for `length`, out to out of the rims; the joists are laid out
+   * from the corner across them for `width`, to the left of `along` (a
+   * negative width: to the right). `z` is only where the solve starts (the
+   * underside of the joists): it sits on what it bears on.
+   */
+  from(corner: Point, o: { along: Point; length: Length; width: Length; z?: Length }): Floor {
+    if (!(o.length > 0) || o.width === 0 || !(Math.hypot(o.along[0], o.along[1]) > 0)) throw new Error(`floor ${this.name}: give a direction, a length and a width`);
+    return new Floor(this.name, this.framing, { corner, along: o.along, length: o.length, width: o.width, z: o.z ?? 0 }, this.bearsOn, this.loads);
+  }
+  /** What it sits on: each joist rests on each cap plate of these perimeters that it crosses on plan. */
+  bearingOn(...ps: Perimeter[]): Floor {
+    return new Floor(this.name, this.framing, this.rect, [...this.bearsOn, ...ps], this.loads);
+  }
+  /** A load over its area (N/m², use `psf`), carried by the joists: each takes what is nearest it. */
+  load(kind: LoadKind, pressure: number): Floor {
+    return new Floor(this.name, this.framing, this.rect, this.bearsOn, [...this.loads, { kind, pressure }]);
+  }
+  /** One of its corners (1 to 4: start, along, along + across, across), as a node, at the underside of the joists. */
+  node(point: "corner 1" | "corner 2" | "corner 3" | "corner 4"): NodeHandle {
+    return new NodeHandle(`${this.name}/${point}`);
+  }
+  /** What it is made of: a free assembly, sat on what it bears on. */
+  assembly(): Assembly {
+    const r = this.rect;
+    if (!r) throw new Error(`floor ${this.name}: give its rectangle with from(corner, { along, length, width })`);
+    const n = Math.hypot(r.along[0], r.along[1]);
+    const x: Point = [r.along[0] / n, r.along[1] / n];
+    const side = Math.sign(r.width);
+    const y: Point = [-x[1] * side, x[0] * side];
+    const [len, wid] = [r.length, Math.abs(r.width)];
+    const at = (a: Length, b: Length): Point3 => [r.corner[0] + x[0] * a + y[0] * b, r.corner[1] + x[1] * a + y[1] * b, r.z];
+    const { joists: size, spacing, grade } = this.framing;
+    const b = dressed(size[0]);
+    // Across the joists: a band joist at each side, commons between them at the spacing (from the outside of the
+    // first band joist). Each member's axis is along the middle of its underside: a rim's and a band joist's half a
+    // thickness inside the rectangle, so the rims run its whole width and everything else butts into them.
+    const ys: Length[] = [b / 2];
+    for (let k = 1; k * spacing < wid - 1.5 * b; k++) ys.push(k * spacing);
+    ys.push(wid - b / 2);
+    const [x0, x1] = [b / 2, len - b / 2];
+    let a = Assembly.named(this.name).point("corner 1", at(x0, ys[0])).point("corner 2", at(x1, ys[0])).point("corner 3", at(x1, wid - b / 2)).point("corner 4", at(x0, wid - b / 2));
+    const ends = (k: number, end: 0 | 1): string => (k === 0 ? (end ? "corner 2" : "corner 1") : k === ys.length - 1 ? (end ? "corner 3" : "corner 4") : `joist ${k} ${end ? "end" : "start"}`);
+    for (let k = 1; k < ys.length - 1; k++) a = a.point(ends(k, 0), at(x0, ys[k])).point(ends(k, 1), at(x1, ys[k]));
+    const rim = (end: 0 | 1) => ys.map((_, k) => ends(k, end));
+    a = a.member("rim_joist", rim(0), { size, grade, anchor: [0, -0.5], priority: 20 });
+    a = a.member("rim_joist", rim(1), { size, grade, anchor: [0, -0.5], priority: 20 });
+    for (let k = 0; k < ys.length; k++) {
+      const band = k === 0 || k === ys.length - 1;
+      a = a.member(band ? "band_joist" : "joist", [ends(k, 0), ends(k, 1)], { size, grade, anchor: [0, -0.5], priority: 10 });
+    }
+    for (const l of this.loads) {
+      a = a.lineLoad(l.kind, "joist", l.pressure * spacing).lineLoad(l.kind, "band_joist", (l.pressure * spacing) / 2);
+    }
+    return a.free().bearingOn(...this.bearsOn);
+  }
+  toJSON() {
+    // (Free, and sat on what it bears on; on plan, where it is drawn, as a fallback.)
+    return { ...this.assembly().toJSON(), on_plan: true };
+  }
+}
+
 /** Anything that can be moved and renamed. */
 export interface Placeable<T> {
   moved(d: Point3): T;
@@ -1755,7 +1852,7 @@ export class Frame {
   }
 }
 
-export type Item = Perimeter | Slab | TrussRoof | Assembly | Frame | Relation;
+export type Item = Perimeter | Slab | Floor | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of

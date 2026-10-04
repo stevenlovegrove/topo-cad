@@ -299,6 +299,17 @@ impl Scene {
         }
     }
 
+    /// A node stays over `at` on plan (its x and y), as a fallback: unless anything else, even a
+    /// hint, says otherwise. (What is free and only sat on something is held on plan by this.)
+    pub fn stays_on_plan(&mut self, name: &str, n: NodeRef, at: Vec3) {
+        let p = self.sys.at(self.nodes[n.0].of[0]);
+        for (k, which) in ["x", "y"].into_iter().enumerate() {
+            let mut axis = [0.0; 3];
+            axis[k] = 1.0;
+            self.sys.constrain(&format!("{name}: {which}"), ts::Tier::Fallback, ts::Kind::offset(ts::Point::at(ts::WORLD, [0.0; 3]), p.clone(), ts::Dir(ts::WORLD, axis), [at.x, at.y][k]));
+        }
+    }
+
     /// A number of a body (a parameter of what is made in it), starting at `value`.
     pub fn number(&mut self, name: &str, body: BodyRef, value: f64) -> ScalarId {
         let s = self.sys.scalar(self.bodies[body.0].frame, name, value);

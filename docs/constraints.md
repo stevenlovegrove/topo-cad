@@ -422,6 +422,23 @@ not a number; a slab's top is level; a free perimeter's curbs do not move
 with it; and floors, stem walls, footings and piers are not generated.
 (`examples/primitives/10-walls-on-a-slab-and-a-curb.ts`.)
 
+**A floor sits on what is under it.** A `Floor` is given its rectangle on
+plan (a corner, the way its joists run, a length and a width) and its
+framing; its height is not given. It is a free assembly (rims across the
+joists' ends, a band joist along each side, commons between at the
+spacing: `Floor.assembly()`), and `bearingOn(walls)` rests each of its
+members on each cap plate it crosses on plan (one that ends within an inch
+of a plate's line it runs toward bears on it), so the solve sits it on the
+walls as they are, tilted if they are. On plan it stays where it is drawn,
+as a fallback (`Scene::stays_on_plan`, on its first corner; its turn is
+the hint any free body has), so a relation to one of its corners moves it.
+Its loads are per area, shared to the joists by their spacing. *Known
+limitation:* it is one rigid body, so on plates that are not in one plane
+it cannot sit, and is refused (with how far each joist is off): joists
+that each sit for themselves, as trusses do, are not done. *Not yet:* a
+deck on it, openings in it, beams and posts under it, and walls standing
+on it. (`examples/primitives/11-a-floor-on-walls.ts`.)
+
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
 posts (from a corner of the wall, in the corners' numbers; or from the face
@@ -491,6 +508,8 @@ is narrower than they are wide: no backing is framed for them yet.
 10. **Walls on a slab and a curb**: three walls on a curb, one on the slab
     itself (a step at both its ends), and a reading of the slab's top that
     moves everything standing on it.
+11. **A floor on walls**: a floor platform given on plan only, sat by the
+    solve on the walls under it.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:
