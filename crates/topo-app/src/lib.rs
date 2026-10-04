@@ -438,6 +438,11 @@ fn mesh(b: &Built) -> Value {
             let faces: Vec<Vec<[f64; 3]>> = g.faces().iter().map(|f| f.outer.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
             json!({ "path": b.model.member_path(m.id), "label": short(&b.model, m.id), "role": m.role, "faces": faces })
         })
+        // (And what the framing stands on, slabs and curbs, after the members: drawn as they are.)
+        .chain(b.model.solids.iter().map(|s| {
+            let faces: Vec<Vec<[f64; 3]>> = s.faces().iter().map(|f| f.outer.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
+            json!({ "path": b.model.solid_path(s), "label": s.name, "role": s.role, "faces": faces })
+        }))
         .collect();
     let v3 = |p: topo_core::Vec3| [r(p.x), r(p.y), r(p.z)];
     let surfaces: Vec<Value> = b

@@ -521,6 +521,9 @@ pub struct Model {
     /// Sheathing and finish build-ups over framing groups.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub surfaces: Vec<crate::surfaces::Surface>,
+    /// What the framing stands on: slabs, curbs (see `solids`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solids: Vec<crate::solids::Solid>,
     /// The drawing set, in sheet order; `None` for the standard set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheets: Option<Vec<crate::sheets::SheetSpec>>,
@@ -1076,6 +1079,18 @@ impl Model {
         });
         let mut parts = vec![local];
         let mut g = m.group;
+        while let Some(id) = g {
+            parts.push(self.groups[id.idx()].name.clone());
+            g = self.groups[id.idx()].parent;
+        }
+        parts.reverse();
+        parts.join("/")
+    }
+
+    /// Full path of a solid: its group chain then its name (`Garage/Walls/East wall/curb`).
+    pub fn solid_path(&self, s: &crate::solids::Solid) -> String {
+        let mut parts = vec![s.name.clone()];
+        let mut g = s.group;
         while let Some(id) = g {
             parts.push(self.groups[id.idx()].name.clone());
             g = self.groups[id.idx()].parent;

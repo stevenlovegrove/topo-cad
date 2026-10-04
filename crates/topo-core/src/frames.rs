@@ -164,6 +164,15 @@ impl Model {
         for m in &mut self.members {
             m.depth_dir = m.depth_dir.map(|d| f.dir_to_world(d));
         }
+        // (A building is placed upright: a solid's outline turns on plan, and it rises with the frame.)
+        for x in &mut self.solids {
+            for p in &mut x.outline {
+                let w = f.to_world(crate::math::Vec3::new(p.x, p.y, 0.0));
+                *p = crate::math::Vec2::new(w.x, w.y);
+            }
+            x.bottom += f.origin.z;
+            x.top += f.origin.z;
+        }
         for s in &mut self.solves {
             for n in &mut s.nodes {
                 n.at = f.to_world(n.at);
@@ -291,6 +300,10 @@ impl Model {
         for mut x in other.surfaces {
             x.group = g(x.group);
             self.surfaces.push(x);
+        }
+        for mut x in other.solids {
+            x.group = x.group.map(g);
+            self.solids.push(x);
         }
         for l in other.loads {
             self.loads.push(match l {

@@ -159,6 +159,36 @@ pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -
             PredMember { id: k, path: model.member_path(m.id), role: m.role.clone(), faces, obb, ends }
         })
         .collect();
+    // What the framing stands on (slabs, curbs), after the members: seen in the scan as they are.
+    let mut members: Vec<PredMember> = members;
+    for s in &model.solids {
+        let faces: Vec<PredFace> = s
+            .faces()
+            .into_iter()
+            .map(|f| {
+                let poly: Vec<V3> = f.outer.iter().map(|&p| v(p)).collect();
+                PredFace { area: poly_area(&poly), poly, normal: v(f.normal) }
+            })
+            .collect();
+        // Its box: along its longest edge on plan, across it, and up.
+        let n = s.outline.len();
+        let long = (0..n).map(|k| s.outline[(k + 1) % n] - s.outline[k]).max_by(|a, b| a.norm().total_cmp(&b.norm())).filter(|d| d.norm() > 1e-9).map_or((1.0, 0.0), |d| (d.x / d.norm(), d.y / d.norm()));
+        let axes = [[long.0 as f32, long.1 as f32, 0.0], [-long.1 as f32, long.0 as f32, 0.0], [0.0, 0.0, 1.0]];
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in faces.iter().flat_map(|f| &f.poly) {
+            for a in 0..3 {
+                let t = dot(*p, axes[a]);
+                lo[a] = lo[a].min(t);
+                hi[a] = hi[a].max(t);
+            }
+        }
+        let c: [f32; 3] = std::array::from_fn(|a| 0.5 * (lo[a] + hi[a]));
+        let centre = add(add(scale(axes[0], c[0]), scale(axes[1], c[1])), scale(axes[2], c[2]));
+        let obb = Obb { centre, axes, length: hi[0] - lo[0], width: hi[1] - lo[1], depth: hi[2] - lo[2] };
+        let half = scale(axes[0], obb.length / 2.0);
+        let ends = [add(centre, scale(half, -1.0)), add(centre, half)];
+        members.push(PredMember { id: members.len(), path: model.solid_path(s), role: s.role.clone(), faces, obb, ends });
+    }
     // The scan's frame, if the model has one: model → scan is its placement, turned back.
     let scan_frame = model.groups.iter().find(|g| g.kind == "frame" && g.name == "Scan").map(|g| {
         let f = g.frame;

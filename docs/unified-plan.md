@@ -145,7 +145,10 @@ Each step leaves everything working and removes one row above.
    plate's end changes the wall's height, and a post joined to a stud's
    top moves the stud (or, off the wall's line, the wall). Walls may slope
    (`Wall.heights(start, end)`, `Perimeter.base(corner, z)`); walls meeting
-   at one height are held so, else the corner is a step. *And for roofs:*
+   at one height are held so, else the corner is a step. *And what they
+   stand on:* a slab is a thing whose top is a number; a wall on it (or on
+   a curb on it) has its bottom held to that, so no wall is given a height
+   to start at (`Slab`, `Wall.on`, `Perimeter.on`). *And for roofs:*
    each truss is a free body of the one solve, written by its generator;
    `bearingOn` is a utility that looks at what is under each truss and
    states each contact (`rest_on_lines`), and the bearing points are those

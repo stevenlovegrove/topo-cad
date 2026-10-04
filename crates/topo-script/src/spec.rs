@@ -156,6 +156,8 @@ pub struct InfoSpec {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ItemSpec {
     Perimeter(PerimeterSpec),
+    /// What walls stand on: a slab (see `SlabSpec`).
+    Slab(SlabSpec),
     TrussRoof(TrussRoofSpec),
     Assembly(AssemblySpec),
     /// A frame with points in it, as nodes (`Frame/point`): a body (a scan's, placed where it is
@@ -358,6 +360,27 @@ pub struct WallSpec {
     /// As-built layout from field measurements.
     #[serde(default)]
     pub survey: Option<topo_timber::Survey>,
+    /// What it stands on, if not what its perimeter does.
+    #[serde(default)]
+    pub on: Option<StandsOn>,
+}
+
+/// What a wall stands on: a slab, or a curb this high on it. Its bottom is that thing's top.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StandsOn {
+    pub slab: String,
+    #[serde(default)]
+    pub curb: f64,
+}
+
+/// A slab: a plan outline, its top at a height (a number of the one solve: as drawn a hint, so a
+/// reading of it moves it, and what stands on it with it), this thick.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlabSpec {
+    pub name: String,
+    pub outline: Vec<(f64, f64)>,
+    pub top: f64,
+    pub thickness: f64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -379,6 +402,16 @@ pub struct PerimeterSpec {
     /// The bottom of the walls at each corner (from the start), where it is not `z`.
     #[serde(default)]
     pub bases: Vec<Option<f64>>,
+    /// What its walls stand on (those that do not say for themselves); none: at `z`.
+    #[serde(default)]
+    pub on: Option<StandsOn>,
+}
+
+impl PerimeterSpec {
+    /// What the wall of side `i` stands on, if it is said.
+    fn stands_on(&self, i: usize) -> Option<&StandsOn> {
+        self.segments[i].side.as_ref().and_then(|w| w.on.as_ref().or(self.on.as_ref()))
+    }
 }
 
 /// The numbers a perimeter is built from: where its corners are (each at the bottom of the walls
@@ -388,21 +421,49 @@ pub struct PerimeterSpec {
 struct PerimeterParams {
     corners: Vec<Vec3>,
     heights: Vec<Option<(f64, f64)>>,
+    /// Each wall's bottom at its start and its end, where it stands on something (else: its corners').
+    bases: Vec<Option<(f64, f64)>>,
     studs: Vec<Option<Vec<f64>>>,
 }
 
 impl PerimeterParams {
     /// As the script draws it.
-    fn drawn(p: &PerimeterSpec) -> PerimeterParams {
-        let n = if p.closed { p.segments.len() } else { p.segments.len() + 1 };
+    fn drawn(p: &PerimeterSpec, slabs: &HashMap<String, f64>) -> Result<PerimeterParams, String> {
+        let ns = p.segments.len();
+        let n = if p.closed { ns } else { ns + 1 };
+        // A wall that stands on something: its bottom is that thing's top.
+        let mut bases = vec![];
+        for i in 0..ns {
+            bases.push(match p.stands_on(i) {
+                Some(on) => {
+                    let top = slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?;
+                    Some((top + on.curb, top + on.curb))
+                }
+                None => None,
+            });
+        }
         let corners = (0..n)
             .map(|k| {
                 let (x, y) = if k == 0 { p.start } else { p.segments[k - 1].to };
-                v3(x, y, p.bases.get(k).copied().flatten().unwrap_or(p.z))
+                // (A corner is at the bottom of the wall that leaves it; else of the one that arrives.)
+                let z = match Self::wall_at_corner(p, k).and_then(|(i, end)| bases[i].map(|b| if end == 0 { b.0 } else { b.1 })) {
+                    Some(z) => z,
+                    None => p.bases.get(k).copied().flatten().unwrap_or(p.z),
+                };
+                v3(x, y, z)
             })
             .collect();
         let heights = p.segments.iter().map(|s| s.side.as_ref().map(|w| (w.height, w.height_end.unwrap_or(w.height)))).collect();
-        PerimeterParams { corners, heights, studs: vec![None; p.segments.len()] }
+        Ok(PerimeterParams { corners, heights, bases, studs: vec![None; ns] })
+    }
+
+    /// The wall whose bottom a corner is at, of those that stand on something: the one that
+    /// leaves it (its start: 0), else the one that arrives (its end: 1).
+    fn wall_at_corner(p: &PerimeterSpec, k: usize) -> Option<(usize, usize)> {
+        let ns = p.segments.len();
+        let leaves = (k < ns).then_some(k);
+        let arrives = if k > 0 { Some(k - 1) } else if p.closed { Some(ns - 1) } else { None };
+        leaves.filter(|&i| p.stands_on(i).is_some()).map(|i| (i, 0)).or(arrives.filter(|&i| p.stands_on(i).is_some()).map(|i| (i, 1)))
     }
 
     /// The numbers as solved.
@@ -411,6 +472,7 @@ impl PerimeterParams {
         PerimeterParams {
             corners: n.corners.iter().map(|c| v3(v(&c[0]), v(&c[1]), v(&c[2])) + origin).collect(),
             heights: n.heights.iter().map(|h| h.map(|(a, b)| (v(&a), v(&b)))).collect(),
+            bases: n.bases.iter().map(|h| h.map(|(a, b)| (v(&a) + origin.z, v(&b) + origin.z))).collect(),
             studs: n.studs.iter().map(|ss| ss.as_ref().map(|ss| ss.iter().map(v).collect())).collect(),
         }
     }
@@ -419,7 +481,7 @@ impl PerimeterParams {
     /// given in both differ).
     fn distance(&self, o: &PerimeterParams) -> f64 {
         let mut d = self.corners.iter().zip(&o.corners).map(|(a, b)| a.distance(*b)).fold(0.0, f64::max);
-        for (a, b) in self.heights.iter().zip(&o.heights) {
+        for (a, b) in self.heights.iter().zip(&o.heights).chain(self.bases.iter().zip(&o.bases)) {
             if let (Some(a), Some(b)) = (a, b) {
                 d = d.max((a.0 - b.0).abs()).max((a.1 - b.1).abs());
             }
@@ -440,6 +502,8 @@ impl PerimeterParams {
 struct PerimeterNumbers {
     corners: Vec<[scene::ScalarId; 3]>,
     heights: Vec<Option<(scene::ScalarId, scene::ScalarId)>>,
+    /// (In its body, as the corners are.)
+    bases: Vec<Option<(scene::ScalarId, scene::ScalarId)>>,
     studs: Vec<Option<Vec<scene::ScalarId>>>,
 }
 
@@ -528,6 +592,8 @@ struct Builder {
     moving: HashMap<NodeId, (scene::BodyRef, Vec3, Vec<(scene::ScalarId, Vec3)>)>,
     grades: HashMap<GradeSpec, MaterialId>,
     perimeters: HashMap<String, (PerimeterParts, f64)>,
+    /// Slabs by name: the body each is, and its top (a number).
+    slabs: HashMap<String, (scene::BodyRef, scene::ScalarId)>,
     /// Assembly members by assembly name (roofs may bear on them).
     assemblies: HashMap<String, Vec<MemberId>>,
     root: GroupId,
@@ -618,7 +684,11 @@ impl Builder {
         let n = p.segments.len();
         for (i, s) in p.segments.iter().enumerate() {
             let side = match &s.side {
-                Some(w) => Side::Wall(self.wall(w)?),
+                Some(w) => {
+                    let mut wall = self.wall(w)?;
+                    wall.curb = p.stands_on(i).map(|on| on.curb).filter(|&c| c > 0.0);
+                    Side::Wall(wall)
+                }
                 None => Side::Open,
             };
             if p.closed && i == n - 1 {
@@ -629,6 +699,7 @@ impl Builder {
         }
         per.bases = c.iter().map(|c| Some(c.z)).collect();
         per.heights = at.heights.clone();
+        per.wall_bases = at.bases.clone();
         let mut walls = per.walls();
         for (w, studs) in walls.iter_mut().zip(&at.studs) {
             if let (Some(w), Some(studs)) = (w.as_mut(), studs) {
@@ -663,12 +734,21 @@ impl Builder {
         let snapshot = named.then(|| self.clone());
         let (parts, walls) = self.build_perimeter(p, at)?;
         self.m.group_mut(parts.group).parent = Some(self.root);
-        // Every bottom plate bears on the foundation.
-        let mut nodes: Vec<NodeId> = parts.bottom_plates().iter().flat_map(|&b| self.m.member(b).path.clone()).collect();
+        // Every bottom plate bears on what its wall stands on (the foundation, where that is not said).
+        let mut nodes: Vec<(NodeId, String)> = vec![];
+        for (i, wp) in parts.walls.iter().enumerate() {
+            let Some(wp) = wp else { continue };
+            let on = match p.stands_on(i) {
+                Some(on) if on.curb > 0.0 => format!("Bottom plate on a curb on {}", on.slab),
+                Some(on) => format!("Bottom plate on {}", on.slab),
+                None => "Bottom plate on foundation".into(),
+            };
+            nodes.extend(wp.bottom_plates.iter().flat_map(|&b| self.m.member(b).path.clone()).map(|n| (n, on.clone())));
+        }
         nodes.sort();
-        nodes.dedup();
-        for node in nodes {
-            self.m.supports.push(Support { node, restraint: Restraint::PINNED, description: Some("Bottom plate on foundation".into()) });
+        nodes.dedup_by_key(|n| n.0);
+        for (node, description) in nodes {
+            self.m.supports.push(Support { node, restraint: Restraint::PINNED, description: Some(description) });
         }
         let content = scene::Content {
             group: parts.group,
@@ -715,10 +795,51 @@ impl Builder {
             numbers.heights.push(Some((s0, s1)));
         }
         let nc = at.corners.len();
+        // The bottom of each wall that stands on something: that thing's top, held.
+        for (i, w) in walls.iter().enumerate() {
+            let (Some(w), Some(on), Some((b0, b1))) = (w, p.stands_on(i), at.bases[i]) else {
+                numbers.bases.push(None);
+                continue;
+            };
+            let (_, top) = *self.slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?;
+            let name = format!("{}/{}", p.name, w.name);
+            let what = if on.curb > 0.0 { format!("a curb on {}", on.slab) } else { on.slab.clone() };
+            let s0 = sc.number(&format!("{name}: its bottom at its start"), body, b0 - origin.z);
+            let s1 = sc.number(&format!("{name}: its bottom at its end"), body, b1 - origin.z);
+            for (s, end) in [(s0, "start"), (s1, "end")] {
+                sc.equal(&format!("{name} stands on {what} at its {end}"), s.into(), scene::Num::from(on.curb - origin.z).plus(top, 1.0), scene::Tier::Hard);
+            }
+            numbers.bases.push(Some((s0, s1)));
+        }
+        // (A corner is at the bottom of the wall there that stands on something, if one does.)
+        for k in 0..nc {
+            if let Some((i, end)) = PerimeterParams::wall_at_corner(p, k) {
+                if let Some(Some((s0, s1))) = numbers.bases.get(i) {
+                    sc.equal(&format!("{}/corner {} at the bottom of the wall there", p.name, k + 1), numbers.corners[k][2].into(), (if end == 0 { *s0 } else { *s1 }).into(), scene::Tier::Hard);
+                }
+            }
+        }
         for (a, b) in self.wall_corners(p) {
             let (Some(ha), Some(hb), Some(da), Some(db)) = (numbers.heights[a], numbers.heights[b], drawn.heights[a], drawn.heights[b]) else { continue };
-            if (da.1 - db.0).abs() < 1e-9 {
-                sc.equal(&format!("{}/corner {}: the walls are one height there", p.name, b % nc + 1), ha.1.into(), hb.0.into(), scene::Tier::Hard);
+            let corner = b % nc;
+            let what = format!("{}/corner {}: the walls are one height there", p.name, corner + 1);
+            match (numbers.bases[a], numbers.bases[b]) {
+                (None, None) => {
+                    if (da.1 - db.0).abs() < 1e-9 {
+                        sc.equal(&what, ha.1.into(), hb.0.into(), scene::Tier::Hard);
+                    }
+                }
+                // (Their bottoms may differ there: one height is one top.)
+                (ba, bb) => {
+                    let z = drawn.corners[corner].z;
+                    let (za, zb) = (drawn.bases[a].map_or(z, |x| x.1), drawn.bases[b].map_or(z, |x| x.0));
+                    if (za + da.1 - zb - db.0).abs() < 1e-9 {
+                        let cz = numbers.corners[corner][2];
+                        let top_a = scene::Num::from(ha.1).plus(ba.map_or(cz, |x| x.1), 1.0);
+                        let top_b = scene::Num::from(hb.0).plus(bb.map_or(cz, |x| x.0), 1.0);
+                        sc.equal(&what, top_a, top_b, scene::Tier::Hard);
+                    }
+                }
             }
         }
         // Studs; and a surveyed wall's posts.
@@ -811,6 +932,14 @@ impl Builder {
                     let mut hh = now;
                     if end == 0 { hh.0 += EPS } else { hh.1 += EPS }
                     moved.heights[w] = Some(hh);
+                    column(&moved, &|_| Some(s));
+                }
+            }
+            for (w, bs) in numbers.bases.iter().enumerate() {
+                let (Some((s0, s1)), Some(now)) = (*bs, at.bases[w]) else { continue };
+                for (end, s) in [(0, s0), (1, s1)] {
+                    let mut moved = at.clone();
+                    moved.bases[w] = Some(if end == 0 { (now.0 + EPS, now.1) } else { (now.0, now.1 + EPS) });
                     column(&moved, &|_| Some(s));
                 }
             }
@@ -1310,12 +1439,17 @@ pub fn build_scene_fitted(spec: &SceneSpec, fit: Option<&Fit>) -> Result<(Model,
 fn build_building(spec: &BuildingSpec, fit: Option<&Fit>) -> Result<(Model, Option<Vec<f64>>), String> {
     // Perimeters are built at numbers of the one solve: as drawn first; then again at the
     // numbers as solved, and solved again, until they do not change.
-    let drawn: Vec<PerimeterParams> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(PerimeterParams::drawn(p)) } else { None }).collect();
+    // (And slabs at their tops, likewise: what stands on one is built on it where it is.)
+    let slabs_drawn: Vec<f64> = spec.items.iter().filter_map(|i| if let ItemSpec::Slab(s) = i { Some(s.top) } else { None }).collect();
+    let tops: HashMap<String, f64> = spec.items.iter().filter_map(|i| if let ItemSpec::Slab(s) = i { Some((s.name.clone(), s.top)) } else { None }).collect();
+    let drawn: Vec<PerimeterParams> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(PerimeterParams::drawn(p, &tops)) } else { None }).collect::<Result<_, _>>()?;
     let mut at = drawn.clone();
+    let mut slabs_at = slabs_drawn.clone();
     const PASSES: usize = 8;
     for pass in 1..=PASSES {
-        let mut built = build_pass(spec, &at, &drawn, fit)?;
+        let mut built = build_pass(spec, &at, &drawn, &slabs_at, fit)?;
         let moved = built.solved.iter().zip(&at).map(|(a, b)| a.distance(b)).fold(0.0, f64::max);
+        let moved = built.slabs.iter().zip(&slabs_at).map(|(a, b)| (a - b).abs()).fold(moved, f64::max);
         if moved < 1e-7 || pass == PASSES {
             if moved >= 1e-7 {
                 built.b.m.issues.push(Issue::new(Severity::Warning, "unsettled", format!("the perimeters' numbers still moved {:.2} mm when built again at them for the {PASSES}th time", moved * 1000.0)));
@@ -1323,6 +1457,7 @@ fn build_building(spec: &BuildingSpec, fit: Option<&Fit>) -> Result<(Model, Opti
             return finish(built);
         }
         at = built.solved;
+        slabs_at = built.slabs;
     }
     unreachable!()
 }
@@ -1335,6 +1470,8 @@ struct Pass<'a> {
     roofs: Vec<(&'a TrussRoofSpec, topo_timber::truss::PlacedRoof)>,
     /// The perimeters' numbers as solved.
     solved: Vec<PerimeterParams>,
+    /// The slabs' tops as solved.
+    slabs: Vec<f64>,
     /// A fit's unknowns: their numbers.
     fit: Option<Vec<scene::ScalarId>>,
 }
@@ -1361,18 +1498,36 @@ fn finish(pass: Pass) -> Result<(Model, Option<Vec<f64>>), String> {
 }
 
 /// Builds the building once, its perimeters at `at` (drawn as `drawn`), and solves and writes it.
-fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[PerimeterParams], fit: Option<&Fit>) -> Result<Pass<'a>, String> {
+fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[PerimeterParams], slabs_at: &[f64], fit: Option<&Fit>) -> Result<Pass<'a>, String> {
     let mut m = Model::new(&spec.name);
     let root = m.add_group(&spec.name, "building", Frame::WORLD, None);
     for (name, v) in &spec.directions {
         let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
         m.name_direction(root, name, d);
     }
-    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), assemblies: HashMap::new(), root };
+    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), slabs: HashMap::new(), assemblies: HashMap::new(), root };
     // One scene: perimeters (written by their generator, as bodies of it, at numbers of it),
     // assemblies, and the relations between their nodes; solved, then written into the model.
     // Then roofs, on what it placed.
     let mut sc = scene::Scene::new("The building's parts and the relations between them");
+    // Slabs first: each a body, fixed, its top a number (as drawn a hint); what stands on it is
+    // held to that. Written where it is built (`slabs_at`: as drawn, then as the solve has it).
+    let mut slab_tops = vec![];
+    for (s, &top) in spec.items.iter().filter_map(|i| if let ItemSpec::Slab(s) = i { Some(s) } else { None }).zip(slabs_at) {
+        if s.outline.len() < 3 {
+            return Err(format!("slab {}: its outline needs at least three points", s.name));
+        }
+        if b.slabs.contains_key(&s.name) {
+            return Err(format!("two slabs named {}", s.name));
+        }
+        let body = sc.body(&s.name, "", Frame::WORLD, false, None);
+        let n = sc.number(&format!("{}: its top", s.name), body, top);
+        sc.number_is(&format!("{}: its top as drawn", s.name), n, s.top, scene::Tier::Hint);
+        b.slabs.insert(s.name.clone(), (body, n));
+        slab_tops.push(n);
+        let g = b.m.add_group(&s.name, "slab", Frame::WORLD, Some(b.root));
+        b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: top - s.thickness, top });
+    }
     let perimeters: Vec<&PerimeterSpec> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(p) } else { None }).collect();
     let mut numbers = vec![];
     for (k, p) in perimeters.iter().enumerate() {
@@ -1404,6 +1559,13 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     let node = |sc: &mut scene::Scene, b: &Builder, name: &str| -> Result<scene::NodeRef, String> {
         if let Some(n) = sc.node_named(name) {
             return Ok(n);
+        }
+        // A point of a slab's top: `Slab:top x,y` (it moves up and down with the slab's top).
+        if let Some((slab, at)) = name.split_once(":top ") {
+            let &(body, top) = b.slabs.get(slab).ok_or_else(|| format!("{name}: no slab named {slab}"))?;
+            let xy: Vec<f64> = at.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("{name}: {at} is not x,y"))?;
+            let [x, y] = xy[..] else { return Err(format!("{name}: {at} is not x,y")) };
+            return sc.node_with(name, body, v3(x, y, 0.0), &[(top, Vec3::Z)]);
         }
         let m = &b.m;
         let triple = |t: &str| -> Result<Vec3, String> {
@@ -1479,5 +1641,6 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     let written = sc.write(&mut b.m)?;
     let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
     let solved = numbers.iter().zip(drawn).map(|(n, d)| PerimeterParams::solved(n, &values, d.corners[0])).collect();
-    Ok(Pass { b, written, declared, roofs, solved, fit })
+    let slabs = slab_tops.iter().map(|n| values[n]).collect();
+    Ok(Pass { b, written, declared, roofs, solved, slabs, fit })
 }

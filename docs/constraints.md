@@ -375,6 +375,9 @@ A **perimeter is built from numbers of the one solve**:
   bottom); as drawn a hint. Where two walls meet at one height as drawn
   they are held at one height there; where they meet at different
   heights, that corner is a step (said, as `corner-step`);
+- each wall's **bottom**, where it stands on something (below): at its
+  start and its end, held to that thing's top. A corner is then at the
+  bottom of the wall that leaves it (else of the one that arrives);
 - each wall's **common studs** (`Wall::common_studs`), along it from its
   start: where the layout puts one a fallback hint, a stud given by
   `studsAt` a reading, a stud against the wall it meets at an end held
@@ -394,6 +397,30 @@ the solved numbers**, and solved again, until they do not change (they
 settle in a pass or two; `unsettled` is said if not). So what the
 generator builds is what the solve asked for: a corner moved by a reading
 makes a longer wall with more studs, not a stretched one.
+
+**What walls stand on is a thing**, and a wall's bottom is where that
+thing's top is. A `Slab` is a plan outline with its top at a height; a
+curb on it (`slab.curb(height)`) is as wide as the wall's plates, under
+each stretch of its bottom plate. A perimeter's walls stand on what it
+says (`Perimeter.on(slab.curb(mm(40)))`), or a wall on what it says itself
+(`Wall.on(slab)`). The slab's top is a number of the one solve: where it
+is drawn is a hint, so a reading of a point of it (`slab.at([x, y])`: a
+`survey`, or a floor seen in a scan, `coincide(scan.on(p, [0, 0, 1]),
+slab.at([x, y]), { tolerance })`) moves it, and each wall on it has its
+bottom held to it (plus its curb's height), so they move with it; the
+slab and the walls are built again where the solve has them, as a
+perimeter is. A wall's height is above its bottom: beside a wall as tall
+on something higher its top is as much lower, and the two meet at a step
+at both, top and bottom (`corner-step`). Two walls are held at one height
+at a corner where their *tops* are one as drawn. A floor at two heights is
+two slabs. Slabs and curbs are **solids** of the model (`Model::solids`: a
+plan outline between two heights), not members: they have no axis, join
+nothing, and are not analysed; they are drawn, and seen in a scan, as
+members are. What each bottom plate bears on is said in its support
+(`Bottom plate on a curb on Slab`). *Not yet:* a curb's height is given,
+not a number; a slab's top is level; a free perimeter's curbs do not move
+with it; and floors, stem walls, footings and piers are not generated.
+(`examples/primitives/10-walls-on-a-slab-and-a-curb.ts`.)
 
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
@@ -426,8 +453,9 @@ cannot interleave: they butt. A plate of the second wall that ends at the
 same node as one of the first butts against it there, cut on its side
 toward it (`JointRule::ButtFace`: where they slope differently, a line
 along the one may first meet the other's top); one that does not end
-there (the plies at different heights) is cut back to a node on the first
-face of the other wall it runs into (`Model::attach`: a face reaches past
+there (the plies at different heights; or a bottom plate, where the walls'
+bottoms are) is cut back to a node on the first face of the other wall
+that any of its section runs into (`Model::attach`: a face reaches past
 its member's end nodes by its section's size, as a joint may run it), and
 its end is cut on that face. Such ends meet side faces and carry nothing
 through their ends, so they are not checked as bearing (only an end cut
@@ -460,6 +488,9 @@ is narrower than they are wide: no backing is framed for them yet.
 8. **Studs on readings**: studs moved by a tape and a survey.
 9. **Walls that slope**: a lean-to's heights, a lowered corner, and a
    survey of a cap plate's end that the generator is built again to meet.
+10. **Walls on a slab and a curb**: three walls on a curb, one on the slab
+    itself (a step at both its ends), and a reading of the slab's top that
+    moves everything standing on it.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:

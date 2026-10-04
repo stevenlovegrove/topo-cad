@@ -465,6 +465,69 @@ export class Survey {
   }
 }
 
+// ----- what walls stand on ---------------------------------------------------
+
+/** What a wall stands on: a slab, or a curb on one. Its bottom is that thing's top. */
+export interface Support {
+  readonly slab: string;
+  /** The curb's height above the slab (0: the slab itself). */
+  readonly curb: Length;
+}
+
+/**
+ * A slab: a plan outline with its top at a height, this thick. What walls
+ * stand on is a thing, and a wall's bottom is where that thing's top is: a
+ * wall is not given a height to start at.
+ *
+ *   const slab = Slab.named("Slab").outline(corners).top(-mm(40));
+ *   const walls = Perimeter.start("Walls", a).on(slab.curb(mm(40)))   // on a 40 mm curb
+ *     .to(b, wall.named("East").on(slab))                             // this one on the slab
+ *
+ * Its top is a number of the one solve: where it is drawn is a hint, so a
+ * reading of it (`survey(slab.at([x, y]), { z })`, or a floor seen in a scan:
+ * `coincide(scan.on(p, [0, 0, 1]), slab.at([x, y]), { tolerance })`) moves it,
+ * and what stands on it moves with it. A floor at two heights is two slabs.
+ * Add it to the building like anything else.
+ */
+export class Slab {
+  private constructor(
+    readonly name: string,
+    readonly outline_: readonly Point[],
+    readonly top_: Length,
+    readonly thickness_: Length,
+  ) {}
+  static named(name: string): Slab {
+    return new Slab(name, [], 0, inch(4));
+  }
+  /** Its outline on plan, either way round. */
+  outline(points: readonly Point[]): Slab {
+    return new Slab(this.name, points, this.top_, this.thickness_);
+  }
+  /** The height of its top (default 0). */
+  top(z: Length): Slab {
+    return new Slab(this.name, this.outline_, z, this.thickness_);
+  }
+  /** How thick it is (default 4 in). */
+  thickness(t: Length): Slab {
+    return new Slab(this.name, this.outline_, this.top_, t);
+  }
+  /** A curb on it, `height` high, to stand a wall on: under the wall's bottom plate, as wide. */
+  curb(height: Length): Support {
+    if (!(height > 0)) throw new Error(`slab ${this.name}: a curb has a height`);
+    return { slab: this.name, curb: height };
+  }
+  /** A point of its top, as a node: over `p` on plan, as high as the top is. */
+  at(p: Point): NodeHandle {
+    return new NodeHandle(`${this.name}:top ${p[0]},${p[1]}`);
+  }
+  toJSON() {
+    if (this.outline_.length < 3) throw new Error(`slab ${this.name}: give its outline (at least three points)`);
+    return { type: "slab", name: this.name, outline: this.outline_, top: this.top_, thickness: this.thickness_ };
+  }
+}
+
+const support = (on: Slab | Support): Support => (on instanceof Slab ? { slab: on.name, curb: 0 } : on);
+
 // ----- walls ---------------------------------------------------------------
 
 interface WallSpec {
@@ -481,6 +544,7 @@ interface WallSpec {
   readonly openings: readonly OpeningSpec[];
   readonly cap_breaks: readonly Length[];
   readonly survey?: SurveySpec;
+  readonly on?: Support;
 }
 
 /**
@@ -572,6 +636,15 @@ export class Wall {
   surveyed(s: Survey): Wall {
     return this.with({ survey: s.toJSON() });
   }
+  /**
+   * What it stands on (a `Slab`, or a curb on one: `slab.curb(mm(40))`), where
+   * that is not what its perimeter stands on. Its bottom is that thing's top,
+   * and its height is above that: beside a wall as tall on something higher,
+   * its top is as much lower, and the two meet at a step, top and bottom.
+   */
+  on(what: Slab | Support): Wall {
+    return this.with({ on: support(what) });
+  }
   /** Interrupt the cap plate at `x` (where a partition tees in and laps over). */
   capBreak(x: Length): Wall {
     return this.with({ cap_breaks: [...this.spec.cap_breaks, x] });
@@ -603,13 +676,22 @@ export class Perimeter {
     readonly free_: boolean = false,
     /** The bottom of the walls at each corner (from 1, the start), where it is not `z`. */
     readonly bases: readonly (Length | null)[] = [],
+    /** What its walls stand on, if it is said. */
+    readonly on_: Support | undefined = undefined,
   ) {}
 
   static start(name: string, at: Point, opts: { z?: Length } = {}): Perimeter {
     return new Perimeter(name, at, opts.z ?? 0, [], false);
   }
-  private with(p: { name?: string; start?: Point; z?: Length; segments?: readonly Segment[]; closed?: boolean; free?: boolean; bases?: readonly (Length | null)[] }): Perimeter {
-    return new Perimeter(p.name ?? this.name, p.start ?? this.start, p.z ?? this.z, p.segments ?? this.segments, p.closed ?? this.closed, p.free ?? this.free_, p.bases ?? this.bases);
+  private with(p: { name?: string; start?: Point; z?: Length; segments?: readonly Segment[]; closed?: boolean; free?: boolean; bases?: readonly (Length | null)[]; on?: Support }): Perimeter {
+    return new Perimeter(p.name ?? this.name, p.start ?? this.start, p.z ?? this.z, p.segments ?? this.segments, p.closed ?? this.closed, p.free ?? this.free_, p.bases ?? this.bases, p.on ?? this.on_);
+  }
+  /**
+   * What its walls stand on (a `Slab`, or a curb on one): their bottoms are
+   * that thing's top, not `z`. A wall may stand on something else (`Wall.on`).
+   */
+  on(what: Slab | Support): Perimeter {
+    return this.with({ on: support(what) });
   }
   /**
    * A corner, as a node (1 is its start, then each corner it turns, in
@@ -707,7 +789,7 @@ export class Perimeter {
     return this.with({ free: true });
   }
   toJSON() {
-    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed, free: this.free_, bases: this.bases };
+    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed, free: this.free_, bases: this.bases, on: this.on_ };
   }
 }
 
@@ -1673,7 +1755,7 @@ export class Frame {
   }
 }
 
-export type Item = Perimeter | TrussRoof | Assembly | Frame | Relation;
+export type Item = Perimeter | Slab | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of
