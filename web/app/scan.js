@@ -474,6 +474,8 @@ async function loadMembers() {
   if (sel.proposal) await loadDiff();
   freshPlaces();
   rebuildModel(); rebuildMarks();
+  // (The tree was drawn before they came, if the state came first.)
+  renderTree();
 }
 
 /// An issue pinned to a member is where the member is now: its box was taken when it was raised,

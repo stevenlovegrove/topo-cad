@@ -61,7 +61,8 @@ impl Workspace {
                 Some(s) => json!({"path": s.path, "loaded": true, "points": s.xyz.len(), "used": s.used.len(), "floor_z": s.floor_z, "rays": s.sensor.is_some(), "min_range": s.min_range, "ranged": s.ranged}),
                 None => json!({"path": self.items.scan, "loaded": false, "min_range": self.items.min_range()}),
             },
-            "placement": self.items.placement,
+            // (Where the scan is: a placement being tried, else where the model's Scan frame has it, else the one kept.)
+            "placement": self.trial.or_else(|| self.model.as_ref().and_then(|m| m.pred.scan_frame)).map(crate::workspace::PlacementJson::from).or(self.items.placement.clone()),
             "model": {
                 "name": self.model.as_ref().map(|m| m.pred.name.clone()),
                 "members": self.model.as_ref().map_or(0, |m| m.pred.members.len()),
@@ -208,6 +209,8 @@ mod tests {
         ws.scan = Some(Arc::new(scan_of_truth(&pl)));
         ws.join("p1", "person").unwrap();
         ws.call("p1", "rename", &json!({"name": "Steven"})).unwrap();
+        // (No placement was kept: the app is told where the model's Scan frame has the scan.)
+        assert!((ws.state_json()["placement"]["yaw_deg"].as_f64().unwrap().abs() - (pl.yaw as f64).to_degrees()).abs() < 1e-3, "{}", ws.state_json()["placement"]);
         let north = |ws: &Workspace| ws.model().unwrap().pred.members.iter().find(|m| m.path == "Shed/Walls/North wall/bottom_plate").unwrap().obb.centre[1];
         let y0 = north(&ws);
         let ft = 0.3048f32;
