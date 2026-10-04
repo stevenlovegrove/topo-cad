@@ -73,7 +73,12 @@ export const storage = {
       if (f && (await f.permitted(false))) return this.use(f, "folder");
       this.folderWaiting = f; // needs a click to re-grant
     }
-    if (saved === "browser" || !this.site) return this.use(new BrowserStore(), "browser");
+    if (!this.site) return this.use(new BrowserStore(), "browser");
+    if (saved === "browser") {
+      // (Remembered, but with nothing in it here: the site's files are what there is to open.)
+      const b = new BrowserStore();
+      if ((await b.list().catch(() => [])).length) return this.use(b, "browser");
+    }
     return this.use(this.siteStore(), "site");
   },
 };
