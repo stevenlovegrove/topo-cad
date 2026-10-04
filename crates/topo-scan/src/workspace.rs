@@ -156,6 +156,10 @@ pub struct Items {
     /// Scan points nearer the sensor than this (m) are left out: whoever carried it. (None: 1 m.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_range: Option<f32>,
+    /// What is level rises by this much per metre along the scan's x and y, as its file has it (its
+    /// sense of up being a little out): the scan is turned so that it is level. (None: as the file has it.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<[f32; 2]>,
 }
 
 impl Items {
@@ -170,12 +174,12 @@ impl Items {
 
     /// Which of the scan's points are used: changes when the filters do.
     pub fn scan_key(&self) -> String {
-        format!("{}|{}", self.min_range(), serde_json::to_string(&self.ignored()).unwrap_or_default())
+        format!("{}|{:?}|{}", self.min_range(), self.level, serde_json::to_string(&self.ignored()).unwrap_or_default())
     }
 
     /// The scan as the project has it: read, and filtered.
     pub fn load(&self, path: &str) -> Result<Scan> {
-        let mut scan = Scan::load(path, self.min_range())?;
+        let mut scan = Scan::load(path, self.min_range(), self.level.unwrap_or([0.0, 0.0]))?;
         scan.ignore(&self.ignored());
         Ok(scan)
     }
@@ -414,8 +418,29 @@ impl Workspace {
     /// from its points (evidence, the thinned cloud, selections' points) with it.
     pub(crate) fn scan_filter(&mut self, who: &str, args: &Value) -> Result<Vec<Value>> {
         let text = |s: String| Ok(vec![json!({"type": "text", "text": s})]);
+        // Levelling: what is level rises by so much per metre, along the model's x and y (or the scan's, with
+        // `frame: "scan"`), in the scan as it is now: added to what was set before, and the scan turned to match.
+        if let Some(l) = args.get("level").and_then(|v| v.as_array()) {
+            let (Some(a), Some(b)) = (l.first().and_then(|v| v.as_f64()), l.get(1).and_then(|v| v.as_f64())) else { bail!("level: [rise per metre along x, along y], such as [0, 0.004]") };
+            if a.abs() > 0.05 || b.abs() > 0.05 {
+                bail!("level: a rise per metre (0.004 is 4 mm per metre), up to 0.05");
+            }
+            let slope = if Self::frame_is_model(args)? {
+                let v = self.placement()?.rotate([a as f32, b as f32, 0.0]);
+                [v[0], v[1]]
+            } else {
+                [a as f32, b as f32]
+            };
+            let was = self.items.level.unwrap_or([0.0, 0.0]);
+            let now = [was[0] + slope[0], was[1] + slope[1]];
+            self.items.level = (now[0].abs() > 1e-7 || now[1].abs() > 1e-7).then_some(now);
+            self.save_items(who)?;
+            self.unload_scan();
+            return text(format!("the scan is now turned so that what rose by {:.2} mm per metre along its x and {:.2} along its y (as its file has it) is level; it is being loaded again", now[0] * 1e3, now[1] * 1e3));
+        }
         let Some(m) = args.get("min_range").and_then(|v| v.as_f64()) else {
-            return text(format!("points nearer the sensor than {:.2} m are left out{}", self.items.min_range(), if self.scan.as_ref().is_some_and(|s| !s.ranged) { " (but this scan has neither ranges nor a trajectory, so none are)" } else { "" }));
+            let level = self.items.level.map_or(String::new(), |l| format!("; the scan is turned so that what rises by {:.2} mm per metre along its x and {:.2} along its y in its file is level", l[0] * 1e3, l[1] * 1e3));
+            return text(format!("points nearer the sensor than {:.2} m are left out{}{level}", self.items.min_range(), if self.scan.as_ref().is_some_and(|s| !s.ranged) { " (but this scan has neither ranges nor a trajectory, so none are)" } else { "" }));
         };
         if !(0.0..=20.0).contains(&m) {
             bail!("min_range: 0 to 20 m");

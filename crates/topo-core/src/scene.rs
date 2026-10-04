@@ -266,7 +266,7 @@ impl Scene {
     pub fn solve(&mut self) -> Result<ts::Report, String> {
         let report = self.sys.solve();
         if report.refused {
-            return Err(report.conflicts.iter().map(|c| format!("{} cannot all hold: {}", c.frames.join(", "), c.constraints.iter().map(|g| format!("{} ({:.1} mm off)", g.constraint, g.size * 1000.0)).collect::<Vec<_>>().join("; "))).collect::<Vec<_>>().join(". "));
+            return Err(report.conflicts.iter().map(|c| format!("{} cannot all hold: {}", c.frames.join(", "), c.constraints.iter().map(|g| format!("{} ({} mm off)", g.constraint, if g.size < 5e-5 { format!("{:.5}", g.size * 1000.0) } else { format!("{:.1}", g.size * 1000.0) })).collect::<Vec<_>>().join("; "))).collect::<Vec<_>>().join(". "));
         }
         Ok(report)
     }
@@ -658,7 +658,7 @@ impl Scene {
             }
             if said.is_empty() {
                 for c in &report.conflicts {
-                    said.push(format!("{} cannot all hold: {}", c.frames.join(", "), c.constraints.iter().map(|g| format!("{} ({:.1} mm off)", g.constraint, g.size * 1000.0)).collect::<Vec<_>>().join("; ")));
+                    said.push(format!("{} cannot all hold: {}", c.frames.join(", "), c.constraints.iter().map(|g| format!("{} ({} mm off)", g.constraint, if g.size < 5e-5 { format!("{:.5}", g.size * 1000.0) } else { format!("{:.1}", g.size * 1000.0) })).collect::<Vec<_>>().join("; ")));
                 }
             }
             return Err(said.join(". "));

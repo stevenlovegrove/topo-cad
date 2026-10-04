@@ -158,7 +158,7 @@ fn table(title: &str, rows: &[Local], edges: &[f32], by: impl Fn(&Local) -> f32,
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let scan = Scan::load(&args[0], 0.8)?;
+    let scan = Scan::load(&args[0], 0.8, [0.0, 0.0])?;
     eprintln!("{} points, {} used; sensor positions: {}", scan.xyz.len(), scan.used.len(), scan.sensor.is_some());
     let g = Grid::new(&scan.xyz, &scan.used);
     use rayon::prelude::*;

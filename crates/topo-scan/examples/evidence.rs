@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
     let samples = FaceSamples::new(&pred, 0.05);
     println!("model {:?}: {} members ({:.0} ms)", pred.name, pred.members.len(), t.elapsed().as_secs_f64() * 1e3);
     let t = Instant::now();
-    let scan = Scan::load(scan, 1.0)?;
+    let scan = Scan::load(scan, 1.0, [0.0, 0.0])?;
     println!("scan: {} points ({} used), floor z = {:.3}, wall axis {:.1}°, sensor rays {} ({:.1} s)", scan.xyz.len(), scan.used.len(), scan.floor_z, scan.wall_axis[1].atan2(scan.wall_axis[0]).to_degrees(), if scan.sensor.is_some() { "yes" } else { "no" }, t.elapsed().as_secs_f64());
     let t = Instant::now();
     let (pl, inliers, rms) = match rest {
