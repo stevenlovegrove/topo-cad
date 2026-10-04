@@ -226,9 +226,9 @@ impl Repo {
         Ok(Trial::Clean { files, moved })
     }
 
-    /// Who made a commit, and how long ago (as git says it: "2 hours ago").
+    /// Who made a commit, and when (the day and time, here: it is kept and shown later, so not "2 hours ago").
     pub fn committed(&self, commit: &str) -> Option<(String, String)> {
-        let out = self.run(&["show", "-s", "--format=%cn%x09%cr", commit]).ok()?;
+        let out = self.run(&["show", "-s", "--date=format-local:%Y-%m-%d %H:%M", "--format=%cn%x09%cd", commit]).ok()?;
         let (who, when) = out.trim().split_once('\t')?;
         Some((who.to_string(), when.to_string()))
     }

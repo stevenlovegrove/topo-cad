@@ -40,6 +40,9 @@ pub struct Offer {
     pub as_proposed: bool,
     /// Whether there is anything to show (not, if as it was proposed it no longer evaluates).
     pub shown: bool,
+    /// The sides are the other way about: the first has the proposal in it and the second does not
+    /// (a revert). A view colours by the proposal, not by the action: with it green, without it red.
+    pub reverting: bool,
 }
 
 impl Offer {
@@ -53,8 +56,9 @@ impl Offer {
 
 /// `applied`: who applied it and how long ago, for an applied one.
 pub fn offer(state: &str, outcome: Option<&Outcome>, applied: Option<(&str, &str)>) -> Offer {
-    let then = |label: String, note: String, action: Option<&'static str>| Offer { state: state.into(), label, note, action, enabled: false, before: "Before (then)", after: "After (then)", as_proposed: true, shown: true };
+    let then = |label: String, note: String, action: Option<&'static str>| Offer { state: state.into(), label, note, action, enabled: false, before: "Before (then)", after: "After (then)", as_proposed: true, shown: true, reverting: false };
     let by = applied.map_or("applied".to_string(), |(who, when)| format!("applied by {who}, {when}"));
+    // (`when` is a day and time: what is said here is kept, and read later.)
     let files = |f: &[String]| if f.is_empty() { "the files".to_string() } else { f.join(", ") };
     match (state, outcome) {
         ("open", Some(Outcome::Clean { empty: true, .. })) => then("already in the files".into(), "The files are already as it leaves them: there is nothing to apply. Shown as it was proposed.".into(), Some("apply")),
@@ -68,6 +72,7 @@ pub fn offer(state: &str, outcome: Option<&Outcome>, applied: Option<(&str, &str
             after: "After",
             as_proposed: false,
             shown: true,
+            reverting: false,
         },
         ("open", Some(Outcome::Conflict(f))) => then("out of date".into(), format!("It no longer applies: {} changed where it edits. Shown as it was proposed; it needs proposing again on the files as they are.", files(f)), Some("apply")),
         ("open", Some(Outcome::Broken(e))) => then("would break the model".into(), format!("It applies to the files, but the model does not then evaluate: {e}. Shown as it was proposed."), Some("apply")),
@@ -82,6 +87,7 @@ pub fn offer(state: &str, outcome: Option<&Outcome>, applied: Option<(&str, &str
             after: "If reverted",
             as_proposed: false,
             shown: true,
+            reverting: true,
         },
         ("applied", Some(Outcome::Conflict(f))) => then(by, format!("It cannot be reverted as it is: later changes to {} build on it. Shown as it was proposed.", files(f)), Some("revert")),
         ("applied", Some(Outcome::Broken(e))) => then(by, format!("Reverting it would leave a model that does not evaluate: {e}. Shown as it was proposed."), Some("revert")),
@@ -119,6 +125,8 @@ mod tests {
             // What cannot be done says why; what is shown as proposed says so.
             assert!(o.enabled || o.action.is_none() || !o.note.is_empty(), "{o:?}");
             assert!(o.shown);
+            // Only a revert that can be shown has the proposal on its first side.
+            assert_eq!(o.reverting, o.after == "If reverted", "{o:?}");
         }
         // One that no longer evaluates as it was proposed: not shown, and the reason is added to what was said.
         let o = offer("open", Some(&Outcome::Conflict(vec!["garage.ts".into()])), None).unshown("no `at`");

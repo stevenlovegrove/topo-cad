@@ -507,7 +507,10 @@ function drawList() {
   const mode = sel.proposal.mode, ch = diff.changes;
   // What changes is filled strongly in its colour (as it was: red; as it would be: green), in every mode,
   // so switching between before and after shows what moves.
-  const was = (m) => ({ m, rgb: CHANGE.from, fill: 130, line: 255, change: true }), will = (m) => ({ m, rgb: CHANGE.added, fill: 130, line: 255, change: true });
+  // (Coloured by the proposal, not by the action: with it green, without it red. For an applied one shown as a
+  // revert, the first side (now) has it, so the colours are the other way about.)
+  const [first, second] = diff.offer?.reverting ? [CHANGE.added, CHANGE.from] : [CHANGE.from, CHANGE.added];
+  const was = (m) => ({ m, rgb: first, fill: 130, line: 255, change: true }), will = (m) => ({ m, rgb: second, fill: 130, line: 255, change: true });
   const goes = (m) => ch[m.path] === "removed" || ch[m.path] === "moved", comes = (m) => ch[m.path] === "added" || ch[m.path] === "moved";
   if (mode === "before") return diff.before.map((m) => (goes(m) ? was(m) : plain(m)));
   if (mode === "after") return diff.after.map((m) => (comes(m) ? will(m) : plain(m)));
