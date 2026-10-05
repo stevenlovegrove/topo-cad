@@ -455,14 +455,27 @@ members on each cap plate it crosses on plan (one that ends within an inch
 of a plate's line it runs toward bears on it), and on each level member (a
 beam) of an assembly it is said to bear on (one added before it), so the solve sits it on the
 walls as they are, tilted if they are. On plan it stays where it is drawn,
-as a fallback (`Scene::stays_on_plan`, on its first corner; its turn is
-the hint any free body has), so a relation to one of its corners moves it.
-Its loads are per area, shared to the joists by their spacing. *Known
-limitation:* it is one rigid body, so on plates that are not in one plane
-it cannot sit, and is refused (with how far each joist is off): joists
-that each sit for themselves, as trusses do, are not done. *Not yet:* a
-deck on it, openings in it, beams and posts under it, and walls standing
-on it. (`examples/primitives/11-a-floor-on-walls.ts`.)
+as a hint (`Scene::stays_on_plan`, on its first corner; its turn is the
+hint any free body has), so a relation to one of its corners moves it.
+Its loads are per area, shared to the joists by their spacing. It is one
+rigid body, so on plates that are not in one plane it cannot sit, and is
+refused (with how far each joist is off). `Floor.loose()` is the same
+floor as built: each joist, band joist and rim an assembly of its own
+(`Assembly.sitting()`), sat for itself on what is under it, as each truss
+is; it has no one top, so no deck, no opening, and nothing stands on it
+(`22-a-floor-on-walls-as-built.ts`). What a member bears on is what it
+crosses on plan, or stops over: within the other's width of its line.
+
+An **opening** in a floor (`Floor.opening`) is framed: a trimmer joist
+either side, a header across each end, and the joists it cuts stopping at
+the headers; tails hang from headers and headers from trimmers
+(`Assembly.hungFrom`: a hanger, not nails, so the load path holds). Its
+deck is in pieces about it. **Stairs** (`Stairs`) are a flight of equal
+risers for a rise that is given: two stringers on the pitch line, their
+feet cut level and their heads plumb (an assembly member's `cut`), and
+treads between them. *Not yet:* the rise is not found from the floors,
+and nothing joins the flight's head to the floor it reaches
+(`21-a-stairwell-and-stairs.ts`, `11-a-floor-on-walls.ts`).
 
 **An interior wall** is a `Partition`: a wall from a place on one wall
 (`walls.along("Front", x)`) to a place on another, or to a point where it
@@ -577,6 +590,10 @@ is narrower than they are wide: no backing is framed for them yet.
 19. **An interior wall**: partitions that tee into the walls they meet (a
     bearing wall under a floor, one meeting another, one ending free).
 20. **A second storey**: walls on a floor on walls, and a roof on those.
+21. **A stairwell and stairs**: an opening framed in a floor, and a flight
+    up through it.
+22. **A floor on walls as built**: joists that each sit for themselves, on
+    walls whose tops are a twist.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:

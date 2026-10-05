@@ -305,14 +305,15 @@ impl Scene {
         self.sys.constrain(name, ts::Tier::Hard, ts::Kind::offset(pa, pb, ts::Dir(ts::WORLD, [0.0, 0.0, 1.0]), 0.0));
     }
 
-    /// A node stays over `at` on plan (its x and y), as a fallback: unless anything else, even a
-    /// hint, says otherwise. (What is free and only sat on something is held on plan by this.)
+    /// A node stays over `at` on plan (its x and y), as a hint: unless a relation says otherwise.
+    /// (What is free and only sat on something is held on plan by this. A hint, not a fallback:
+    /// as a fallback a joist sat by itself on two plates slid along them, to the plates' ends.)
     pub fn stays_on_plan(&mut self, name: &str, n: NodeRef, at: Vec3) {
         let p = self.sys.at(self.nodes[n.0].of[0]);
         for (k, which) in ["x", "y"].into_iter().enumerate() {
             let mut axis = [0.0; 3];
             axis[k] = 1.0;
-            self.sys.constrain(&format!("{name}: {which}"), ts::Tier::Fallback, ts::Kind::offset(ts::Point::at(ts::WORLD, [0.0; 3]), p.clone(), ts::Dir(ts::WORLD, axis), [at.x, at.y][k]));
+            self.sys.constrain(&format!("{name}: {which}"), ts::Tier::Default, ts::Kind::offset(ts::Point::at(ts::WORLD, [0.0; 3]), p.clone(), ts::Dir(ts::WORLD, axis), [at.x, at.y][k]));
         }
     }
 

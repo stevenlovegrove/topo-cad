@@ -259,6 +259,11 @@ pub struct AssemblyMember {
     pub anchor: Option<(f64, f64)>,
     #[serde(default)]
     pub priority: i32,
+    /// How its start and its end are cut, where that is not as its joint has it: `level` (on a
+    /// level plane through the node: a stringer's foot on a floor) or `plumb` (on an upright one,
+    /// square to its run on plan: a stringer's head against a header).
+    #[serde(default)]
+    pub cut: Option<(Option<String>, Option<String>)>,
 }
 
 fn one() -> u32 {
@@ -298,12 +303,20 @@ pub struct AssemblySpec {
     /// corners, at the underside of its joists), `above` them by the joists' depth.
     #[serde(default)]
     pub deck: Option<DeckSpec>,
+    /// Roles of its members that others hang from where they end on them (a floor's header and
+    /// trimmers, about an opening): joined there by a hanger, not by nails.
+    #[serde(default)]
+    pub hung_from: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeckSpec {
     pub thickness: f64,
     pub above: f64,
+    /// Its pieces, each over four points of the assembly (none given: one, over `deck 1` to
+    /// `deck 4`): about an opening it is in pieces.
+    #[serde(default)]
+    pub pieces: Vec<[String; 4]>,
 }
 
 /// A frame with points in it.
@@ -1469,7 +1482,9 @@ impl Builder {
                     }
                     for (i, mm) in a.members.iter().enumerate() {
                         let (ma, mb) = (at(a, &f, &mm.path[0]), at(a, &f, mm.path.last().unwrap()));
-                        if crosses_on_plan((ma, mb), (pa, pb)) {
+                        // (As wide as the beam is: its section's larger side.)
+                        let sec = if lower.plies > 1 { built_up(lower.plies, lower.size.0, lower.size.1, 0.0) } else { sawn(lower.size.0, lower.size.1) };
+                        if crosses_on_plan((ma, mb), (pa, pb), sec.props.width.max(sec.props.depth)) {
                             let label = |s: &AssemblySpec, k: usize| format!("{}/{}#{}", s.name, s.members[k].role, s.members[..k].iter().filter(|o| o.role == s.members[k].role).count() + 1);
                             let n = sc.rest(&format!("{} on {}", label(a, i), label(e, k)), members[i], ed.members[k], &self.m)?;
                             rests.push((n, members[i], ed.members[k]));
@@ -1484,7 +1499,8 @@ impl Builder {
                 for (i, mm) in a.members.iter().enumerate() {
                     let at = |n: &String| a.points.iter().find(|p| p.name == *n).map(|p| f.to_world(v3(p.at[0], p.at[1], p.at[2]))).unwrap();
                     let (ma, mb) = (at(&mm.path[0]), at(mm.path.last().unwrap()));
-                    if crosses_on_plan((ma, mb), (pa, pb)) {
+                    let sec = &self.m.section(self.m.member(plate).section).props;
+                    if crosses_on_plan((ma, mb), (pa, pb), sec.width.max(sec.depth) + 0.002) {
                         let lower = sc.import_member(&self.m, plate, &self.m.member_path(plate));
                         let n = sc.rest(&format!("{}/{}#{} on {}", a.name, mm.role, a.members[..i].iter().filter(|o| o.role == mm.role).count() + 1, self.m.member_path(plate)), members[i], lower, &self.m)?;
                         rests.push((n, members[i], lower));
@@ -1502,15 +1518,32 @@ impl Builder {
         self.assemblies.insert(a.name.clone(), ids.clone());
         // Its deck, where the solve has sat it: a sheet over its corners, on the joists' tops (tilted as they are).
         if let Some(deck) = &a.deck {
-            let at = |k: usize| nodes.get(format!("deck {k}").as_str()).map(|&n| self.m.pos(n)).ok_or_else(|| format!("assembly {}: a deck needs its points deck 1 to deck 4", a.name));
-            let c = [at(1)?, at(2)?, at(3)?, at(4)?];
-            // (The plane through three of them: its rise per metre along x and y.)
-            let (u, v) = (c[1] - c[0], c[3] - c[0]);
-            let n = u.cross(v);
-            let slope = if n.z.abs() > 1e-12 { Vec2::new(-n.x / n.z, -n.y / n.z) } else { Vec2::new(0.0, 0.0) };
-            let under = Level { z: c[0].z + deck.above, at: Vec2::new(c[0].x, c[0].y), slope };
-            let group = ids.first().and_then(|&id| self.m.member(id).group);
-            self.m.solids.push(Solid { name: "deck".into(), role: "deck".into(), material: "plywood".into(), group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under, top: under.raised(deck.thickness) });
+            let whole = [["deck 1".to_string(), "deck 2".into(), "deck 3".into(), "deck 4".into()]];
+            let pieces: &[[String; 4]] = if deck.pieces.is_empty() { &whole } else { &deck.pieces };
+            for (k, piece) in pieces.iter().enumerate() {
+                let at = |name: &String| nodes.get(name.as_str()).map(|&n| self.m.pos(n)).ok_or_else(|| format!("assembly {}: its deck is over a point {name} it has not", a.name));
+                let c = [at(&piece[0])?, at(&piece[1])?, at(&piece[2])?, at(&piece[3])?];
+                // (The plane through three of them: its rise per metre along x and y.)
+                let (u, v) = (c[1] - c[0], c[3] - c[0]);
+                let n = u.cross(v);
+                let slope = if n.z.abs() > 1e-12 { Vec2::new(-n.x / n.z, -n.y / n.z) } else { Vec2::new(0.0, 0.0) };
+                let under = Level { z: c[0].z + deck.above, at: Vec2::new(c[0].x, c[0].y), slope };
+                let group = ids.first().and_then(|&id| self.m.member(id).group);
+                let name = if pieces.len() == 1 { "deck".to_string() } else { format!("deck#{}", k + 1) };
+                self.m.solids.push(Solid { name, role: "deck".into(), material: "plywood".into(), group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under, top: under.raised(deck.thickness) });
+            }
+        }
+        // Ends cut level or plumb, where a member says so.
+        for (k, mm) in a.members.iter().enumerate() {
+            let Some((start, end)) = &mm.cut else { continue };
+            for (how, node) in [(start, self.m.member(ids[k]).start()), (end, self.m.member(ids[k]).end())] {
+                match how.as_deref() {
+                    None => {}
+                    Some("level") => self.m.add_rule(node, JointRule::Plane { member: ids[k], normal: Vec3::Z }),
+                    Some("plumb") => self.m.add_rule(node, JointRule::Plumb { member: ids[k] }),
+                    Some(o) => return Err(format!("assembly {}: a member's end is cut level or plumb, not {o}", a.name)),
+                }
+            }
         }
         // Face-to-face bonds (a cap nailed on a header, plies of a post).
         let find = |sel: &str| -> Result<MemberId, String> {
@@ -1551,10 +1584,13 @@ impl Builder {
             }
         };
         if let Some(c) = conn {
+            let hanger = (!a.hung_from.is_empty()).then(|| self.m.add_connection(fx::joist_hanger("face-mount, to suit")));
             for &id in &ids {
                 for end in [self.m.member(id).start(), self.m.member(id).end()] {
                     if let Some(&to) = ids.iter().find(|&&o| o != id && self.m.member(o).path.contains(&end)) {
-                        self.m.connect(end, id, Some(to), c);
+                        // (Hung from what it ends on, where that is a member things hang from; else as the assembly is joined.)
+                        let hung = hanger.filter(|_| a.hung_from.contains(&self.m.member(to).role));
+                        self.m.connect(end, id, Some(to), hung.unwrap_or(c));
                     }
                 }
             }
@@ -1595,17 +1631,17 @@ impl Builder {
     }
 }
 
-/// Whether two members' axes cross on plan, within both.
-fn crosses_on_plan(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
+/// Whether the first member crosses the second on plan: their axes cross within both, or the
+/// first ends within `short` of the second's line as it runs toward it (`short`: how wide the
+/// second is: a joist that stops over a plate, short of the line along the plate's edge, bears on it).
+fn crosses_on_plan(a: (Vec3, Vec3), b: (Vec3, Vec3), short: f64) -> bool {
     let (d1, d2, w) = (a.1 - a.0, b.1 - b.0, b.0 - a.0);
     let den = d1.x * d2.y - d1.y * d2.x;
     if den.abs() < 1e-12 {
         return false;
     }
     let (s, t) = ((w.x * d2.y - w.y * d2.x) / den, (w.x * d1.y - w.y * d1.x) / den);
-    // (The first may end an inch short of the other's line: a joist that runs to a wall's line bears on its
-    // plate, wherever the solve has since put the wall.)
-    let short = 0.025 / Vec2::new(d1.x, d1.y).norm().max(1e-9);
+    let short = short / Vec2::new(d1.x, d1.y).norm().max(1e-9);
     (-short..=1.0 + short).contains(&s) && (-1e-9..=1.0 + 1e-9).contains(&t)
 }
 

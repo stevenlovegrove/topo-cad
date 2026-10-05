@@ -1259,6 +1259,7 @@ interface AssemblyMemberSpec {
   readonly depth?: Point3;
   readonly anchor?: readonly [number, number];
   readonly priority: number;
+  readonly cut?: readonly [("level" | "plumb" | null), ("level" | "plumb" | null)];
 }
 
 /**
@@ -1280,13 +1281,14 @@ export class Assembly {
     readonly bonds: readonly (readonly [string, string])[],
     readonly rests: readonly (readonly [string, string])[] = [],
     readonly free_: boolean = false,
+    readonly extra: { readonly onPlan?: boolean; readonly hungFrom?: readonly string[] } = {},
   ) {}
 
   static named(name: string): Assembly {
     return new Assembly(name, Placement.identity, [], [], "nailed", [], [], [], []);
   }
   private copy(
-    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; rests: Assembly["rests"]; free_: boolean }>,
+    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; rests: Assembly["rests"]; free_: boolean; extra: Assembly["extra"] }>,
   ): Assembly {
     return new Assembly(
       p.name ?? this.name,
@@ -1300,6 +1302,7 @@ export class Assembly {
       p.bonds ?? this.bonds,
       p.rests ?? this.rests,
       p.free_ ?? this.free_,
+      p.extra ?? this.extra,
     );
   }
   /**
@@ -1309,6 +1312,22 @@ export class Assembly {
    */
   free(): Assembly {
     return this.copy({ free_: true });
+  }
+  /**
+   * Free, but on plan where it is drawn unless a relation says otherwise (a
+   * hint): for what only sits on things (`bearingOn`), which gives it
+   * its height and its tilt, and nothing else.
+   */
+  sitting(): Assembly {
+    return this.copy({ free_: true, extra: { ...this.extra, onPlan: true } });
+  }
+  /**
+   * Members of these roles are hung from: where another of its members ends
+   * on one of them it is joined by a hanger, not by nails (a floor's header
+   * on its trimmers, tail joists on the header).
+   */
+  hungFrom(...roles: string[]): Assembly {
+    return this.copy({ extra: { ...this.extra, hungFrom: [...(this.extra.hungFrom ?? []), ...roles] } });
   }
   /** One of its points, as a node others can be related to: `assembly.node("top")`. */
   node(point: string): NodeHandle {
@@ -1357,10 +1376,19 @@ export class Assembly {
   member(
     role: string,
     path: readonly string[],
-    o: { size: Nominal; grade: Grade; plies?: number; depth?: Point3; anchor?: readonly [number, number]; priority?: number },
+    o: {
+      size: Nominal;
+      grade: Grade;
+      plies?: number;
+      depth?: Point3;
+      anchor?: readonly [number, number];
+      priority?: number;
+      /** How its start and its end are cut, where not as their joints have them: `level` (a stringer's foot on a floor) or `plumb` (its head against a header). */
+      cut?: readonly [("level" | "plumb" | null), ("level" | "plumb" | null)];
+    },
   ): Assembly {
     for (const n of path) if (!this.points.some((p) => p.name === n)) throw new Error(`assembly ${this.name}: unknown point ${n}`);
-    const m: AssemblyMemberSpec = { role, path, size: o.size, plies: o.plies ?? 1, grade: o.grade, depth: o.depth, anchor: o.anchor, priority: o.priority ?? 0 };
+    const m: AssemblyMemberSpec = { role, path, size: o.size, plies: o.plies ?? 1, grade: o.grade, depth: o.depth, anchor: o.anchor, priority: o.priority ?? 0, cut: o.cut };
     return this.copy({ members: [...this.members, m] });
   }
   /** How members that meet are fastened (default `nailed`). */
@@ -1400,6 +1428,8 @@ export class Assembly {
       bonds: this.bonds,
       rests: this.rests,
       free: this.free_,
+      on_plan: this.extra.onPlan,
+      hung_from: this.extra.hungFrom,
     };
   }
 }
@@ -1483,20 +1513,24 @@ export class Floor {
     readonly bearsOn: readonly (Perimeter | Partition | Assembly)[],
     readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
     readonly deck_: Length = 0,
+    readonly opening_: { readonly along: Length; readonly across: Length; readonly length: Length; readonly width: Length } | undefined = undefined,
   ) {}
   static of(o: { joists: Nominal; grade: Grade; spacing?: Length }): Floor {
     return new Floor("Floor", { joists: o.joists, spacing: o.spacing ?? inch(16), grade: o.grade }, undefined, [], []);
   }
+  private with(p: Partial<{ name: string; rect: Floor["rect"]; bearsOn: Floor["bearsOn"]; loads: Floor["loads"]; deck: Length; opening: Floor["opening_"] }>): Floor {
+    return new Floor(p.name ?? this.name, this.framing, p.rect ?? this.rect, p.bearsOn ?? this.bearsOn, p.loads ?? this.loads, p.deck ?? this.deck_, p.opening ?? this.opening_);
+  }
   named(name: string): Floor {
-    return new Floor(name, this.framing, this.rect, this.bearsOn, this.loads, this.deck_);
+    return this.with({ name });
   }
   /**
    * A deck on it, this thick (a 3/4" subfloor: `deck(inch(0.75))`): a sheet
-   * over the whole of it, on the joists. What stands on the floor stands on
-   * the deck.
+   * over the whole of it (about its opening, if it has one), on the joists.
+   * What stands on the floor stands on the deck.
    */
   deck(thickness: Length): Floor {
-    return new Floor(this.name, this.framing, this.rect, this.bearsOn, this.loads, thickness);
+    return this.with({ deck: thickness });
   }
   /** How far its top (its deck's, if it has one) is above the underside of its joists. */
   get top(): Length {
@@ -1511,7 +1545,7 @@ export class Floor {
    */
   from(corner: Point, o: { along: Point; length: Length; width: Length; z?: Length }): Floor {
     if (!(o.length > 0) || o.width === 0 || !(Math.hypot(o.along[0], o.along[1]) > 0)) throw new Error(`floor ${this.name}: give a direction, a length and a width`);
-    return new Floor(this.name, this.framing, { corner, along: o.along, length: o.length, width: o.width, z: o.z ?? 0 }, this.bearsOn, this.loads, this.deck_);
+    return this.with({ rect: { corner, along: o.along, length: o.length, width: o.width, z: o.z ?? 0 } });
   }
   /**
    * What it sits on: each of its members rests on each cap plate of these
@@ -1520,18 +1554,31 @@ export class Floor {
    * building before the floor).
    */
   bearingOn(...ps: (Perimeter | Partition | Assembly)[]): Floor {
-    return new Floor(this.name, this.framing, this.rect, [...this.bearsOn, ...ps], this.loads, this.deck_);
+    return this.with({ bearsOn: [...this.bearsOn, ...ps] });
   }
   /** A load over its area (N/m², use `psf`), carried by the joists: each takes what is nearest it. */
   load(kind: LoadKind, pressure: number): Floor {
-    return new Floor(this.name, this.framing, this.rect, this.bearsOn, [...this.loads, { kind, pressure }], this.deck_);
+    return this.with({ loads: [...this.loads, { kind, pressure }] });
   }
-  /** One of its corners (1 to 4: start, along, along + across, across), as a node, at the underside of the joists. */
-  node(point: "corner 1" | "corner 2" | "corner 3" | "corner 4"): NodeHandle {
+  /**
+   * An opening in it (a stairwell): a clear rectangle, `along` the joists
+   * from the floor's corner and `across` them, `length` by `width`. A trimmer
+   * joist runs either side of it; a header crosses at each end of it, hung
+   * from the trimmers; the joists it cuts stop at the headers (tail joists),
+   * hung from them. Its corners are points of the floor (`opening 1` to
+   * `opening 4`, at the underside of the joists; in the order start, along,
+   * along + across, across). It has to be clear of the floor's edges by a
+   * few joist thicknesses.
+   */
+  opening(o: { along: Length; across: Length; length: Length; width: Length }): Floor {
+    return this.with({ opening: o });
+  }
+  /** One of its corners (1 to 4: start, along, along + across, across), or of its opening's, as a node, at the underside of the joists. */
+  node(point: "corner 1" | "corner 2" | "corner 3" | "corner 4" | "opening 1" | "opening 2" | "opening 3" | "opening 4"): NodeHandle {
     return new NodeHandle(`${this.name}/${point}`);
   }
-  /** What it is made of: a free assembly, sat on what it bears on. */
-  assembly(): Assembly {
+  /** Its geometry on plan, and its joists across it: what `assembly` and `loose` are made from. */
+  private layout() {
     const r = this.rect;
     if (!r) throw new Error(`floor ${this.name}: give its rectangle with from(corner, { along, length, width })`);
     const n = Math.hypot(r.along[0], r.along[1]);
@@ -1545,30 +1592,203 @@ export class Floor {
     // Across the joists: a band joist at each side, commons between them at the spacing (from the outside of the
     // first band joist). Each member's axis is along the middle of its underside: a rim's and a band joist's half a
     // thickness inside the rectangle, so the rims run its whole width and everything else butts into them.
-    const ys: Length[] = [b / 2];
-    for (let k = 1; k * spacing < wid - 1.5 * b; k++) ys.push(k * spacing);
-    ys.push(wid - b / 2);
-    const [x0, x1] = [b / 2, len - b / 2];
-    let a = Assembly.named(this.name).point("corner 1", at(x0, ys[0])).point("corner 2", at(x1, ys[0])).point("corner 3", at(x1, wid - b / 2)).point("corner 4", at(x0, wid - b / 2));
-    const ends = (k: number, end: 0 | 1): string => (k === 0 ? (end ? "corner 2" : "corner 1") : k === ys.length - 1 ? (end ? "corner 3" : "corner 4") : `joist ${k} ${end ? "end" : "start"}`);
-    for (let k = 1; k < ys.length - 1; k++) a = a.point(ends(k, 0), at(x0, ys[k])).point(ends(k, 1), at(x1, ys[k]));
-    const rim = (end: 0 | 1) => ys.map((_, k) => ends(k, end));
-    a = a.member("rim_joist", rim(0), { size, grade, anchor: [0, -0.5], priority: 20 });
-    a = a.member("rim_joist", rim(1), { size, grade, anchor: [0, -0.5], priority: 20 });
-    for (let k = 0; k < ys.length; k++) {
-      const band = k === 0 || k === ys.length - 1;
-      a = a.member(band ? "band_joist" : "joist", [ends(k, 0), ends(k, 1)], { size, grade, anchor: [0, -0.5], priority: 10 });
+    const commons: Length[] = [];
+    for (let k = 1; k * spacing < wid - 1.5 * b; k++) commons.push(k * spacing);
+    return { at, len, wid, b, size, spacing, grade, commons, x0: b / 2, x1: len - b / 2 };
+  }
+  /** What it is made of: a free assembly, sat on what it bears on. */
+  assembly(): Assembly {
+    const { at, len, wid, b, size, spacing, grade, commons, x0, x1 } = this.layout();
+    type J = { y: Length; role: "band_joist" | "joist" | "trimmer_joist" | "tail_joist"; id: string };
+    const o = this.opening_;
+    let js: J[] = [];
+    // About an opening: a trimmer either side of it (in place of any joist that would be within one's thickness of
+    // it), and the joists between them tails.
+    const [t0, t1] = o ? [o.across - b / 2, o.across + o.width + b / 2] : [0, 0];
+    if (o && (t0 < 3 * b || t1 > wid - 3 * b || o.along < 0 || o.along + o.length > len)) throw new Error(`floor ${this.name}: its opening has to be inside it, clear of its sides`);
+    let [nj, nt] = [0, 0];
+    for (const y of commons) {
+      if (o && (Math.abs(y - t0) < b || Math.abs(y - t1) < b)) continue;
+      if (o && y > t0 && y < t1) js.push({ y, role: "tail_joist", id: `tail ${++nt}` });
+      else js.push({ y, role: "joist", id: `joist ${++nj}` });
     }
+    if (o) js.push({ y: t0, role: "trimmer_joist", id: "trimmer 1" }, { y: t1, role: "trimmer_joist", id: "trimmer 2" });
+    js.sort((p, q) => p.y - q.y);
+    // (A header at each end of the opening, unless the opening runs to the floor's end there.)
+    const [hx0, hx1] = o ? [o.along - b / 2, o.along + o.length + b / 2] : [0, 0];
+    const [hasA, hasB] = [!!o && hx0 > x0 + 2 * b, !!o && hx1 < x1 - 2 * b];
+    let a = Assembly.named(this.name).point("corner 1", at(x0, b / 2)).point("corner 2", at(x1, b / 2)).point("corner 3", at(x1, wid - b / 2)).point("corner 4", at(x0, wid - b / 2));
+    const [rim0, rim1]: string[][] = [["corner 1"], ["corner 2"]];
+    const [headA, headB]: string[][] = [[], []];
+    for (const j of js) {
+      const tail = j.role === "tail_joist";
+      if (!tail || hasA) {
+        a = a.point(`${j.id} start`, at(x0, j.y));
+        rim0.push(`${j.id} start`);
+      }
+      if (!tail || hasB) {
+        a = a.point(`${j.id} end`, at(x1, j.y));
+        rim1.push(`${j.id} end`);
+      }
+      if (j.role !== "joist") {
+        if (hasA) a = a.point(`${j.id} at header 1`, at(hx0, j.y));
+        if (hasB) a = a.point(`${j.id} at header 2`, at(hx1, j.y));
+        if (hasA) headA.push(`${j.id} at header 1`);
+        if (hasB) headB.push(`${j.id} at header 2`);
+      }
+    }
+    rim0.push("corner 4");
+    rim1.push("corner 3");
+    const m = { size, grade, anchor: [0, -0.5] as const };
+    a = a.member("rim_joist", rim0, { ...m, priority: 20 }).member("rim_joist", rim1, { ...m, priority: 20 });
+    a = a.member("band_joist", ["corner 1", "corner 2"], { ...m, priority: 10 });
+    for (const j of js) {
+      if (j.role === "joist") a = a.member("joist", [`${j.id} start`, `${j.id} end`], { ...m, priority: 10 });
+      else if (j.role === "trimmer_joist") a = a.member("trimmer_joist", [`${j.id} start`, ...(hasA ? [`${j.id} at header 1`] : []), ...(hasB ? [`${j.id} at header 2`] : []), `${j.id} end`], { ...m, priority: 15 });
+      else {
+        if (hasA) a = a.member("tail_joist", [`${j.id} start`, `${j.id} at header 1`], { ...m, priority: 10 });
+        if (hasB) a = a.member("tail_joist", [`${j.id} at header 2`, `${j.id} end`], { ...m, priority: 10 });
+      }
+    }
+    a = a.member("band_joist", ["corner 4", "corner 3"], { ...m, priority: 10 });
+    if (hasA) a = a.member("floor_header", headA, { ...m, priority: 12 });
+    if (hasB) a = a.member("floor_header", headB, { ...m, priority: 12 });
+    const roles = new Set(js.map((j) => j.role));
     for (const l of this.loads) {
-      a = a.lineLoad(l.kind, "joist", l.pressure * spacing).lineLoad(l.kind, "band_joist", (l.pressure * spacing) / 2);
+      for (const role of ["joist", "trimmer_joist", "tail_joist"] as const) if (roles.has(role)) a = a.lineLoad(l.kind, role, l.pressure * spacing);
+      a = a.lineLoad(l.kind, "band_joist", (l.pressure * spacing) / 2);
     }
-    // (Its outer corners, for a deck to lie over.)
-    if (this.deck_ > 0) a = a.point("deck 1", at(0, 0)).point("deck 2", at(len, 0)).point("deck 3", at(len, wid)).point("deck 4", at(0, wid));
-    return a.free().bearingOn(...this.bearsOn);
+    if (o) {
+      const [a0, a1, c0, c1] = [o.along, o.along + o.length, o.across, o.across + o.width];
+      a = a.point("opening 1", at(a0, c0)).point("opening 2", at(a1, c0)).point("opening 3", at(a1, c1)).point("opening 4", at(a0, c1)).hungFrom("floor_header", "trimmer_joist");
+    }
+    // (Its outer corners, for a deck to lie over; and about an opening, where the deck's pieces meet its sides.)
+    if (this.deck_ > 0) {
+      a = a.point("deck 1", at(0, 0)).point("deck 2", at(len, 0)).point("deck 3", at(len, wid)).point("deck 4", at(0, wid));
+      if (o) {
+        const [a0, a1, c0, c1] = [o.along, o.along + o.length, o.across, o.across + o.width];
+        a = a.point("deck a", at(a0, 0)).point("deck b", at(a1, 0)).point("deck c", at(a1, wid)).point("deck d", at(a0, wid));
+        a = a.point("deck e", at(a0, c0)).point("deck f", at(a1, c0)).point("deck g", at(a1, c1)).point("deck h", at(a0, c1));
+      }
+    }
+    return a.sitting().bearingOn(...this.bearsOn);
+  }
+  /**
+   * The same floor with nothing joining its joists: each joist, band joist
+   * and rim is a thing of its own, sat for itself on what is under it, as each
+   * truss of a roof is. For walls as built, whose tops are not in one plane:
+   * a floor that is one rigid thing cannot sit on all of them, and each of
+   * these can. Add them all: `.add(floor.loose())`. (It has no opening, no
+   * deck, and nothing can stand on it: it has no one top.)
+   */
+  loose(): Assembly[] {
+    if (this.opening_ || this.deck_ > 0) throw new Error(`floor ${this.name}: a loose floor has no opening and no deck`);
+    const { at, wid, b, size, spacing, grade, commons, x0, x1 } = this.layout();
+    const m = { size, grade, anchor: [0, -0.5] as const };
+    const one = (id: string, role: string, p: Point3, q: Point3, w: number) => {
+      let a = Assembly.named(`${this.name} ${id}`).point("start", p).point("end", q).member(role, ["start", "end"], m);
+      for (const l of this.loads) if (w > 0) a = a.lineLoad(l.kind, role, l.pressure * w);
+      return a.sitting().bearingOn(...this.bearsOn);
+    };
+    // (Rims and joists butt: a joist runs between the rims' inner faces, 2 mm short of each, as cut: a joist
+    // that slopes a little turns its square end toward the rim.)
+    const [j0, j1] = [x0 + b / 2 + mm(2), x1 - b / 2 - mm(2)];
+    return [
+      one("rim 1", "rim_joist", at(x0, 0), at(x0, wid), 0),
+      one("rim 2", "rim_joist", at(x1, 0), at(x1, wid), 0),
+      one("band 1", "band_joist", at(j0, b / 2), at(j1, b / 2), spacing / 2),
+      ...commons.map((y, k) => one(`joist ${k + 1}`, "joist", at(j0, y), at(j1, y), spacing)),
+      one("band 2", "band_joist", at(j0, wid - b / 2), at(j1, wid - b / 2), spacing / 2),
+    ];
   }
   toJSON() {
-    // (Free, and sat on what it bears on; on plan, where it is drawn, as a fallback.)
-    return { ...this.assembly().toJSON(), on_plan: true, deck: this.deck_ > 0 ? { thickness: this.deck_, above: dressed(this.framing.joists[1]) } : undefined };
+    // (Free, and sat on what it bears on; on plan, where it is drawn, as a hint.)
+    const o = this.opening_;
+    const pieces = o ? [["deck 1", "deck a", "deck d", "deck 4"], ["deck b", "deck 2", "deck 3", "deck c"], ["deck a", "deck b", "deck f", "deck e"], ["deck h", "deck g", "deck c", "deck d"]] : [];
+    return { ...this.assembly().toJSON(), deck: this.deck_ > 0 ? { thickness: this.deck_, above: dressed(this.framing.joists[1]), pieces } : undefined };
+  }
+}
+
+// ----- stairs -----------------------------------------------------------------
+
+/**
+ * A straight flight of stairs: two stringers and the treads between them.
+ * It is given its rise (from the floor it starts on to the top of the floor
+ * it reaches) and its width between the stringers; the rise is divided into
+ * equal risers no taller than `maxRiser` (7 3/4" by default), each tread
+ * going `run` (10" by default). So a flight of n risers has n − 1 treads (the
+ * last step is the floor above) and goes (n − 1) × run on plan.
+ *
+ *   const stairs = Stairs.of({ rise: ft(8) + floor.top, width: inch(36), grade: DFL.No2 }).named("Stairs")
+ *     .from([ft(3), ft(2), 0], { toward: [0, 1] });
+ *   stairs.going   // how far it runs on plan: where its head is from its foot
+ *
+ * `from` is the middle of its foot (where the first riser stands, at the
+ * height of the floor it starts on) and the way it climbs. The stringers'
+ * feet are cut level, on that floor, and are its supports; their heads are
+ * cut plumb, where the top riser is: against the header or trimmer of the
+ * opening it comes up through. The treads are housed between the stringers
+ * (carried by them: drawn as hung).
+ *
+ * *Not yet:* its rise is given, not found: it does not follow the floor
+ * above if that moves, and nothing joins its head to that floor.
+ */
+export class Stairs {
+  private constructor(
+    readonly name: string,
+    readonly o: { readonly rise: Length; readonly width: Length; readonly grade: Grade; readonly run: Length; readonly maxRiser: Length; readonly stringers: Nominal; readonly treads: Nominal },
+    readonly foot: Point3,
+    readonly toward: Point,
+  ) {}
+  static of(o: { rise: Length; width: Length; grade: Grade; run?: Length; maxRiser?: Length; stringers?: Nominal; treads?: Nominal }): Stairs {
+    if (!(o.rise > 0) || !(o.width > 0)) throw new Error("stairs: give a rise and a width");
+    return new Stairs("Stairs", { rise: o.rise, width: o.width, grade: o.grade, run: o.run ?? inch(10), maxRiser: o.maxRiser ?? inch(7.75), stringers: o.stringers ?? [2, 12], treads: o.treads ?? [2, 10] }, [0, 0, 0], [1, 0]);
+  }
+  named(name: string): Stairs {
+    return new Stairs(name, this.o, this.foot, this.toward);
+  }
+  /** Where the middle of its foot is (at the height of the floor it starts on), and the way it climbs on plan. */
+  from(foot: Point3, o: { toward: Point }): Stairs {
+    if (!(Math.hypot(o.toward[0], o.toward[1]) > 0)) throw new Error(`stairs ${this.name}: give the way it climbs`);
+    return new Stairs(this.name, this.o, foot, o.toward);
+  }
+  /** How many risers it has. */
+  get risers(): number {
+    return Math.ceil(this.o.rise / this.o.maxRiser - 1e-9);
+  }
+  /** How tall each riser is. */
+  get riser(): Length {
+    return this.o.rise / this.risers;
+  }
+  /** How far it goes on plan, from its foot to its head (the face of its top riser). */
+  get going(): Length {
+    return (this.risers - 1) * this.o.run;
+  }
+  /** What it is made of: an assembly, where it is put. */
+  assembly(): Assembly {
+    const { width, grade, run, stringers, treads } = this.o;
+    const [n, h, t] = [this.risers, this.riser, dressed(stringers[0])];
+    if (n < 2) throw new Error(`stairs ${this.name}: one riser is a step, not a flight`);
+    // In its own frame: x the way it climbs, y to its left, z up, from the middle of its foot. The stringers' axes
+    // are along the line of the treads' back top edges (the pitch line), each tread's ends nodes of them.
+    const sides: [string, Length][] = [["left", width / 2 + t / 2], ["right", -(width / 2 + t / 2)]];
+    let a = Assembly.named(this.name);
+    for (const [side, y] of sides) {
+      a = a.point(`${side} foot`, [0, y, 0]);
+      for (let k = 1; k < n; k++) a = a.point(`${side} ${k}`, [k * run, y, k * h]);
+      a = a.member("stringer", [`${side} foot`, ...Array.from({ length: n - 1 }, (_, k) => `${side} ${k + 1}`)], { size: stringers, grade, priority: 10, cut: ["level", "plumb"] });
+    }
+    // (A tread's axis is its back top edge: it lies forward and down from it.)
+    for (let k = 1; k < n; k++) a = a.member("tread", [`right ${k}`, `left ${k}`], { size: treads, grade, depth: [-1, 0, 0], anchor: [-0.5, -0.5] });
+    const turn = (Math.atan2(this.toward[1], this.toward[0]) * 180) / Math.PI;
+    return a.hungFrom("stringer").supportedAt("left foot", "right foot").placed(Placement.at(this.foot, turn));
+  }
+  /** One of its points, as a node: `left foot`, `right foot`, or a tread's end (`left 3`). */
+  node(point: string): NodeHandle {
+    return this.assembly().node(point);
+  }
+  toJSON() {
+    return this.assembly().toJSON();
   }
 }
 
@@ -1968,7 +2188,7 @@ export class Frame {
   }
 }
 
-export type Item = Perimeter | Partition | Slab | Floor | TrussRoof | Assembly | Frame | Relation;
+export type Item = Perimeter | Partition | Slab | Floor | Stairs | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of

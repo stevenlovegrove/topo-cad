@@ -8,7 +8,7 @@
 //
 // Here the joists run front to back over a 12 ft by 10 ft room; the walls
 // are 8 ft tall, so the underside of the joists is at 8 ft. On plan it stays
-// where it is drawn (a fallback: a relation to one of its corners,
+// where it is drawn (a hint: a relation to one of its corners,
 // `floor.node("corner 1")`, would move it).
 //
 // It is one rigid thing: were the back wall half an inch taller, it would
