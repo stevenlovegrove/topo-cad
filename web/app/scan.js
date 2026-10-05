@@ -534,7 +534,13 @@ function rebuildModel() {
   const list = drawList().filter(({ m }) => memberVisible(m.path));
   let nt = 0, nl = 0;
   for (const { m } of list) for (const f of m.faces) { nt += (f.length - 2) * 3; nl += f.length * 2; }
-  const build = (neutral, box) => {
+  // (Solid: each face in its part's colour, lit by which way it faces, hiding what is behind it.)
+  const light = vec.unit([0.35, -0.55, 0.76]);
+  const lit = (c, q) => {
+    const n = vec.unit(vec.cross(vec.sub(q[1], q[0]), vec.sub(q[2], q[1]))), k = 0.62 + 0.38 * Math.abs(vec.dot(n, light));
+    return c.map((x) => Math.round(Math.min(255, x * k)));
+  };
+  const build = (neutral, box, solid) => {
     // (Clipped to a slab: room too for each member's cut by the slab's middle plane, at most a hexagon.)
     const extra = box ? list.length * 6 : 0;
     const tris = new Float32Array((nt + extra * 3) * 3), tcol = new Uint8Array((nt + extra * 3) * 4), lines = new Float32Array((nl + extra * 2) * 3), lcol = new Uint8Array((nl + extra * 2) * 4);
@@ -559,12 +565,13 @@ function rebuildModel() {
     };
     for (const { m, rgb, fill, line, change } of list) {
       // A proposal's changes and highlights keep their colours.
-      const plain = neutral && !change;
-      const [c, a] = plain ? [[255, 255, 255], 0] : [rgb, fill];
+      const plain = neutral && !change && !solid;
+      const [c, a] = plain ? [[255, 255, 255], 0] : [rgb, solid ? 255 : fill];
       const qs = m.faces.map((f) => f.map(toScan));
       for (const q of qs) {
-        if (a) for (let i = 1; i + 1 < q.length; i++) for (const p of [q[0], q[i], q[i + 1]]) put(tris, tcol, ti++, p, c, a);
-        for (let i = 0; i < q.length; i++) { put(lines, lcol, li++, q[i], c, plain ? Math.min(line, 200) : line); put(lines, lcol, li++, q[(i + 1) % q.length], c, plain ? Math.min(line, 200) : line); }
+        const face = solid && q.length > 2 ? lit(c, q) : c, edge = solid ? c.map((x) => Math.round(x * 0.45)) : c;
+        if (a) for (let i = 1; i + 1 < q.length; i++) for (const p of [q[0], q[i], q[i + 1]]) put(tris, tcol, ti++, p, face, a);
+        for (let i = 0; i < q.length; i++) { put(lines, lcol, li++, q[i], edge, plain ? Math.min(line, 200) : line); put(lines, lcol, li++, q[(i + 1) % q.length], edge, plain ? Math.min(line, 200) : line); }
       }
       if (box) cut(qs, c, plain ? 0 : a, 255);
     }
@@ -572,11 +579,11 @@ function rebuildModel() {
   };
   const made = {};
   for (const v of Object.values(views)) {
-    const k = neutralModel(v), box = v.state.box;
+    const k = neutralModel(v), box = v.state.box, solid = !!v.state.solid;
     v.modelNeutral = k;
     v.modelBox = box ? JSON.stringify(box) : "";
     // (A view clipped to a slab has its own: the members as the slab cuts them.)
-    v.setModel(...(box ? build(k, box) : (made[k] ??= build(k))));
+    v.setModel(...(box ? build(k, box, solid) : (made[`${k}|${solid}`] ??= build(k, null, solid))));
   }
 }
 
@@ -1652,7 +1659,7 @@ function renderTools(v) {
   v.tools.innerHTML =
     `<select data-k="colour" title="Colour the points by">${COLOURS.map((c) => `<option ${c === s.colour ? "selected" : ""}>${c}</option>`).join("")}</select>` +
     `<select data-k="slab" title="What of the scan this view shows: all of it, or what is in a slab (a section)"><option value="">Whole scan</option>${slabs().map((x) => `<option value="${esc(x.id)}" ${x.id === v.slab ? "selected" : ""}>Slab ${esc(slabName(x))}</option>`).join("")}<option value="+plan">New slab: plan…</option><option value="+x">New slab: across x…</option><option value="+y">New slab: across y…</option></select>` +
-    `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}</span>` +
+    `<span class="grp">${btn("ortho", ICON.ortho, "Orthographic (no perspective)", s.ortho)}${btn("top", ICON.top, "Straight down, the model's +y up")}${btn("fit", ICON.fit, "Fit the model in the view")}${btn("solid", "▣", "The model solid: its parts hide what is behind them, and the points behind them (as in 3D, shaded). Off: the model as glass over the points", s.solid)}</span>` +
     (sb
       ? `<span class="grp">${btn("square", ICON.square, "Look square on at the slab, fitted in the view")}${btn("flat", ICON.lock, "Held square on: a drag slides the view. Off: a drag turns it", s.flat)}${st?.scan.rays ? btn("free", ICON.free, "Free space: where the scanner's rays pass in the slab, under the points. Brighter: more rays. Where it is dark, something was in the way, or nothing looked. It is made for what the view sees, a cell a pixel: zoom in for finer." + (s.free ? v.freeInfo ?? "" : ""), s.free) : ""}</span>` +
         `<select data-k="doubt" title="Points the scan's rays or the lidar's flags doubt (other rays pass where they are: smears behind edges, stray returns). Colour by confidence to see them.">${["show", "fade", "hide"].map((d) => `<option value="${d}" ${d === (s.doubt ?? "fade") ? "selected" : ""}>${{ show: "Doubtful points shown", fade: "Doubtful points faded", hide: "Doubtful points hidden" }[d]}</option>`).join("")}</select>` +
@@ -1667,6 +1674,7 @@ function renderTools(v) {
   const step = (g) => updateSlab(sb.id, { centre: vec.add(sb.centre, vec.scale(sb.axes[2], g * sb.half[2])) });
   const acts = {
     ortho: () => v.set({ ortho: !s.ortho }),
+    solid: () => { v.set({ solid: !s.solid }); rebuildModel(); },
     square: () => v.squareOn(boxOf(sb)),
     flat: () => (s.flat ? v.set({ flat: false }) : v.squareOn(boxOf(sb))),
     free: () => { v.set({ free: !s.free }); requestSlab(v); },

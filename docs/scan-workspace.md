@@ -633,6 +633,11 @@ and a click on a part in the view or in the tree chooses it in both. A
 scan workspace adds its own to that tree, and replaces who lists the
 model's parts (it has what the scan shows of each).
 
+A scan's view draws the model as glass over the points, or solid (a button
+in the view: its parts lit and opaque, hiding what is behind them and the
+points behind them, as the shaded view draws it), coloured by what the scan
+shows of each part.
+
 *Not yet:* the views are still two kinds: the scan's three (points, slabs,
 tools, handles: `scan.js`) and the model's (`model3d.js`), both on
 `glview.js`. One kind of view, in which the scan is a layer that is there
