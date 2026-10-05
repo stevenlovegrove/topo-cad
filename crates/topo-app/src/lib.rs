@@ -186,7 +186,7 @@ impl Session {
             }
             "heat" => heat(b, i("sheet"), &s("mode"), &s("combo")),
             "mesh" => mesh(b),
-            "view3d" => view3d(b, n("az", 225.0), n("el", 30.0)),
+            "view3d" => view3d(b, n("az", 225.0), n("el", 30.0), &s("hide")),
             "ratios" => ratios(b, &s("mode"), &s("combo")),
             "member" => member_detail(b, &s("path"), &s("combo"))?,
             "pick" => {
@@ -427,8 +427,7 @@ fn member_detail(b: &Built, path: &str, combo: &str) -> Result<Value, String> {
 }
 
 /// Member solids for the 3D view: each member's boundary faces (outer loops,
-/// world metres rounded to 0.1 mm) with its path and label, and the
-/// sheathing and finish build-ups with the panels they lie on.
+/// world metres rounded to 0.1 mm) with its path and label.
 fn mesh(b: &Built) -> Value {
     let r = |v: f64| (v * 10_000.0).round() / 10_000.0;
     // (Every part alike: members, then what they stand on.)
@@ -453,20 +452,7 @@ fn mesh(b: &Built) -> Value {
             json!({ "path": p.path, "label": label, "role": p.role, "material": material, "seams": seams, "faces": faces })
         })
         .collect();
-    let v3 = |p: topo_core::Vec3| [r(p.x), r(p.y), r(p.z)];
-    let surfaces: Vec<Value> = b
-        .model
-        .surfaces
-        .iter()
-        .map(|s| {
-            let panels: Vec<Value> = topo_geom::surface_panels(&b.model, &b.geom, s)
-                .into_iter()
-                .map(|p| json!({ "origin": v3(p.origin), "slope": v3(p.slope), "run": v3(p.run), "normal": v3(p.normal) }))
-                .collect();
-            json!({ "name": s.name, "region": s.region, "layers": s.layers, "panels": panels, "psf": s.psf(), "thickness": s.thickness() })
-        })
-        .collect();
-    json!({ "version_name": b.model.info.name, "members": members, "surfaces": surfaces, "structure": structure(b) })
+    json!({ "version_name": b.model.info.name, "members": members, "structure": structure(b) })
 }
 
 /// The model's skeleton, to be drawn over it: its nodes and what each joins (the members it
@@ -521,16 +507,25 @@ fn structure(b: &Built) -> Value {
 /// Exact hidden-line view of the whole model from a compass bearing `az`
 /// (degrees, the viewer's direction from the model) and elevation `el`:
 /// visible edge segments in view-plane coordinates (m), as
-/// `[member index, x0, y0, x1, y1]`. (The host times it.)
-fn view3d(b: &Built, az: f64, el: f64) -> Value {
+/// `[member index, x0, y0, x1, y1]`. (The host times it.) `hide`: what is not drawn, nor hides
+/// anything: the keys the page's tree of objects keeps (`model`, `g:` a group's path below the
+/// building, `m:` a part's whole path), one to a line.
+fn view3d(b: &Built, az: f64, el: f64, hide: &str) -> Value {
+    let hidden: Vec<&str> = hide.lines().filter(|l| !l.is_empty()).collect();
+    let shown = |path: &str| {
+        let steps: Vec<&str> = path.split('/').collect();
+        let groups = &steps[1.min(steps.len())..steps.len().saturating_sub(1)];
+        !hidden.iter().any(|h| *h == "model" || h.strip_prefix("m:") == Some(path) || h.strip_prefix("g:").is_some_and(|g| (1..=groups.len()).any(|k| groups[..k].join("/") == g)))
+    };
     let (a, e) = (az.to_radians(), el.clamp(-89.9, 89.9).to_radians());
     let toward = topo_core::Vec3::new(a.sin() * e.cos(), a.cos() * e.cos(), e.sin());
     let proj = topo_draw::hlr::Projector::new(toward, topo_core::Vec3::Z);
     // (Members, then what they stand on: marked by where they are among the mesh's parts.)
     let geoms: Vec<&topo_geom::MemberGeom> = b.geom.members.iter().collect();
+    let geoms: Vec<&topo_geom::MemberGeom> = geoms.into_iter().filter(|g| hidden.is_empty() || shown(&b.model.member_path(g.member))).collect();
     let mut pieces = topo_draw::hlr::Piece::of_members(&geoms);
     let n = b.model.members.len() as u32;
-    pieces.extend(b.model.solids.iter().enumerate().map(|(k, s)| topo_draw::hlr::Piece::of_solid(s, topo_core::MemberId(n + k as u32))));
+    pieces.extend(b.model.solids.iter().enumerate().filter(|(_, s)| hidden.is_empty() || shown(&b.model.solid_path(s))).map(|(k, s)| topo_draw::hlr::Piece::of_solid(s, topo_core::MemberId(n + k as u32))));
     let segs = topo_draw::hlr::hidden_lines_of(&pieces, &proj);
     let r = |v: f64| (v * 100_000.0).round() / 100_000.0;
     let visible: Vec<[f64; 5]> = segs.iter().filter(|s| !s.hidden).map(|s| [s.member.0 as f64, r(s.a.x), r(s.a.y), r(s.b.x), r(s.b.y)]).collect();

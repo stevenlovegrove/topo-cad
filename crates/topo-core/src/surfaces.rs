@@ -1,20 +1,9 @@
-//! Surfaces: the sheathing and finish layers over a framing group (a roof's
-//! sloped planes, its flat part). They carry the build-up for drawings,
-//! schedules and the 3D view; their weight reaches the frame through the
-//! group's dead loads, not from here.
+//! Build-ups: the layers a surface of the model is made of (a roof's covering, a floor's
+//! deck), top first. They are what its sheets are drawn from and what a schedule lists; their
+//! weight is a dead load on what carries the surface.
 
 use crate::ids::GroupId;
 use serde::{Deserialize, Serialize};
-
-/// Where on the group the surface lies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SurfaceRegion {
-    /// The sloped roof planes, over the truss top chords.
-    Slope,
-    /// The flat roof over bottom chords beyond the heels.
-    Flat,
-}
 
 /// Parallel strips making up a layer (boards with gaps, standing-seam ribs).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -48,20 +37,26 @@ fn yes() -> bool {
     true
 }
 
-/// Layers over part of a framing group, listed top (weather side) first.
+/// The layers of something (a roof, a part of one, a floor's deck), top (weather side) first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Surface {
+pub struct Buildup {
     pub name: String,
     pub group: GroupId,
-    pub region: SurfaceRegion,
     pub layers: Vec<Layer>,
 }
 
-impl Surface {
+impl Buildup {
     pub fn thickness(&self) -> f64 {
         self.layers.iter().map(|l| l.thickness).sum()
     }
     pub fn psf(&self) -> f64 {
         self.layers.iter().map(|l| l.psf).sum()
+    }
+}
+
+impl Layer {
+    /// How thick it is drawn, as a sheet: a ribbed sheet (standing seam) as the sheet without its ribs.
+    pub fn sheet(&self) -> f64 {
+        if self.strips.as_ref().is_some_and(|s| s.sheet) { self.thickness.min(0.001) } else { self.thickness }
     }
 }

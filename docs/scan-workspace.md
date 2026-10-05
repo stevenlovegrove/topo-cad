@@ -637,5 +637,4 @@ model's parts (it has what the scan shows of each).
 tools, handles: `scan.js`) and the model's (`model3d.js`), both on
 `glview.js`. One kind of view, in which the scan is a layer that is there
 when a scan is, is the next step; the scan's views already obey the same
-eyes. The exact-lines view (`3D, exact lines`) does not obey them: it is
-drawn by the engine from the whole model.
+eyes, and so does the exact-lines view (the engine is told what is hidden).

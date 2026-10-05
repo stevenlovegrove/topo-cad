@@ -582,11 +582,39 @@ steel", "polystick mts", "plywood 15/32"))`, `floor.deck(layers("hardwood
 flooring 7/8", "plywood 23/32"))`. Each layer is a sheet (a solid, its
 material the layer's), one on another: a roof's on its planes, as thick as
 it is square to the slope; a floor's on its joists, and what stands on the
-floor stands on the top of them. Their weight is a dead load on the framing
-under them (a roof's per area of slope). A ribbed sheet (standing seam) is
-drawn as the sheet without its ribs. *Not yet:* `TrussRoof.dead(layers(...))`
-still records its layers apart (`Model.surfaces`, drawn as panels in the
-line view): a roof given as a `Roof` does not use it. (`27`.)
+floor stands on the top of them. A ribbed sheet (standing seam) is drawn as
+the sheet without its ribs. A roof is covered alike all over, or part by
+part (`covering(..., { on })`). What each is made of is kept for a schedule
+(`Model.buildups`). (`27`.)
+
+**Framing made apart, and a flat roof.** A part may be given its framing
+(`framing`: a `TrussRoof` of any shapes, a `RafterRoof`, an `Assembly`, a
+`Floor`), made as it always is; the roof then only says what surface is on
+it. Which of its members carry the part is by role (`carriedBy`: rafters
+and top chords, if not said): the part's planes are fitted to their tops,
+and its loads are theirs. A part of no pitch is flat (`Roof.flat`): a level
+plane on the tops that are level. So a truss whose bottom chord runs on
+past its heel carries two parts: a sloped one on its top chords and a flat
+one on that run (`carriedBy: "bottom_chord"`), each with its covering.
+(`30`.)
+
+**A roof's loads** are over the roof or over the parts named (`load`,
+`snow`, `dead`, each with `on`), per plan area or per area of surface. Each
+goes on the members that carry the part (`Load::MemberUniform`): over what
+of each is under the part, by the width of roof it carries (lines of them
+across their run; each takes half the way to the line either side). The
+weight of what covers a part is a dead load on it, per area of surface,
+without being said. `TrussRoof.load` and `RafterRoof.load` are still those
+generators' own (on all their top chords, or rafters), for one used alone.
+
+**Where the framing is not in one plane** (trusses as built, on walls that
+are not level: their tops differ by millimetres along the run), a plane
+fitted to them all passes through some. The sheet then follows them: a
+strip to each line of carriers, on that line's own tops, from half way to
+the line before to half way to the next. Between two that differ the
+strips step; what the sheet does between them is not known. *Not yet:*
+where two parts meet (a fold, a valley) is still worked out from each
+part's one fitted plane, so strips do not meet exactly there.
 
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
@@ -692,6 +720,13 @@ is narrower than they are wide: no backing is framed for them yet.
     as layers of materials; each a sheet, and their weight a dead load.
 28. **A shed roof**: one eave; mono trusses.
 29. **A saltbox**: two pitches; rafters whose tops meet off centre.
+30. **A flat roof on trusses of your own**: custom trusses given to a roof
+    as its framing; a sloped part and a flat one, each with its covering
+    and its loads.
+
+Both 3D views obey the eyes of the tree of objects (the browser's Objects
+tab): what is hidden is not drawn, and in the exact-lines view hides
+nothing (hide a roof's deck to see its framing).
 
 **3D, shaded** (a pane beside "3D, exact lines") draws the model in WebGL:
 every part, members and solids alike, in the colour of what it is of,

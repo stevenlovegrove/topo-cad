@@ -181,12 +181,13 @@ export function layers(...items: (string | readonly [string, number] | Layer)[])
 }
 
 /**
- * The sheets a build-up is drawn as, top first: each layer that has a
- * thickness, a ribbed sheet (standing seam) as the sheet without its ribs.
+ * A build-up's layers, and how thick it is as it is drawn: a sheet of each
+ * layer that has a thickness, a ribbed sheet (standing seam) as the sheet
+ * without its ribs.
  */
-function sheetsOf(d: DeadLoad): Layer[] {
+function builtUp(d: DeadLoad): { layers: readonly Layer[]; thickness: Length } {
   if (!d.layers) throw new Error("a build-up is given by its layers: `layers(\"standing seam 24ga steel\", \"plywood 15/32\")`");
-  return d.layers.filter((l) => l.thickness > 0).map((l) => ({ name: l.name, psf: l.psf, thickness: l.strips?.sheet ? Math.min(l.thickness, mm(1)) : l.thickness, verified: l.verified }));
+  return { layers: d.layers, thickness: d.layers.reduce((t, l) => t + (l.strips?.sheet ? Math.min(l.thickness, mm(1)) : l.thickness), 0) };
 }
 
 // ----- materials -----------------------------------------------------------
@@ -1113,6 +1114,8 @@ export type LoadKind = "dead" | "live" | "roof_live" | "snow" | "wind" | "seismi
 interface AreaLoad {
   readonly kind: LoadKind;
   readonly pressure: number;
+  readonly basis?: "plan" | "surface";
+  readonly label?: string;
 }
 
 /** A run of identical trusses at a spacing, with flush gable-end trusses. */
@@ -1214,22 +1217,22 @@ export class TrussRoof {
     return new TrussRoof({ ...this.spec, bears_on: [...this.spec.bears_on, ...ps.map((p) => p.name)] });
   }
   /**
-   * Uniform load on the roof, in pascals (use `psf`). `basis`: per unit of
-   * plan area (default; snow and roof live loads) or of sloped surface.
+   * Uniform load on the roof, in pascals (use `psf`), carried by the top
+   * chords. `basis`: per unit of plan area (default; snow and roof live
+   * loads) or of sloped surface. (What a roof is covered with, a flat part
+   * on the bottom chords, and loads on one part or another, are a `Roof`'s:
+   * give the trusses to one as a part's `framing`.)
    */
-  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string; on?: "slope" | "flat"; layers?: readonly Layer[] } = {}): TrussRoof {
+  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string } = {}): TrussRoof {
     return new TrussRoof({ ...this.spec, loads: [...this.spec.loads, { kind, pressure, ...o }] });
   }
-  /**
-   * Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`.
-   * `on: "flat"` puts it on the flat roof over the bottom chords beyond the heels.
-   */
-  snow(d: DeadLoad, o: { on?: "slope" | "flat" } = {}): TrussRoof {
-    return this.load("snow", d.pressure, { basis: "plan", label: d.label, ...o });
+  /** Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`. */
+  snow(d: DeadLoad): TrussRoof {
+    return this.load("snow", d.pressure, { basis: "plan", label: d.label });
   }
-  /** Roofing dead load along the slope (or on the flat part), from `layers(...)`. */
-  dead(d: DeadLoad, o: { on?: "slope" | "flat" } = {}): TrussRoof {
-    return this.load("dead", d.pressure, { basis: "surface", label: d.label, layers: d.layers, ...o });
+  /** A dead load along the slope. */
+  dead(d: DeadLoad): TrussRoof {
+    return this.load("dead", d.pressure, { basis: "surface", label: d.label });
   }
   get name(): string {
     return this.spec.name;
@@ -1594,8 +1597,8 @@ export class Floor {
    */
   deck(what: Length | DeadLoad): Floor {
     if (typeof what === "number") return this.with({ deck: what, layers: [] });
-    const sheets = sheetsOf(what);
-    return this.with({ deck: sheets.reduce((t, l) => t + l.thickness, 0), layers: sheets, loads: [...this.loads, { kind: "dead", pressure: what.pressure }] });
+    const made = builtUp(what);
+    return this.with({ deck: made.thickness, layers: made.layers, loads: [...this.loads, { kind: "dead", pressure: what.pressure }] });
   }
   /** How far its top (its deck's, if it has one) is above the underside of its joists. */
   get top(): Length {
@@ -1973,6 +1976,24 @@ export interface RoofPartOptions {
    * two overlap (and meet in valleys).
    */
   readonly reach?: Readonly<Record<string | number, Length>>;
+  /**
+   * What frames it, where that is made apart: a `TrussRoof` (of any shapes:
+   * custom ones, some trusses of another shape, trusses read off their
+   * layout), a `RafterRoof`, an `Assembly` of your own members, a `Floor`.
+   * The part's planes are then on its members' tops, and its loads are
+   * theirs. Several parts may be framed by the one thing (a sloped part on a
+   * truss's top chords and a flat part on its bottom chord's run past the
+   * heel). It is added to a building with the roof.
+   */
+  readonly framing?: TrussRoof | RafterRoof | Assembly | Floor;
+  /**
+   * Which of the framing's members carry this part, by role: its planes are
+   * their tops, and its loads go on them (rafters and top chords, if not
+   * said). `"bottom_chord"`: a flat part on a truss's bottom chord.
+   */
+  readonly carriedBy?: string | readonly string[];
+  /** What this part is covered with, where that is not what the roof is (see `Roof.covering`). */
+  readonly covering?: DeadLoad;
   /** Framed with rafters: pairs at a spacing, a tie across each (see `RafterRoof`). */
   readonly rafters?: { readonly size: Nominal; readonly grade: Grade; readonly spacing?: Length; readonly ties?: Nominal; readonly seat?: Length };
   /**
@@ -1998,7 +2019,10 @@ interface RoofPart {
   readonly rake: Length;
   readonly on: readonly (Perimeter | Partition | Assembly)[];
   readonly heel: Length;
-  readonly framing?: TrussRoof | RafterRoof;
+  readonly framing?: TrussRoof | RafterRoof | Assembly | Floor;
+  readonly carriedBy: readonly string[];
+  readonly layers?: readonly Layer[];
+  readonly loads: readonly AreaLoad[];
 }
 
 /**
@@ -2032,7 +2056,7 @@ interface RoofPart {
  * `RafterRoof` or a `TrussRoof`, set out from the part (its span, its
  * pitches, its overhang, where it is, what its ends are), bearing on what the
  * part is on; add the roof to a building and its framing is added with it.
- * `load` puts a load on the framing. What can be framed:
+ * What can be framed:
  *
  * - two eaves, opposite: rafters or trusses (a gable roof); rafters where the
  *   two are of different pitches (a saltbox);
@@ -2041,6 +2065,25 @@ interface RoofPart {
  *
  * A part that runs into an earlier one (a wing) is framed only as far as that
  * one reaches: where they overlap, the earlier is framed through.
+ *
+ * Or a part is given its framing, made apart (`framing`): trusses of your own
+ * shapes, an assembly of your own members. Nothing of how those are given is
+ * lost: the roof only says what surface is on them, what it is covered with
+ * and what loads it. A part of no pitch is flat (`flat`): a level surface on
+ * the tops of the members that carry it (`carriedBy`).
+ *
+ *   const trusses = TrussRoof.of(shape, { at, spanDir, length, grade }).withShape([1], gable).bearingOn(walls);
+ *   const roof = Roof.named("Roof")
+ *     .part("Slope", outline, { pitch: pitch(4), gables: [2, 4], framing: trusses })
+ *     .flat("Flat", strip, { framing: trusses, carriedBy: "bottom_chord" })
+ *     .covering(layers("standing seam 24ga steel", "plywood 15/32"), { on: "Slope" })
+ *     .covering(layers("tpo 60 mil", "plywood 15/32"), { on: "Flat" })
+ *     .snow(roofSnow(site, { ce: 1.0, ct: 1.2 }));
+ *
+ * A load (`load`, `snow`, `dead`) is over the whole roof or over the parts
+ * named (`on`); it goes on the members that carry each part, over what of
+ * each is under the part, by the width of roof each carries. The weight of
+ * what a part is covered with is a dead load on it, without being said.
  *
  * The surfaces are written as a deck (sheets on the planes), and the roof is
  * told how much it has of each kind of edge (ridge, hip, valley, eave, rake)
@@ -2074,11 +2117,19 @@ export class Roof {
   part(name: string, outline: readonly Point[], o: RoofPartOptions): Roof {
     return this.add(name, outline, outline.map(() => undefined), o, undefined);
   }
+  /**
+   * A flat part, by its outline on plan: a level surface, on the tops of the
+   * members that carry it (its `framing`'s, of the roles `carriedBy`), or at a
+   * `height` given. Higher parts cover it where they overlap, as any part.
+   */
+  flat(name: string, outline: readonly Point[], o: Omit<RoofPartOptions, "pitch" | "gables" | "edges" | "rafters" | "trusses"> = {}): Roof {
+    return this.add(name, outline, outline.map(() => undefined), { ...o, pitch: 0, gables: outline.slice(1).map((_, k) => k + 2) }, undefined);
+  }
   private add(name: string, outline: readonly Point[], names: readonly (string | undefined)[], o: RoofPartOptions, walls: Perimeter | undefined): Roof {
     const n = outline.length;
     if (n < 3) throw new Error(`roof ${this.name}: part ${name} needs an outline of three points or more`);
     if (this.parts.some((p) => p.name === name)) throw new Error(`roof ${this.name}: two parts named ${name}`);
-    if (!(o.pitch > 0)) throw new Error(`roof ${this.name}: part ${name} needs a pitch`);
+    if (!(o.pitch >= 0)) throw new Error(`roof ${this.name}: part ${name} needs a pitch (none: flat)`);
     // Which edge a key names: a wall's name, or a number from 1.
     const edge = (key: string | number): number => {
       const k = typeof key === "number" || /^\d+$/.test(key) ? Number(key) - 1 : names.indexOf(key);
@@ -2091,14 +2142,15 @@ export class Roof {
     const edges = said.map((e, k) => (e === "gable" ? null : { name: names[k], pitch: e?.pitch ?? o.pitch, overhang: e?.overhang ?? o.overhang ?? 0, height: e?.height ?? o.height }));
     const reach = outline.map(() => 0);
     for (const [key, d] of Object.entries(o.reach ?? {})) reach[edge(key)] = d;
-    const base: RoofPart = { name, outline: reach.some((d) => d) ? grown(outline, reach) : outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0 };
+    const base: RoofPart = { name, outline: reach.some((d) => d) ? grown(outline, reach) : outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0, carriedBy: [o.carriedBy ?? []].flat(), layers: o.covering && builtUp(o.covering).layers, loads: [] };
     return new Roof(this.name, [...this.parts, { ...base, framing: this.frame(base, o, walls, outline) }], this.deck_, this.layers_);
   }
   /** A part's framing, set out from the part (`drawn`: its outline before any of its edges were moved). */
-  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined, drawn: readonly Point[]): TrussRoof | RafterRoof | undefined {
-    if (!o.rafters && !o.trusses) return undefined;
+  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined, drawn: readonly Point[]): RoofPart["framing"] {
     const what = `roof ${this.name}: part ${p.name}`;
-    if (o.rafters && o.trusses) throw new Error(`${what} is framed with rafters or with trusses, not both`);
+    if ([o.rafters, o.trusses, o.framing].filter((x) => x).length > 1) throw new Error(`${what} is framed with rafters, with trusses, or by framing made apart: one of them`);
+    if (o.framing) return o.framing;
+    if (!o.rafters && !o.trusses) return undefined;
     const pt = (k: number): Point => p.outline[((k % 4) + 4) % 4];
     const side = (k: number): Point => [pt(k + 1)[0] - pt(k)[0], pt(k + 1)[1] - pt(k)[1]];
     const eave = (k: number) => p.edges[((k % 4) + 4) % 4];
@@ -2159,26 +2211,49 @@ export class Roof {
   deck(thickness: Length): Roof {
     return new Roof(this.name, this.parts, thickness, []);
   }
+  /** The parts something is said of: those named, or every one (`framed`: every one that is framed). */
+  private those(on: string | readonly string[] | undefined, framed: boolean): Set<string> {
+    const names = on === undefined ? this.parts.filter((p) => !framed || p.framing).map((p) => p.name) : [on].flat();
+    for (const n of names) if (!this.parts.some((p) => p.name === n)) throw new Error(`roof ${this.name}: no part ${n} (${this.parts.map((p) => p.name).join(", ") || "none yet: say it after the parts"})`);
+    return new Set(names);
+  }
   /**
    * What it is covered with, top (weather side) first, down to its deck:
    * `covering(layers("standing seam 24ga steel", "polystick mts", "plywood 15/32"))`
    * (see `layers`; in place of `deck`). Each layer is a sheet on the roof's
    * planes, one on another, of that material; their weight is a dead load on
-   * the framing of each part that has any (per area of slope). Say it after
-   * the parts.
+   * what carries each part (per area of its surface). `on`: the parts so
+   * covered (one name or several), where the roof is not covered alike all
+   * over: say it after those parts.
    */
-  covering(d: DeadLoad): Roof {
-    const sheets = sheetsOf(d);
-    // (Framing takes a load per plan area: a load on the slope is that much more of it.)
-    const parts = this.parts.map((p) => (p.framing ? { ...p, framing: p.framing.load("dead", d.pressure * Math.hypot(1, p.edges.find((e) => e)!.pitch)) } : p));
-    return new Roof(this.name, parts, sheets.reduce((t, l) => t + l.thickness, 0), sheets);
+  covering(d: DeadLoad, o: { on?: string | readonly string[] } = {}): Roof {
+    const made = builtUp(d);
+    if (o.on === undefined) return new Roof(this.name, this.parts, made.thickness, made.layers);
+    const on = this.those(o.on, false);
+    return new Roof(this.name, this.parts.map((p) => (on.has(p.name) ? { ...p, layers: made.layers } : p)), this.deck_, this.layers_);
   }
-  /** A load over its plan area (N/m², use `psf`): on the framing of each part that has any. */
-  load(kind: LoadKind, pressure: number): Roof {
-    if (!this.parts.some((p) => p.framing)) throw new Error(`roof ${this.name}: a load is carried by framing, and no part of it is framed (rafters or trusses)`);
-    return new Roof(this.name, this.parts.map((p) => (p.framing ? { ...p, framing: p.framing.load(kind, pressure) } : p)), this.deck_, this.layers_);
+  /**
+   * A load over it, in pascals (use `psf`): per plan area (the default: snow,
+   * roof live load) or per area of its surface (`basis: "surface"`). `on`:
+   * the parts it is over (one name or several); every framed part, if not
+   * said. It goes on the members that carry each part. Say it after the parts.
+   */
+  load(kind: LoadKind, pressure: number, o: { on?: string | readonly string[]; basis?: "plan" | "surface"; label?: string } = {}): Roof {
+    const on = this.those(o.on, true);
+    if (!on.size) throw new Error(`roof ${this.name}: a load is carried by framing, and no part of it is framed`);
+    for (const p of this.parts) if (on.has(p.name) && !p.framing) throw new Error(`roof ${this.name}: part ${p.name} has nothing to carry a load: say what frames it`);
+    const load: AreaLoad = { kind, pressure, basis: o.basis, label: o.label };
+    return new Roof(this.name, this.parts.map((p) => (on.has(p.name) ? { ...p, loads: [...p.loads, load] } : p)), this.deck_, this.layers_);
   }
-  private framing(part: string | undefined): TrussRoof | RafterRoof | undefined {
+  /** Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`. */
+  snow(d: DeadLoad, o: { on?: string | readonly string[] } = {}): Roof {
+    return this.load("snow", d.pressure, { ...o, basis: "plan", label: d.label });
+  }
+  /** A dead load per area of its surface (beside the weight of what it is covered with, which is not to be said). */
+  dead(d: DeadLoad, o: { on?: string | readonly string[] } = {}): Roof {
+    return this.load("dead", d.pressure, { ...o, basis: "surface", label: d.label });
+  }
+  private framing(part: string | undefined): RoofPart["framing"] {
     const p = part === undefined ? this.parts.find((q) => q.framing) : this.parts.find((q) => q.name === part);
     return p?.framing;
   }
@@ -2194,9 +2269,10 @@ export class Roof {
     if (!(f instanceof RafterRoof)) throw new Error(`roof ${this.name}: ${part ?? "no part"} is not framed with rafters`);
     return f;
   }
-  /** What it is, as items of a building: its framing, then its surfaces (`Building.add` does this). */
+  /** What it is, as items of a building: its framing (each thing once), then its surfaces (`Building.add` does this). */
   expand(): Item[] {
-    return [...this.parts.flatMap((p) => (p.framing ? [p.framing] : [])), this];
+    const framing = this.parts.flatMap((p) => (p.framing ? [p.framing] : []));
+    return [...framing.filter((f, k) => framing.findIndex((g) => g.name === f.name) === k), this];
   }
   toJSON() {
     return {
@@ -2204,7 +2280,7 @@ export class Roof {
       name: this.name,
       deck: this.deck_,
       layers: this.layers_,
-      parts: this.parts.map((p) => ({ name: p.name, outline: p.outline, edges: p.edges, rake: p.rake, framing: p.framing?.name, on: p.on.map((x) => x.name), heel: p.heel })),
+      parts: this.parts.map((p) => ({ name: p.name, outline: p.outline, edges: p.edges, rake: p.rake, framing: p.framing?.name, on: p.on.map((x) => x.name), heel: p.heel, carried_by: p.carriedBy, layers: p.layers, loads: p.loads })),
     };
   }
 }

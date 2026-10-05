@@ -108,7 +108,7 @@ fn layers_table(model: &Model) -> crate::Drawing {
         }
     };
     let mut body: Vec<Vec<String>> = vec![];
-    for s in &model.surfaces {
+    for s in &model.buildups {
         for (i, l) in s.layers.iter().enumerate() {
             let pattern = match &l.strips {
                 Some(st) => format!("{} @ {} o.c.", topo_core::units::fmt_inches(st.width), topo_core::units::fmt_inches(st.spacing)),
@@ -119,7 +119,7 @@ fn layers_table(model: &Model) -> crate::Drawing {
         body.push(vec![String::new(), "Total".into(), inches(s.thickness()), String::new(), format!("{:.2}", s.psf())]);
     }
     if body.is_empty() {
-        body.push(vec!["(no build-ups: give a roof's dead load with layers(...))".into(), String::new(), String::new(), String::new(), String::new()]);
+        body.push(vec!["(no build-ups: give a roof's covering, or a floor's deck, with layers(...))".into(), String::new(), String::new(), String::new(), String::new()]);
     }
     let aligns = [crate::Align::Start, crate::Align::Start, crate::Align::End, crate::Align::Start, crate::Align::End];
     crate::schedule::table("Build-ups (top first; * unverified)", &["Surface", "Layer", "Thickness", "Strips", "psf"], &[1.8, 5.2, 0.8, 1.2, 0.6], &aligns, &body)

@@ -300,9 +300,9 @@ impl Model {
             i.members = i.members.into_iter().map(m).collect();
             self.issues.push(i);
         }
-        for mut x in other.surfaces {
+        for mut x in other.buildups {
             x.group = g(x.group);
-            self.surfaces.push(x);
+            self.buildups.push(x);
         }
         for mut x in other.solids {
             x.group = x.group.map(g);

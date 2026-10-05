@@ -86,6 +86,11 @@ impl Half {
     }
 }
 
+/// What of a convex polygon is where `n · p + c >= 0`.
+pub fn cut(poly: &[Vec2], n: Vec2, c: f64) -> Vec<Vec2> {
+    clip(poly, &Half { n, c })
+}
+
 /// What of a convex polygon is in a half-plane.
 fn clip(poly: &[Vec2], h: &Half) -> Vec<Vec2> {
     let mut out = vec![];
@@ -134,6 +139,11 @@ impl RoofPart {
         let dir = (b - a).normalized();
         let inward = Vec2::new(-dir.y, dir.x);
         Half { n: inward, c: -inward.dot(a) + d }
+    }
+
+    /// How far it reaches on plan: its outline, out by its overhangs and its rake (anticlockwise).
+    pub fn reach(&self) -> Result<Vec<Vec2>, String> {
+        Ok(self.planes()?.1)
     }
 
     /// Its planes (one for each eave, by edge), and how far it reaches on plan (its outline, out by

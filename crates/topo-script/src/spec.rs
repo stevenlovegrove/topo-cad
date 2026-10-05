@@ -502,7 +502,8 @@ impl SlabSpec {
 /// (`topo_timber::roofs`). It is made once everything else is placed: each plane is where the
 /// part's framing has its tops (its rafters, its trusses' top chords), or, where it has none
 /// that way, rises at its pitch from the plates of the walls under its eave. Its deck is written
-/// as solids, and how much there is of each kind of edge is said of its group.
+/// as solids, and how much there is of each kind of edge is said of its group. An eave of no
+/// pitch is a level plane: a flat roof.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoofSpec {
     pub name: String,
@@ -510,7 +511,7 @@ pub struct RoofSpec {
     /// Its deck: a sheet this thick on its planes.
     pub deck: f64,
     /// What it is covered with, top first (none given: the deck, of plywood): a sheet of each
-    /// on its planes, one on another.
+    /// on its planes, one on another. (A part may have its own.)
     #[serde(default)]
     pub layers: Vec<Layer>,
 }
@@ -523,8 +524,8 @@ fn sheets(layers: &[Layer], thickness: f64) -> Vec<(String, f64, f64)> {
     }
     let (mut at, mut out) = (0.0, vec![]);
     for l in layers.iter().rev().filter(|l| l.thickness > 0.0) {
-        out.push((l.name.clone(), at, l.thickness));
-        at += l.thickness;
+        out.push((l.name.clone(), at, l.sheet()));
+        at += l.sheet();
     }
     out
 }
@@ -547,6 +548,19 @@ pub struct RoofPartSpec {
     pub on: Vec<String>,
     #[serde(default)]
     pub heel: f64,
+    /// The roles of the framing's members that carry it: its planes are their tops, and its
+    /// loads are theirs (none given: rafters and top chords). A flat roof on the run of a truss's
+    /// bottom chord past its heel is carried by `bottom_chord`.
+    #[serde(default)]
+    pub carried_by: Vec<String>,
+    /// What this part is covered with, where that is not the roof's.
+    #[serde(default)]
+    pub layers: Option<Vec<Layer>>,
+    /// Loads over it (per plan area, or per area of its surface): each goes on the members that
+    /// carry it, over what of each is under the part, by the width of roof each carries (half
+    /// the way to its neighbours).
+    #[serde(default)]
+    pub loads: Vec<AreaLoadSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -702,7 +716,7 @@ struct PerimeterNumbers {
     studs: Vec<Option<Vec<scene::ScalarId>>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AreaLoadSpec {
     pub kind: String,
     pub pressure: f64,
@@ -711,15 +725,16 @@ pub struct AreaLoadSpec {
     pub basis: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
-    /// `slope` (default: the sloped roof, via the top chords) or `flat`: the
-    /// parts of the bottom chords beyond the heels (a flat roof on a
-    /// bottom-chord extension).
-    #[serde(default)]
-    pub on: Option<String>,
-    /// The layers the load is made of (top first): recorded as the roof's
-    /// surface build-up for drawings and the 3D view.
-    #[serde(default)]
-    pub layers: Option<Vec<topo_core::Layer>>,
+}
+
+impl AreaLoadSpec {
+    fn basis(&self, of: &str) -> Result<AreaBasis, String> {
+        match self.basis.as_deref() {
+            None | Some("plan") => Ok(AreaBasis::Plan),
+            Some("surface") => Ok(AreaBasis::Surface),
+            Some(b) => Err(format!("{of}: unknown load basis {b} (plan or surface)")),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1452,47 +1467,8 @@ impl Builder {
         }
         for l in &r.loads {
             let case = self.case(&l.kind)?;
-            let basis = match l.basis.as_deref() {
-                None | Some("plan") => AreaBasis::Plan,
-                Some("surface") => AreaBasis::Surface,
-                Some(b) => return Err(format!("roof {}: unknown load basis {b} (plan or surface)", r.name)),
-            };
-            if let Some(layers) = &l.layers {
-                let region = if l.on.as_deref() == Some("flat") { topo_core::SurfaceRegion::Flat } else { topo_core::SurfaceRegion::Slope };
-                let name = format!("{}: {}", r.name, if region == topo_core::SurfaceRegion::Flat { "flat roof" } else { "sloped roof" });
-                self.m.surfaces.push(topo_core::Surface { name, group: roof.group, region, layers: layers.clone() });
-            }
-            match l.on.as_deref() {
-                None | Some("slope") => {
-                    self.m.loads.push(Load::Area { case, group: roof.group, pressure: l.pressure, direction: -Vec3::Z, basis, label: l.label.clone() });
-                }
-                Some("flat") => {
-                    // Per truss, the bottom chord beyond the nodes it shares
-                    // with a top chord, at the truss's tributary width.
-                    let n = roof.trusses.len();
-                    for (i, t) in roof.trusses.iter().enumerate() {
-                        let trib = if n == 1 { r.spacing } else if i == 0 || i + 1 == n { r.spacing / 2.0 } else { r.spacing };
-                        let top: std::collections::HashSet<NodeId> = t.top_chords.iter().flat_map(|&m| self.m.member(m).path.clone()).collect();
-                        for &bc in &t.bottom_chords {
-                            let path = self.m.member(bc).path.clone();
-                            let (a, b) = (self.m.pos(path[0]), self.m.pos(*path.last().unwrap()));
-                            let len = a.distance(b);
-                            let x = (b - a) / len;
-                            let ts: Vec<f64> = path.iter().filter(|n| top.contains(n)).map(|&n| (self.m.pos(n) - a).dot(x)).collect();
-                            if ts.is_empty() {
-                                continue;
-                            }
-                            let (lo, hi) = (ts.iter().copied().fold(f64::INFINITY, f64::min), ts.iter().copied().fold(f64::NEG_INFINITY, f64::max));
-                            for range in [(0.0, lo), (hi, len)] {
-                                if range.1 - range.0 > 1e-3 {
-                                    self.m.loads.push(Load::MemberUniform { case, member: bc, w: -Vec3::Z * (l.pressure * trib), range: Some(range) });
-                                }
-                            }
-                        }
-                    }
-                }
-                Some(o) => return Err(format!("roof {}: unknown load placement {o} (slope or flat)", r.name)),
-            }
+            let basis = l.basis(&format!("roof {}", r.name))?;
+            self.m.loads.push(Load::Area { case, group: roof.group, pressure: l.pressure, direction: -Vec3::Z, basis, label: l.label.clone() });
         }
         Ok(())
     }
@@ -1646,7 +1622,14 @@ impl Builder {
         for r in roofs {
             let group = self.m.add_group(&r.name, "roof_surface", Frame::WORLD, Some(self.root));
             let mut parts = vec![];
+            // What carries each part: the framing's members whose tops a plane of it was found on, by eave.
+            let mut carriers: Vec<Vec<(usize, MemberId)>> = vec![];
+            // (And each eave's own directions: where it starts, along it, in from it.)
+            let mut frames: Vec<Vec<Option<(Vec2, Vec2, Vec2)>>> = vec![];
             for p in &r.parts {
+                let roles: Vec<&str> = if p.carried_by.is_empty() { vec!["rafter", "top_chord"] } else { p.carried_by.iter().map(String::as_str).collect() };
+                let mut carried = vec![];
+                let mut along: Vec<Option<(Vec2, Vec2, Vec2)>> = vec![None; p.outline.len()];
                 let outline: Vec<Vec2> = p.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
                 let n = outline.len();
                 if n < 3 || p.edges.len() != n {
@@ -1661,6 +1644,7 @@ impl Builder {
                     let len = a.distance(b);
                     let dir = (b - a) / len;
                     let inward = if Vec2::new(-dir.y, dir.x).dot(mid - a) < 0.0 { Vec2::new(dir.y, -dir.x) } else { Vec2::new(-dir.y, dir.x) };
+                    along[k] = Some((a, dir, inward));
                     if let Some(h) = e.height {
                         eaves[k] = Some(Eave { height: (h, h), pitch: e.pitch, overhang: e.overhang });
                         continue;
@@ -1670,15 +1654,20 @@ impl Builder {
                         let g = named(&self.m, f).ok_or_else(|| format!("roof {}: part {} is framed by {f}, and there is nothing of that name", r.name, p.name))?;
                         let mut pts = vec![];
                         for id in self.m.members_in_tree(g) {
-                            let role = self.m.member(id).role.as_str();
-                            if role != "rafter" && role != "top_chord" {
+                            if !roles.contains(&self.m.member(id).role.as_str()) {
                                 continue;
                             }
                             let Some((face, normal)) = top(id) else { continue };
                             let lean = Vec2::new(normal.x, normal.y);
-                            if lean.norm() < 1e-6 || lean.normalized().dot(inward) > -0.9 {
+                            // (A level plane is on tops that are level; a sloping one on tops that fall toward its eave.)
+                            if e.pitch.abs() < 1e-9 {
+                                if lean.norm() > 0.05 {
+                                    continue;
+                                }
+                            } else if lean.norm() < 1e-6 || lean.normalized().dot(inward) > -0.9 {
                                 continue;
                             }
+                            carried.push((k, id));
                             pts.extend(face.iter().map(|q| {
                                 let d = Vec2::new(q.x, q.y) - a;
                                 (d.dot(inward), d.dot(dir), q.z)
@@ -1727,16 +1716,21 @@ impl Builder {
                     eaves[k] = Some(Eave { height: (h, h), pitch: e.pitch, overhang: e.overhang });
                 }
                 parts.push(RoofPart { name: format!("{}: part {}", r.name, p.name), outline, edges: eaves, rake: p.rake });
+                carriers.push(carried);
+                frames.push(along);
             }
             let faces = roofs::faces(&parts)?;
             // Its deck: each face a sheet on its plane. (Named by its part and its eave; in pieces, numbered.)
             let mut count: HashMap<String, usize> = HashMap::new();
-            let label = |f: &roofs::Face| {
+            // (A part drawn clockwise is turned about to be worked out: its edges with it. Which edge, as given.)
+            let given = |f: &roofs::Face| {
                 let p = &r.parts[f.part];
-                // (A part drawn clockwise is turned about to be worked out: its edges with it.)
                 let n = p.outline.len();
                 let clockwise = polygon_area(&p.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect::<Vec<_>>()) < 0.0;
-                let k = if clockwise { (2 * n - 2 - f.edge) % n } else { f.edge };
+                if clockwise { (2 * n - 2 - f.edge) % n } else { f.edge }
+            };
+            let label = |f: &roofs::Face| {
+                let (p, k) = (&r.parts[f.part], given(f));
                 format!("{} {}", p.name, p.edges[k].as_ref().and_then(|e| e.name.clone()).unwrap_or_else(|| format!("eave {}", k + 1)))
             };
             for f in &faces {
@@ -1749,12 +1743,152 @@ impl Builder {
                 let k = nth.entry(base.clone()).or_insert(0);
                 *k += 1;
                 let name = if count[&base] == 1 { base } else { format!("{base}#{k}") };
-                // (A sheet's thickness is square to the slope: so much more, plumb.)
-                let steep = (1.0 + f.plane.slope.dot(f.plane.slope)).sqrt();
-                area += polygon_area(&f.outline).abs() * steep;
-                for (of, at, thick) in sheets(&r.layers, r.deck) {
-                    let name = if r.layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
-                    self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: f.outline.clone(), bottom: f.plane.raised(at * steep), top: f.plane.raised((at + thick) * steep), seams: f.seams.clone() });
+                // Where what carries it is not all in one plane (trusses as built, on walls that are not level), the
+                // sheet follows them: a strip to each line of them, on that line's tops, from half way to the line
+                // before to half way to the next. (Between two that differ the strips step: what the sheet does
+                // between them is not known.)
+                let mut strips: Vec<(Vec<Vec2>, Level, Vec<usize>)> = vec![(f.outline.clone(), f.plane, f.seams.clone())];
+                let mine: Vec<MemberId> = carriers[f.part].iter().filter(|c| c.0 == given(f)).map(|c| c.1).collect();
+                // (Their own directions on plan: the way they run, and across them.)
+                let run = mine.first().and_then(|&id| {
+                    let d = self.m.pos(self.m.member(id).end()) - self.m.pos(self.m.member(id).start());
+                    (Vec2::new(d.x, d.y).norm() > 1e-9).then(|| Vec2::new(d.x, d.y).normalized())
+                });
+                if let Some(run) = run {
+                    let (a, across) = (f.outline[0], Vec2::new(-run.y, run.x));
+                    let mut lines: Vec<(f64, Vec<(f64, f64, f64)>)> = vec![];
+                    for &id in &mine {
+                        let Some((face, _)) = top(id) else { continue };
+                        let pts: Vec<(f64, f64, f64)> = face.iter().map(|q| ((Vec2::new(q.x, q.y) - a).dot(run), (Vec2::new(q.x, q.y) - a).dot(across), q.z)).collect();
+                        let t = pts.iter().map(|q| q.1).sum::<f64>() / pts.len() as f64;
+                        match lines.iter_mut().find(|l| (l.0 - t).abs() < 0.01) {
+                            Some(l) => l.1.extend(pts),
+                            None => lines.push((t, pts)),
+                        }
+                    }
+                    lines.sort_by(|x, y| x.0.total_cmp(&y.0));
+                    let off = lines.iter().flat_map(|l| &l.1).map(|&(s, t, z)| (z - f.plane.over(a + run * s + across * t)).abs()).fold(0.0, f64::max);
+                    if lines.len() >= 2 && off > 0.0015 {
+                        let at_line = |q: Vec2, t: f64| ((q - a).dot(across) - t).abs() < 1e-7;
+                        strips.clear();
+                        for j in 0..lines.len() {
+                            // (The first strip and the last run on to the face's ends.)
+                            let (lo, hi) = ((j > 0).then(|| (lines[j - 1].0 + lines[j].0) / 2.0), (j + 1 < lines.len()).then(|| (lines[j].0 + lines[j + 1].0) / 2.0));
+                            let mut poly = f.outline.clone();
+                            if let Some(t) = lo {
+                                poly = roofs::cut(&poly, across, -(across.dot(a) + t));
+                            }
+                            if let Some(t) = hi {
+                                poly = roofs::cut(&poly, across * -1.0, across.dot(a) + t);
+                            }
+                            if poly.len() < 3 || polygon_area(&poly).abs() < 1e-8 {
+                                continue;
+                            }
+                            let (c0, c1, c2) = fit(&lines[j].1);
+                            // (Where it meets the next strip, and where the face was already in pieces, is a seam.)
+                            let seams = (0..poly.len())
+                                .filter(|&i| {
+                                    let (p0, p1) = (poly[i], poly[(i + 1) % poly.len()]);
+                                    lo.is_some_and(|t| at_line(p0, t) && at_line(p1, t))
+                                        || hi.is_some_and(|t| at_line(p0, t) && at_line(p1, t))
+                                        || f.seams.iter().any(|&e| {
+                                            let (s0, s1) = (f.outline[e], f.outline[(e + 1) % f.outline.len()]);
+                                            (p0 - s0).cross(s1 - s0).abs() < 1e-7 && (p1 - s0).cross(s1 - s0).abs() < 1e-7
+                                        })
+                                })
+                                .collect();
+                            strips.push((poly, Level { z: c0, at: a, slope: run * c1 + across * c2 }, seams));
+                        }
+                    }
+                }
+                let layers = r.parts[f.part].layers.as_ref().unwrap_or(&r.layers);
+                let bays = strips.len();
+                for (j, (outline, plane, seams)) in strips.into_iter().enumerate() {
+                    let name = if bays == 1 { name.clone() } else { format!("{name} strip {}", j + 1) };
+                    // (A sheet's thickness is square to the slope: so much more, plumb.)
+                    let steep = (1.0 + plane.slope.dot(plane.slope)).sqrt();
+                    area += polygon_area(&outline).abs() * steep;
+                    for (of, at, thick) in sheets(layers, r.deck) {
+                        let name = if layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
+                        self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: outline.clone(), bottom: plane.raised(at * steep), top: plane.raised((at + thick) * steep), seams: seams.clone() });
+                    }
+                }
+            }
+            // What it is made of, for a schedule: the roof's layers, and those of each part that has its own.
+            if !r.layers.is_empty() && r.parts.iter().any(|p| p.layers.is_none()) {
+                self.m.buildups.push(Buildup { name: r.name.clone(), group, layers: r.layers.clone() });
+            }
+            for p in &r.parts {
+                if let Some(layers) = p.layers.as_ref().filter(|l| !l.is_empty()) {
+                    self.m.buildups.push(Buildup { name: format!("{}: {}", r.name, p.name), group, layers: layers.clone() });
+                }
+            }
+            // Its loads, and the weight of what covers it: on what carries each part.
+            for (k, p) in r.parts.iter().enumerate() {
+                let what = format!("roof {}: part {}", r.name, p.name);
+                let covering: f64 = p.layers.as_ref().unwrap_or(&r.layers).iter().map(|l| l.psf).sum::<f64>() * 47.880259;
+                if carriers[k].is_empty() {
+                    if !p.loads.is_empty() {
+                        return Err(format!("{what} has a load on it, and nothing carries it: say what frames it (and, where they are not rafters or top chords, which of its members carry it)"));
+                    }
+                    continue;
+                }
+                // (The weight of what covers it first: dead load is the first of the cases.)
+                let mut loads: Vec<(LoadCaseId, f64, AreaBasis)> = vec![];
+                if covering > 0.0 {
+                    loads.push((self.case("dead")?, covering, AreaBasis::Surface));
+                }
+                for l in &p.loads {
+                    loads.push((self.case(&l.kind)?, l.pressure, l.basis(&what)?));
+                }
+                let reach = parts[k].reach()?;
+                let eaves: std::collections::BTreeSet<usize> = carriers[k].iter().map(|c| c.0).collect();
+                for eave in eaves {
+                    let ms: Vec<MemberId> = carriers[k].iter().filter(|c| c.0 == eave).map(|c| c.1).collect();
+                    // (Each line of them, across their run, takes half the way to the line either side.)
+                    let ends = |id: MemberId| (self.m.pos(self.m.member(id).start()), self.m.pos(self.m.member(id).end()));
+                    let run = (ends(ms[0]).1 - ends(ms[0]).0).normalized();
+                    let across = Vec3::new(-run.y, run.x, 0.0).try_normalized().unwrap_or(Vec3::Y);
+                    let at = |id: MemberId| ((ends(id).0 + ends(id).1) * 0.5).dot(across);
+                    let mut lines: Vec<f64> = vec![];
+                    for &id in &ms {
+                        if !lines.iter().any(|q| (q - at(id)).abs() < 0.01) {
+                            lines.push(at(id));
+                        }
+                    }
+                    lines.sort_by(f64::total_cmp);
+                    let width = |id: MemberId| {
+                        let i = lines.iter().position(|q| (q - at(id)).abs() < 0.01).unwrap();
+                        (if i > 0 { (lines[i] - lines[i - 1]) / 2.0 } else { 0.0 }) + (if i + 1 < lines.len() { (lines[i + 1] - lines[i]) / 2.0 } else { 0.0 })
+                    };
+                    let mut put = vec![];
+                    for &id in &ms {
+                        let (a, b) = ends(id);
+                        let len = a.distance(b);
+                        // What of it is under the part.
+                        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+                        for i in 0..reach.len() {
+                            let (p0, p1) = (reach[i], reach[(i + 1) % reach.len()]);
+                            let side = |q: Vec3| (p1 - p0).cross(Vec2::new(q.x, q.y) - p0);
+                            let (fa, fb) = (side(a), side(b));
+                            if fa < 0.0 && fb < 0.0 {
+                                t1 = -1.0;
+                            } else if fa < 0.0 {
+                                t0 = t0.max(fa / (fa - fb));
+                            } else if fb < 0.0 {
+                                t1 = t1.min(fa / (fa - fb));
+                            }
+                        }
+                        if (t1 - t0) * len < 1e-3 {
+                            continue;
+                        }
+                        let (cos, wide) = ((1.0 - ((b - a) / len).z.powi(2)).sqrt(), width(id));
+                        for &(case, pressure, basis) in &loads {
+                            let per = pressure * wide * if basis == AreaBasis::Plan { cos } else { 1.0 };
+                            put.push(Load::MemberUniform { case, member: id, w: -Vec3::Z * per, range: Some((t0 * len, t1 * len)) });
+                        }
+                    }
+                    self.m.loads.extend(put);
                 }
             }
             // How much of each kind of edge there is: what is bought by the length (ridge cap, valley flashing, gutter).
@@ -1787,6 +1921,9 @@ impl Builder {
                 let under = Level { z: c[0].z + deck.above, at: Vec2::new(c[0].x, c[0].y), slope };
                 let group = ids.first().and_then(|&id| self.m.member(id).group);
                 let name = if pieces.len() == 1 { "deck".to_string() } else { format!("deck#{}", k + 1) };
+                if let (Some(g), 0, false) = (group, k, deck.layers.is_empty()) {
+                    self.m.buildups.push(Buildup { name: format!("{}: deck", a.name), group: g, layers: deck.layers.clone() });
+                }
                 for (of, at, thick) in sheets(&deck.layers, deck.thickness) {
                     let name = if deck.layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
                     self.m.solids.push(Solid { name, role: "deck".into(), material: of, group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under.raised(at), top: under.raised(at + thick), seams: vec![] });

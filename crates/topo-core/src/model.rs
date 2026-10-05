@@ -520,7 +520,7 @@ pub struct Model {
     pub issues: Vec<crate::validate::Issue>,
     /// Sheathing and finish build-ups over framing groups.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub surfaces: Vec<crate::surfaces::Surface>,
+    pub buildups: Vec<crate::surfaces::Buildup>,
     /// What the framing stands on: slabs, curbs (see `solids`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub solids: Vec<crate::solids::Solid>,

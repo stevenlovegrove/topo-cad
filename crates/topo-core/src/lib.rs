@@ -32,7 +32,7 @@ pub use refs::{resolve_direction, resolve_direction_in, DirRef, Feature, PlaneRe
 pub use section::*;
 pub use sheets::*;
 pub use solids::{Level, Solid, SolidFace};
-pub use surfaces::{Layer, Strips, Surface, SurfaceRegion};
+pub use surfaces::{Buildup, Layer, Strips};
 pub use topology::*;
 pub use units::UnitSystem;
 pub use validate::{validate, Issue, Severity};

@@ -742,10 +742,13 @@ fn a_rafter_roof_sits_on_the_plates() {
     // Each rafter bears on its plate at its foot (the bearing point is its foot: one node), and each tie on both plates.
     let bears = |role: &str| m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.name.starts_with(&format!("Roof rafters/{role}#")) && c.name.ends_with(": on both")).count();
     assert_eq!((bears("rafter"), bears("ceiling_tie")), (18, 18));
-    // Its loads are on the rafters, per length of them: what falls on a 24" strip of plan.
+    // Its loads are on the rafters, per length of them: what falls on the strip of plan each carries (24" wide; the
+    // pairs at the ends, half the way to the next).
     let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
-    let w = m.loads.iter().find_map(|l| match l { topo_core::Load::MemberUniform { case, w, .. } if *case == snow => Some(-w.z), _ => None }).unwrap();
-    assert!((w - 25.0 * 47.880259 * inch(24.0) / 1.25f64.sqrt()).abs() < 1e-6, "{w}");
+    let mut ws: Vec<f64> = m.loads.iter().filter_map(|l| match l { topo_core::Load::MemberUniform { case, w, .. } if *case == snow => Some(-w.z), _ => None }).collect();
+    ws.sort_by(f64::total_cmp);
+    let per = 25.0 * 47.880259 / 1.25f64.sqrt();
+    assert!(ws.len() == 18 && (ws[17] - per * inch(24.0)).abs() < 1e-6 && (ws[0] - per * (inch(24.0) - inch(0.75)) / 2.0).abs() < 1e-6, "{ws:?}");
 }
 
 #[test]
@@ -1847,11 +1850,13 @@ fn a_floor_and_a_roof_are_made_of_layers_and_carry_their_weight() {
     assert!((stack[2].top.over(at) - stack[2].bottom.over(at) - 0.001 * 1.25f64.sqrt()).abs() < 1e-9);
     // Their weight is dead load: on the floor's joists, and on the roof per area of slope.
     let dead = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Dead).unwrap().id;
-    let area: Vec<f64> = m.loads.iter().filter_map(|l| match l { topo_core::Load::Area { case, pressure, .. } if *case == dead => Some(*pressure / 47.880259), _ => None }).collect();
-    let covering: f64 = 1.45 + 0.35 + 1.4;
-    assert!(area.iter().any(|p| (p - covering * 1.25f64.sqrt()).abs() < 1e-6), "{area:?}");
-    let on_joists = m.loads.iter().filter(|l| matches!(l, topo_core::Load::MemberUniform { case, .. } if *case == dead)).count();
-    assert!(on_joists > 0);
+    let on = |role: &str| -> Vec<f64> { m.loads.iter().filter_map(|l| match l { topo_core::Load::MemberUniform { case, member, w, .. } if *case == dead && m.member(*member).role == role => Some(-w.z), _ => None }).collect() };
+    let covering: f64 = (1.45 + 0.35 + 1.4) * 47.880259;
+    assert!(on("top_chord").iter().any(|w| (w - covering * inch(24.0)).abs() < 1e-6), "{:?}", on("top_chord"));
+    assert!(!on("joist").is_empty());
+    // And what each is made of is listed, for a schedule.
+    let built: Vec<(&str, usize)> = m.buildups.iter().map(|b| (b.name.as_str(), b.layers.len())).collect();
+    assert_eq!(built, [("Floor: deck", 2), ("Roof", 3)]);
 }
 
 #[test]
@@ -1903,5 +1908,64 @@ fn a_shed_is_framed_with_mono_trusses_and_a_saltbox_with_rafters_of_two_pitches(
     let mut ws: Vec<f64> = m.loads.iter().filter_map(|l| match l { topo_core::Load::MemberUniform { case, w, .. } if *case == snow => Some(-w.z), _ => None }).collect();
     ws.sort_by(f64::total_cmp);
     let per = |q: f64| 25.0 * 47.880259 * inch(24.0) / (1.0 + q * q).sqrt();
-    assert!((ws[0] - per(8.0 / 12.0)).abs() < 1e-6 && (ws[ws.len() - 1] - per(4.0 / 12.0)).abs() < 1e-6, "{ws:?}");
+    assert!(ws.iter().any(|w| (w - per(8.0 / 12.0)).abs() < 1e-6) && (ws[ws.len() - 1] - per(4.0 / 12.0)).abs() < 1e-6, "{ws:?}");
+}
+
+#[test]
+fn a_flat_part_and_a_sloped_one_are_on_trusses_made_apart_each_with_its_covering_and_its_loads() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let m = run(include_str!("../../../examples/primitives/30-a-flat-roof-on-trusses-of-your-own.ts"), "30-a-flat-roof-on-trusses-of-your-own.ts").unwrap();
+    all_clean(&m);
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    // The trusses are as they were given: seven of them, each with its bottom chord run on 3 ft past the heel.
+    let chords: Vec<&topo_core::Member> = m.members.iter().filter(|x| x.role == "bottom_chord").collect();
+    assert_eq!(chords.len(), 7);
+    assert!(chords.iter().all(|c| (m.pos(c.start()).y + ft(3.0)).abs() < 1e-6 && (m.pos(c.end()).y - ft(20.0)).abs() < 1e-6));
+    // The canopy is a level sheet on the bottom chords' tops; the slope's sheets are on the top chords'; and the two
+    // meet where they fold, at one height.
+    let (deck, _) = roof_of(&m, "Roof");
+    let g = Geometry::build(&m, &Topology::build(&m));
+    let top_of = |role: &str| -> Vec<topo_core::Vec3> { g.parts(&m).iter().filter(|p| p.role == role).flat_map(|p| p.faces.iter().max_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap().0.clone()).collect() };
+    let lowest = |name: &str, at: topo_core::Vec2| deck.iter().filter(|s| s.name.starts_with(name)).map(|s| s.bottom.over(at)).fold(f64::MAX, f64::min);
+    let chord_top = ft(8.0) + inch(5.5);
+    assert!(top_of("bottom_chord").iter().all(|q| (q.z - chord_top).abs() < 1e-6));
+    assert!((lowest("Canopy", topo_core::Vec2::new(ft(6.0), -ft(1.0))) - chord_top).abs() < 1e-6);
+    let fold = (inch(5.5) - inch(3.5) * (1.0f64 + 1.0 / 9.0).sqrt()) * 3.0;
+    assert!((lowest("Slope", topo_core::Vec2::new(ft(6.0), fold)) - chord_top).abs() < 1e-6, "{}", lowest("Slope", topo_core::Vec2::new(ft(6.0), fold)) - chord_top);
+    for q in top_of("top_chord") {
+        if q.y > fold + 1e-6 {
+            let under = deck.iter().filter(|s| s.name.starts_with("Slope")).map(|s| s.bottom.over(topo_core::Vec2::new(q.x, q.y))).fold(f64::MAX, f64::min);
+            assert!((under - q.z).abs() < 1e-6, "{q:?} {under}");
+        }
+    }
+    // Each part is covered with its own: the canopy with a membrane on plywood, the slope with steel on an
+    // underlayment on plywood; and that is what a schedule lists.
+    let of = |name: &str| -> Vec<&str> { let mut v: Vec<&topo_core::Solid> = deck.iter().copied().filter(|s| s.name.starts_with(name)).collect(); v.sort_by(|a, b| a.bottom.z.total_cmp(&b.bottom.z)); v.iter().map(|s| s.material.split(' ').next().unwrap()).collect() };
+    assert_eq!(of("Canopy"), ["Plywood", "TPO"]);
+    assert_eq!(of("Slope eave 1"), ["Plywood", "Polyglass", "Standing-seam"]);
+    let built: Vec<(&str, usize)> = m.buildups.iter().map(|b| (b.name.as_str(), b.layers.len())).collect();
+    assert_eq!(built, [("Roof: Slope", 3), ("Roof: Canopy", 2)]);
+    // Loads go on what carries each part, over what of it is under the part, by the width each truss carries (24",
+    // the end ones half). On the canopy, the bottom chords from their ends to the fold: snow, roof live load and the
+    // weight of the membrane and plywood. On the slope, the top chords from the fold up: snow (per plan) and its
+    // covering (per area of slope).
+    let case = |kind: topo_core::LoadKind| m.load_cases.iter().find(|c| c.kind == kind).unwrap().id;
+    let on = |role: &str, kind: topo_core::LoadKind| -> Vec<(f64, (f64, f64))> {
+        m.loads.iter().filter_map(|l| match l { topo_core::Load::MemberUniform { case: c, member, w, range: Some(r) } if *c == case(kind) && m.member(*member).role == role => Some((-w.z, *r)), _ => None }).collect()
+    };
+    let (psf, wide) = (47.880259, inch(24.0));
+    let snow = on("bottom_chord", topo_core::LoadKind::Snow);
+    assert_eq!(snow.len(), 7);
+    for (i, (w, (a, b))) in snow.iter().enumerate() {
+        assert!(a.abs() < 1e-9 && (b - ft(3.0) - fold).abs() < 1e-6, "{a} {b}");
+        assert!((w - 25.0 * psf * if i == 0 || i == 6 { wide / 2.0 } else { wide }).abs() < 1e-6, "{w}");
+    }
+    assert_eq!(on("bottom_chord", topo_core::LoadKind::RoofLive).len(), 7);
+    let dead = on("bottom_chord", topo_core::LoadKind::Dead);
+    assert!(dead.len() == 7 && (dead[3].0 - (0.31 + 1.4) * psf * wide).abs() < 1e-6, "{dead:?}");
+    let (cos, slope_snow, slope_dead) = (1.0 / (1.0f64 + 1.0 / 9.0).sqrt(), on("top_chord", topo_core::LoadKind::Snow), on("top_chord", topo_core::LoadKind::Dead));
+    assert!(slope_snow.len() == 14 && on("top_chord", topo_core::LoadKind::RoofLive).is_empty());
+    assert!(slope_snow.iter().any(|(w, _)| (w - 25.0 * psf * wide * cos).abs() < 1e-6) && slope_dead.iter().any(|(w, _)| (w - (1.45 + 0.35 + 1.4) * psf * wide).abs() < 1e-6), "{slope_snow:?}");
+    // (The front top chord carries the slope from the fold up, not the stretch of it under the canopy.)
+    assert!(slope_snow.iter().any(|(_, (a, _))| (a - fold / cos).abs() < 1e-6), "{slope_snow:?}");
 }
