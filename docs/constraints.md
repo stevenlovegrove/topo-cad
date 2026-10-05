@@ -413,12 +413,29 @@ perimeter is. A wall's height is above its bottom: beside a wall as tall
 on something higher its top is as much lower, and the two meet at a step
 at both, top and bottom (`corner-step`). Two walls are held at one height
 at a corner where their *tops* are one as drawn. A floor at two heights is
-two slabs. Slabs and curbs are **solids** of the model (`Model::solids`: a
-plan outline between two heights), not members: they have no axis, join
+two slabs.
+
+A slab may be **laid to fall** (`Slab.sloped([sx, sy], about)`: its top a
+plane, rising so much per metre along x and y; its one number is its
+height at `about`). A wall standing on it, or on a curb of one height on
+it, has its bottom at the slab's top at each of its ends, so its bottom
+plate slopes with the slab (and, its height being above its bottom, its
+top with it). A curb whose **top is level** (`slab.curbTo(level)`) is what
+gives walls a level seat on such a slab: the wall's bottom is at that
+level, held there whatever the slab does, and the curb is as tall under it
+as the slab is below that there (none where the slab comes up to it), so a
+reading of the slab changes the curb, not the walls
+(`examples/primitives/12-a-slab-laid-to-fall-and-a-level-curb.ts`,
+`13-walls-on-a-slab-laid-to-fall.ts`).
+
+Slabs and curbs are **solids** of the model (`Model::solids`: a plan
+outline between two surfaces, each level or sloping: `Level`), not members: they have no axis, join
 nothing, and are not analysed; they are drawn, and seen in a scan, as
-members are. What each bottom plate bears on is said in its support
-(`Bottom plate on a curb on Slab`). *Not yet:* a curb's height is given,
-not a number; a slab's top is level; a free perimeter's curbs do not move
+members are (the exact-lines 3D view hides what is behind the convex hull
+of a solid's outline). What each bottom plate bears on is said in its support
+(`Bottom plate on a curb on Slab`). *Not yet:* a curb's height or level,
+and a slab's slope, are given, not numbers of the solve; a slab's top is a
+plane, not a surface fitted to what was scanned; a free perimeter's curbs do not move
 with it; and floors, stem walls, footings and piers are not generated.
 (`examples/primitives/10-walls-on-a-slab-and-a-curb.ts`.)
 
@@ -510,6 +527,11 @@ is narrower than they are wide: no backing is framed for them yet.
     moves everything standing on it.
 11. **A floor on walls**: a floor platform given on plan only, sat by the
     solve on the walls under it.
+12. **A slab laid to fall and a level curb**: the walls on a curb whose top
+    is level, as tall as the slab is below it; a reading of the slab moves
+    the slab and the curb, not the walls.
+13. **Walls on a slab laid to fall**: without a level curb, their bottoms
+    follow the slab.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:

@@ -453,6 +453,73 @@ fn a_floor_sits_on_the_walls_under_it() {
 }
 
 #[test]
+fn a_slab_laid_to_fall_and_a_curb_whose_top_is_level() {
+    use topo_core::Vec2;
+    let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);
+    let src = include_str!("../../../examples/primitives/12-a-slab-laid-to-fall-and-a-level-curb.ts");
+    let m = run(src, "12-a-slab-laid-to-fall-and-a-level-curb.ts").unwrap();
+    all_clean(&m);
+    let z = |path: &str| {
+        let id = m.find_member(path).unwrap();
+        (m.pos(m.member(id).start()).z, m.pos(m.member(id).end()).z)
+    };
+    let is = |got: (f64, f64), want: f64| (got.0 - want).abs() < 1e-6 && (got.1 - want).abs() < 1e-6;
+    // The slab: read 5 mm lower than drawn at its east side, and rising 10 mm per metre along x, so its west side
+    // is 12 ft of that lower still.
+    let slab = m.solids.iter().find(|s| s.role == "slab").unwrap();
+    let (east, west) = (Vec2::new(ft(12.0), ft(4.0)), Vec2::new(0.0, ft(4.0)));
+    assert!((slab.top.over(east) + mm(5.0)).abs() < 1e-6 && (slab.top.over(west) + mm(5.0) + 0.010 * ft(12.0)).abs() < 1e-6, "{slab:?}");
+    // Every wall stands on the curb's top, level at 20 mm: its bottom there and its top 8 ft above, slab or no.
+    for wall in ["South", "East", "North"] {
+        assert!(is(z(&format!("Walls/{wall}/bottom_plate")), mm(20.0)), "{wall} {:?}", z(&format!("Walls/{wall}/bottom_plate")));
+        assert!(is(z(&format!("Walls/{wall}/cap_plate")), ft(8.0) + mm(20.0)), "{wall}");
+    }
+    assert!(is(z("Walls/West/bottom_plate#1"), mm(20.0)) && is(z("Walls/West/bottom_plate#2"), mm(20.0)));
+    // The curb: its top level at 20 mm; its underside the slab's top. 25 mm tall under the east wall, and 12 ft of
+    // fall more under the west; in two pieces there, either side of the door.
+    let curbs: Vec<&topo_core::Solid> = m.solids.iter().filter(|s| s.role == "curb").collect();
+    assert_eq!(curbs.len(), 5, "{:?}", curbs.iter().map(|c| m.solid_path(c)).collect::<Vec<_>>());
+    assert!(curbs.iter().all(|c| c.top == topo_core::Level::flat(mm(20.0)) && c.bottom == slab.top));
+    let tall = |name: &str, p: Vec2| {
+        let c = curbs.iter().find(|c| m.solid_path(c).ends_with(name)).unwrap();
+        c.top.over(p) - c.bottom.over(p)
+    };
+    assert!((tall("East/curb", east) - mm(25.0)).abs() < 1e-6 && (tall("West/curb#1", west) - mm(25.0) - 0.010 * ft(12.0)).abs() < 1e-6);
+    // As drawn (without the reading) the walls are just where they were, and the curb 5 mm less tall.
+    let drawn = run(&src.replace("  survey(slab.at([wide, deep / 2]), { z: -mm(5) }),\n", ""), "drawn.ts").unwrap();
+    let id = drawn.find_member("Walls/East/bottom_plate").unwrap();
+    assert!((drawn.pos(drawn.member(id).start()).z - mm(20.0)).abs() < 1e-9);
+    assert!((drawn.solids.iter().find(|s| s.role == "slab").unwrap().top.over(east)).abs() < 1e-9);
+}
+
+#[test]
+fn walls_stand_straight_on_a_slab_laid_to_fall() {
+    let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);
+    let m = run(include_str!("../../../examples/primitives/13-walls-on-a-slab-laid-to-fall.ts"), "13-walls-on-a-slab-laid-to-fall.ts").unwrap();
+    let v = topo_core::validate(&m, &Topology::build(&m));
+    assert!(v.iter().all(|i| i.severity < topo_core::Severity::Error), "{v:#?}");
+    let z = |path: &str| {
+        let id = m.find_member(path).unwrap();
+        (m.pos(m.member(id).start()).z, m.pos(m.member(id).end()).z)
+    };
+    let rise = 0.020 * ft(12.0);
+    let near = |got: (f64, f64), want: (f64, f64)| (got.0 - want.0).abs() < 1e-6 && (got.1 - want.1).abs() < 1e-6;
+    // The west wall at zero, the east wall 12 ft of slope higher; each 8 ft tall.
+    assert!(near(z("Walls/West/bottom_plate"), (0.0, 0.0)) && near(z("Walls/East/bottom_plate"), (rise, rise)), "{:?} {:?}", z("Walls/West/bottom_plate"), z("Walls/East/bottom_plate"));
+    assert!(near(z("Walls/East/cap_plate"), (ft(8.0) + rise, ft(8.0) + rise)));
+    // The north wall runs back down the slope (from the east to the west): its bottom plate slopes with the slab, and its top with it.
+    assert!(near(z("Walls/North/bottom_plate"), (rise, 0.0)) && near(z("Walls/North/cap_plate"), (ft(8.0) + rise, ft(8.0))), "{:?}", z("Walls/North/bottom_plate"));
+    // The south wall is on a curb of one height: 40 mm above the slab all along, so its plate slopes too, 40 mm up.
+    assert!(near(z("Walls/South/bottom_plate"), (mm(40.0), mm(40.0) + rise)), "{:?}", z("Walls/South/bottom_plate"));
+    let curb = m.solids.iter().find(|s| s.role == "curb").unwrap();
+    let slab = m.solids.iter().find(|s| s.role == "slab").unwrap();
+    assert!(curb.bottom == slab.top && curb.top == slab.top.raised(mm(40.0)) && m.solids.iter().filter(|s| s.role == "curb").count() == 1);
+    // Nothing through anything else.
+    let g = topo_geom::Geometry::build(&m, &Topology::build(&m));
+    assert!(g.clashes().is_empty(), "{:?}", g.clashes());
+}
+
+#[test]
 fn walls_stand_on_a_slab_and_a_curb() {
     let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);
     let src = include_str!("../../../examples/primitives/10-walls-on-a-slab-and-a-curb.ts");
@@ -468,7 +535,7 @@ fn walls_stand_on_a_slab_and_a_curb() {
     let is = |got: (f64, f64), want: f64| (got.0 - want).abs() < 1e-6 && (got.1 - want).abs() < 1e-6;
     // The reading: the slab's top is 45 mm below zero, not the 40 it is drawn at; it moved there.
     let slab = m.solids.iter().find(|s| s.role == "slab").unwrap();
-    assert!((slab.top + mm(45.0)).abs() < 1e-6 && (slab.bottom - (slab.top - topo_core::units::inch(4.0))).abs() < 1e-9, "{slab:?}");
+    assert!((slab.top.z + mm(45.0)).abs() < 1e-6 && (slab.bottom.z - (slab.top.z - topo_core::units::inch(4.0))).abs() < 1e-9, "{slab:?}");
     assert_eq!(m.solid_path(slab), "Walls on a slab and a curb/Slab/slab");
     // The right wall stands on it; the others on the curb, 40 mm up: each 8 ft tall from there.
     assert!(is(z("Walls/Right/bottom_plate"), -mm(45.0)), "{:?}", z("Walls/Right/bottom_plate"));
@@ -480,7 +547,7 @@ fn walls_stand_on_a_slab_and_a_curb() {
     // A curb under each of those three, from the slab's top to the wall's bottom; none under the right wall.
     let curbs: Vec<&topo_core::Solid> = m.solids.iter().filter(|s| s.role == "curb").collect();
     assert_eq!(curbs.len(), 3);
-    assert!(curbs.iter().all(|c| (c.bottom + mm(45.0)).abs() < 1e-6 && (c.top + mm(5.0)).abs() < 1e-6), "{curbs:#?}");
+    assert!(curbs.iter().all(|c| (c.bottom.z + mm(45.0)).abs() < 1e-6 && (c.top.z + mm(5.0)).abs() < 1e-6), "{curbs:#?}");
     assert!(curbs.iter().all(|c| !m.solid_path(c).contains("Right")));
     // What each bottom plate bears on is said.
     let on = |what: &str| m.supports.iter().filter(|s| s.description.as_deref() == Some(what)).count();
@@ -490,7 +557,7 @@ fn walls_stand_on_a_slab_and_a_curb() {
     assert!(g.clashes().is_empty(), "{:?}", g.clashes());
     // Without the reading, the slab is where it is drawn.
     let drawn = run(&src.replace("  survey(slab.at([ft(6), ft(4)]), { z: -mm(45) }),\n", ""), "drawn.ts").unwrap();
-    assert!((drawn.solids.iter().find(|s| s.role == "slab").unwrap().top + mm(40.0)).abs() < 1e-9);
+    assert!((drawn.solids.iter().find(|s| s.role == "slab").unwrap().top.z + mm(40.0)).abs() < 1e-9);
     // A wall cannot stand on what is not there.
     let e = run(&src.replace("  slab,\n", ""), "none.ts").unwrap_err().to_string();
     assert!(e.contains("nothing named Slab to stand on"), "{e}");

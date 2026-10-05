@@ -170,8 +170,11 @@ impl Model {
                 let w = f.to_world(crate::math::Vec3::new(p.x, p.y, 0.0));
                 *p = crate::math::Vec2::new(w.x, w.y);
             }
-            x.bottom += f.origin.z;
-            x.top += f.origin.z;
+            for l in [&mut x.bottom, &mut x.top] {
+                let (a, s) = (f.to_world(crate::math::Vec3::new(l.at.x, l.at.y, 0.0)), f.dir_to_world(crate::math::Vec3::new(l.slope.x, l.slope.y, 0.0)));
+                (l.at, l.slope) = (crate::math::Vec2::new(a.x, a.y), crate::math::Vec2::new(s.x, s.y));
+                l.z += f.origin.z;
+            }
         }
         for s in &mut self.solves {
             for n in &mut s.nodes {

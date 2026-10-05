@@ -369,22 +369,55 @@ pub struct WallSpec {
     pub on: Option<StandsOn>,
 }
 
-/// What a wall stands on: a slab, or a curb this high on it. Its bottom is that thing's top.
+/// What a wall stands on: a slab; or a curb on it, this high all along (its top follows the
+/// slab's), or up to a level (its top level at that height, whatever the slab does under it).
+/// The wall's bottom is that thing's top.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StandsOn {
     pub slab: String,
     #[serde(default)]
     pub curb: f64,
+    #[serde(default)]
+    pub level: Option<f64>,
 }
 
-/// A slab: a plan outline, its top at a height (a number of the one solve: as drawn a hint, so a
-/// reading of it moves it, and what stands on it with it), this thick.
+impl StandsOn {
+    /// Where the wall's bottom is over a place on plan, the slab's top being `slab`.
+    fn base(&self, slab: &Level, p: Vec2) -> f64 {
+        self.level.unwrap_or(slab.over(p) + self.curb)
+    }
+    /// The curb, if there is one: from the slab's top to its own.
+    fn curb(&self, slab: &Level) -> Option<(Level, Level)> {
+        match self.level {
+            Some(z) => Some((*slab, Level::flat(z))),
+            None if self.curb > 0.0 => Some((*slab, slab.raised(self.curb))),
+            None => None,
+        }
+    }
+}
+
+/// A slab: a plan outline, this thick; its top so high at one place (`about`: its first corner,
+/// if not said) and rising from there by `slope` per metre along x and y (laid to fall; level if
+/// none). That height is a number of the one solve: as drawn a hint, so a reading of it moves
+/// the slab, and what stands on it with it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SlabSpec {
     pub name: String,
     pub outline: Vec<(f64, f64)>,
     pub top: f64,
     pub thickness: f64,
+    #[serde(default)]
+    pub slope: (f64, f64),
+    #[serde(default)]
+    pub about: Option<(f64, f64)>,
+}
+
+impl SlabSpec {
+    /// Its top, its height where it is given being `top`.
+    fn level(&self, top: f64) -> Level {
+        let at = self.about.or(self.outline.first().copied()).unwrap_or((0.0, 0.0));
+        Level { z: top, at: Vec2::new(at.0, at.1), slope: Vec2::new(self.slope.0, self.slope.1) }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -432,16 +465,20 @@ struct PerimeterParams {
 
 impl PerimeterParams {
     /// As the script draws it.
-    fn drawn(p: &PerimeterSpec, slabs: &HashMap<String, f64>) -> Result<PerimeterParams, String> {
+    fn drawn(p: &PerimeterSpec, slabs: &HashMap<String, Level>) -> Result<PerimeterParams, String> {
         let ns = p.segments.len();
         let n = if p.closed { ns } else { ns + 1 };
         // A wall that stands on something: its bottom is that thing's top.
         let mut bases = vec![];
+        let plan = |k: usize| {
+            let (x, y) = if k % n == 0 { p.start } else { p.segments[k % n - 1].to };
+            Vec2::new(x, y)
+        };
         for i in 0..ns {
             bases.push(match p.stands_on(i) {
                 Some(on) => {
-                    let top = slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?;
-                    Some((top + on.curb, top + on.curb))
+                    let slab = slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?;
+                    Some((on.base(slab, plan(i)), on.base(slab, plan(i + 1))))
                 }
                 None => None,
             });
@@ -596,8 +633,9 @@ struct Builder {
     moving: HashMap<NodeId, (scene::BodyRef, Vec3, Vec<(scene::ScalarId, Vec3)>)>,
     grades: HashMap<GradeSpec, MaterialId>,
     perimeters: HashMap<String, (PerimeterParts, f64)>,
-    /// Slabs by name: the body each is, and its top (a number).
-    slabs: HashMap<String, (scene::BodyRef, scene::ScalarId)>,
+    /// Slabs by name: the body each is, its top's height where it is given (a number), and its
+    /// top as it is built this time.
+    slabs: HashMap<String, (scene::BodyRef, scene::ScalarId, Level)>,
     /// Assembly members by assembly name (roofs may bear on them).
     assemblies: HashMap<String, Vec<MemberId>>,
     root: GroupId,
@@ -690,7 +728,10 @@ impl Builder {
             let side = match &s.side {
                 Some(w) => {
                     let mut wall = self.wall(w)?;
-                    wall.curb = p.stands_on(i).map(|on| on.curb).filter(|&c| c > 0.0);
+                    wall.curb = match p.stands_on(i) {
+                        Some(on) => on.curb(&self.slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?.2),
+                        None => None,
+                    };
                     Side::Wall(wall)
                 }
                 None => Side::Open,
@@ -743,7 +784,7 @@ impl Builder {
         for (i, wp) in parts.walls.iter().enumerate() {
             let Some(wp) = wp else { continue };
             let on = match p.stands_on(i) {
-                Some(on) if on.curb > 0.0 => format!("Bottom plate on a curb on {}", on.slab),
+                Some(on) if on.curb > 0.0 || on.level.is_some() => format!("Bottom plate on a curb on {}", on.slab),
                 Some(on) => format!("Bottom plate on {}", on.slab),
                 None => "Bottom plate on foundation".into(),
             };
@@ -805,13 +846,19 @@ impl Builder {
                 numbers.bases.push(None);
                 continue;
             };
-            let (_, top) = *self.slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?;
+            let (_, top, slab) = *self.slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?;
             let name = format!("{}/{}", p.name, w.name);
-            let what = if on.curb > 0.0 { format!("a curb on {}", on.slab) } else { on.slab.clone() };
+            let what = if on.level.is_some() { format!("a curb on {}, its top level", on.slab) } else if on.curb > 0.0 { format!("a curb on {}", on.slab) } else { on.slab.clone() };
             let s0 = sc.number(&format!("{name}: its bottom at its start"), body, b0 - origin.z);
             let s1 = sc.number(&format!("{name}: its bottom at its end"), body, b1 - origin.z);
-            for (s, end) in [(s0, "start"), (s1, "end")] {
-                sc.equal(&format!("{name} stands on {what} at its {end}"), s.into(), scene::Num::from(on.curb - origin.z).plus(top, 1.0), scene::Tier::Hard);
+            for (s, end, at) in [(s0, "start", w.start), (s1, "end", w.end)] {
+                let held = match on.level {
+                    // (The curb's top is level, where it is said to be: the slab under it does not move the wall.)
+                    Some(z) => scene::Num::from(z - origin.z),
+                    // (So far above the slab's top there: which rises and falls with the slab's one number.)
+                    None => scene::Num::from(on.base(&slab, Vec2::new(at.x, at.y)) - slab.z - origin.z).plus(top, 1.0),
+                };
+                sc.equal(&format!("{name} stands on {what} at its {end}"), s.into(), held, scene::Tier::Hard);
             }
             numbers.bases.push(Some((s0, s1)));
         }
@@ -1453,7 +1500,7 @@ fn build_building(spec: &BuildingSpec, fit: Option<&Fit>) -> Result<(Model, Opti
     // numbers as solved, and solved again, until they do not change.
     // (And slabs at their tops, likewise: what stands on one is built on it where it is.)
     let slabs_drawn: Vec<f64> = spec.items.iter().filter_map(|i| if let ItemSpec::Slab(s) = i { Some(s.top) } else { None }).collect();
-    let tops: HashMap<String, f64> = spec.items.iter().filter_map(|i| if let ItemSpec::Slab(s) = i { Some((s.name.clone(), s.top)) } else { None }).collect();
+    let tops: HashMap<String, Level> = spec.items.iter().filter_map(|i| if let ItemSpec::Slab(s) = i { Some((s.name.clone(), s.level(s.top))) } else { None }).collect();
     let drawn: Vec<PerimeterParams> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(PerimeterParams::drawn(p, &tops)) } else { None }).collect::<Result<_, _>>()?;
     let mut at = drawn.clone();
     let mut slabs_at = slabs_drawn.clone();
@@ -1535,10 +1582,11 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         let body = sc.body(&s.name, "", Frame::WORLD, false, None);
         let n = sc.number(&format!("{}: its top", s.name), body, top);
         sc.number_is(&format!("{}: its top as drawn", s.name), n, s.top, scene::Tier::Hint);
-        b.slabs.insert(s.name.clone(), (body, n));
+        let level = s.level(top);
+        b.slabs.insert(s.name.clone(), (body, n, level));
         slab_tops.push(n);
         let g = b.m.add_group(&s.name, "slab", Frame::WORLD, Some(b.root));
-        b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: top - s.thickness, top });
+        b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: level.raised(-s.thickness), top: level });
     }
     let perimeters: Vec<&PerimeterSpec> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(p) } else { None }).collect();
     let mut numbers = vec![];
@@ -1574,10 +1622,11 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         }
         // A point of a slab's top: `Slab:top x,y` (it moves up and down with the slab's top).
         if let Some((slab, at)) = name.split_once(":top ") {
-            let &(body, top) = b.slabs.get(slab).ok_or_else(|| format!("{name}: no slab named {slab}"))?;
+            let &(body, top, level) = b.slabs.get(slab).ok_or_else(|| format!("{name}: no slab named {slab}"))?;
             let xy: Vec<f64> = at.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("{name}: {at} is not x,y"))?;
             let [x, y] = xy[..] else { return Err(format!("{name}: {at} is not x,y")) };
-            return sc.node_with(name, body, v3(x, y, 0.0), &[(top, Vec3::Z)]);
+            // (As high as the slab's top is there: so far above or below where its height is given.)
+            return sc.node_with(name, body, v3(x, y, level.over(Vec2::new(x, y)) - level.z), &[(top, Vec3::Z)]);
         }
         let m = &b.m;
         let triple = |t: &str| -> Result<Vec3, String> {

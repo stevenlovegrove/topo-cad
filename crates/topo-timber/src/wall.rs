@@ -117,9 +117,9 @@ pub struct Wall {
     /// lists them); none: where their readings put them.
     pub survey_solved: Option<Vec<f64>>,
     pub studs_solved: Option<Vec<f64>>,
-    /// A curb under it, this high (concrete, as wide as its plates; its top is the wall's bottom):
-    /// under each stretch of its bottom plate.
-    pub curb: Option<f64>,
+    /// A curb under it (concrete, as wide as its plates), under each stretch of its bottom plate:
+    /// from the surface it stands on (a slab's top) up to its own top (where the wall's bottom is).
+    pub curb: Option<(Level, Level)>,
 }
 
 /// Why a common stud is where it is.
@@ -840,19 +840,22 @@ impl Framing {
             let id = m.add_member_between(wp(a, f.bottom(a)), wp(bx, f.bottom(bx)), &bottom.clone().named(&name));
             f.segs.push((a, bx, id));
             f.parts.bottom_plates.push(id);
-            // The curb under it (level: under the lower end of a plate that slopes).
-            if let Some(high) = w.curb.filter(|&c| c > 0.0) {
+            // The curb under it.
+            if let Some((under, over)) = w.curb {
                 let (y0, y1) = match w.justify {
                     Justify::Exterior => (0.0, t),
                     Justify::Center => (-t / 2.0, t / 2.0),
                 };
-                let top = w.start.z + f.bottom(a).min(f.bottom(bx));
                 let corner = |x: f64, y: f64| {
                     let p = frame.to_world(v3(x, y, 0.0));
                     Vec2::new(p.x, p.y)
                 };
-                let name = if segs.len() == 1 { "curb".to_string() } else { format!("curb#{}", k + 1) };
-                m.solids.push(Solid { name, role: "curb".into(), material: "concrete".into(), group: Some(g), outline: vec![corner(a, y0), corner(bx, y0), corner(bx, y1), corner(a, y1)], bottom: top - high, top });
+                let outline = vec![corner(a, y0), corner(bx, y0), corner(bx, y1), corner(a, y1)];
+                // (Where the slab comes up to the curb's top there is none: only where it has some height.)
+                if outline.iter().any(|&p| over.over(p) - under.over(p) > 1e-4) {
+                    let name = if segs.len() == 1 { "curb".to_string() } else { format!("curb#{}", k + 1) };
+                    m.solids.push(Solid { name, role: "curb".into(), material: "concrete".into(), group: Some(g), outline, bottom: under, top: over });
+                }
             }
         }
         // Double top plate as two members: lower ply (axis on its top face)

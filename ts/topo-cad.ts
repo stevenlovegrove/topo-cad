@@ -470,8 +470,10 @@ export class Survey {
 /** What a wall stands on: a slab, or a curb on one. Its bottom is that thing's top. */
 export interface Support {
   readonly slab: string;
-  /** The curb's height above the slab (0: the slab itself). */
+  /** The curb's height above the slab, all along it (0: the slab itself, unless `level`). */
   readonly curb: Length;
+  /** The height of the curb's top, where it is level whatever the slab does under it. */
+  readonly level?: Length;
 }
 
 /**
@@ -488,6 +490,15 @@ export interface Support {
  * `coincide(scan.on(p, [0, 0, 1]), slab.at([x, y]), { tolerance })`) moves it,
  * and what stands on it moves with it. A floor at two heights is two slabs.
  * Add it to the building like anything else.
+ *
+ * A slab may be laid to fall (`sloped`): its top is then a plane, and a wall
+ * standing on it, or on a curb of one height on it (`curb`), has a bottom
+ * that follows it. A curb whose top is level (`curbTo`) is what makes a
+ * level seat on a slab that is not: the wall's bottom is at that level, and
+ * the curb is as tall under it as the slab is below that there.
+ *
+ *   const slab = Slab.named("Slab").outline(corners).top(0).sloped([mm(10), 0]);  // rises 10 mm per metre along x
+ *   const walls = Perimeter.start("Walls", a).on(slab.curbTo(mm(100)))
  */
 export class Slab {
   private constructor(
@@ -495,26 +506,45 @@ export class Slab {
     readonly outline_: readonly Point[],
     readonly top_: Length,
     readonly thickness_: Length,
+    readonly slope_: Point = [0, 0],
+    readonly about_: Point | undefined = undefined,
   ) {}
   static named(name: string): Slab {
     return new Slab(name, [], 0, inch(4));
   }
   /** Its outline on plan, either way round. */
   outline(points: readonly Point[]): Slab {
-    return new Slab(this.name, points, this.top_, this.thickness_);
+    return new Slab(this.name, points, this.top_, this.thickness_, this.slope_, this.about_);
   }
-  /** The height of its top (default 0). */
+  /** The height of its top (default 0); where it slopes, at the place its slope is given about. */
   top(z: Length): Slab {
-    return new Slab(this.name, this.outline_, z, this.thickness_);
+    return new Slab(this.name, this.outline_, z, this.thickness_, this.slope_, this.about_);
   }
   /** How thick it is (default 4 in). */
   thickness(t: Length): Slab {
-    return new Slab(this.name, this.outline_, this.top_, t);
+    return new Slab(this.name, this.outline_, this.top_, t, this.slope_, this.about_);
   }
-  /** A curb on it, `height` high, to stand a wall on: under the wall's bottom plate, as wide. */
+  /**
+   * Laid to fall: its top rises by `slope[0]` per metre along x and `slope[1]`
+   * along y (a ratio: `mm(10)` is 10 mm per metre). Its height (`top`) is
+   * what it is at `about` on plan (its outline's first point, if not said).
+   */
+  sloped(slope: Point, about?: Point): Slab {
+    return new Slab(this.name, this.outline_, this.top_, this.thickness_, slope, about ?? this.about_);
+  }
+  /** A curb on it, `height` high all along (its top follows the slab's), to stand a wall on: under the wall's bottom plate, as wide. */
   curb(height: Length): Support {
     if (!(height > 0)) throw new Error(`slab ${this.name}: a curb has a height`);
     return { slab: this.name, curb: height };
+  }
+  /**
+   * A curb on it whose top is level, at `level`: a wall on it has its bottom
+   * there, and the curb is as tall as the slab is below that under it (none
+   * where the slab comes up to it). On a slab laid to fall, this is what
+   * the walls' plates sit level on.
+   */
+  curbTo(level: Length): Support {
+    return { slab: this.name, curb: 0, level };
   }
   /** A point of its top, as a node: over `p` on plan, as high as the top is. */
   at(p: Point): NodeHandle {
@@ -522,7 +552,7 @@ export class Slab {
   }
   toJSON() {
     if (this.outline_.length < 3) throw new Error(`slab ${this.name}: give its outline (at least three points)`);
-    return { type: "slab", name: this.name, outline: this.outline_, top: this.top_, thickness: this.thickness_ };
+    return { type: "slab", name: this.name, outline: this.outline_, top: this.top_, thickness: this.thickness_, slope: this.slope_, about: this.about_ };
   }
 }
 

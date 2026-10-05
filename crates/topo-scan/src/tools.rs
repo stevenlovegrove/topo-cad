@@ -1012,6 +1012,15 @@ impl Workspace {
         // The frame the lobes are looked at in: the fitted one (x the axis nearest east, z up).
         let frame = [fx, cross(fz, fx), fz];
         let (gate, bin) = (0.035, 0.00025);
+        // By the walls alone, if asked: the same fit over the upright surfaces only (twice, as which they are
+        // settles), so that up is what the four walls are square to, and floors and undersides say nothing.
+        let by_walls = match args.get("by").and_then(|v| v.as_str()).unwrap_or("all") {
+            "all" => false,
+            "walls" => true,
+            b => bail!("by: \"all\" or \"walls\", not {b:?}"),
+        };
+        let frame = if by_walls { (0..2).fold(frame, |f, _| fit(&upright(&ns, &f, 2.0 * gate), f)) } else { frame };
+        let (fx, fz) = (frame[0], frame[2]);
         let ls = lobes(&ns, &frame, gate, bin, 2.0 * radius);
         // The floor alone: what faces up within a quarter of a metre of the floor's height.
         let floor: Vec<_> = ns.iter().copied().filter(|s| s.at[2] < scan.floor_z + 0.25).collect();
@@ -1034,9 +1043,9 @@ impl Workspace {
             if named { ", except to name the axes: x is the fitted axis nearest the model's east" } else { "" });
         let r = rise(fz);
         s += &format!(
-            "The alignment: one rotation (all three of its freedoms) fitted to the six lobes together, robustly (a normal pulls less the further off its axis it is). \
+            "The alignment: one rotation (all three of its freedoms) fitted to {}, robustly (a normal pulls less the further off its axis it is). \
              Against the scan as it is, the fitted frame's level rises [{:+.2}, {:+.2}] along {xn}, {yn}: levelling the scan by that (scan_filter level, added to what it has) would make its up this frame's.\n",
-            mm(r[0]), mm(r[1]));
+            if by_walls { "the four lobes of the upright surfaces only (the walls: up is what they are square to)" } else { "the six lobes together" }, mm(r[0]), mm(r[1]));
         if named {
             let yaw = (dot(cross(east, hx), up)).atan2(dot(east, hx));
             s += &format!("About the vertical it is turned {:+.2} mm/m anticlockwise from the model's axes as the model is placed (the only use made of the model, with the axes' names).\n", mm(yaw));

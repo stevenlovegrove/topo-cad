@@ -516,8 +516,12 @@ fn view3d(b: &Built, az: f64, el: f64) -> Value {
     let (a, e) = (az.to_radians(), el.clamp(-89.9, 89.9).to_radians());
     let toward = topo_core::Vec3::new(a.sin() * e.cos(), a.cos() * e.cos(), e.sin());
     let proj = topo_draw::hlr::Projector::new(toward, topo_core::Vec3::Z);
+    // (Members, then what they stand on: marked by where they are among the mesh's parts.)
     let geoms: Vec<&topo_geom::MemberGeom> = b.geom.members.iter().collect();
-    let segs = topo_draw::hlr::hidden_lines(&geoms, &proj);
+    let mut pieces = topo_draw::hlr::Piece::of_members(&geoms);
+    let n = b.model.members.len() as u32;
+    pieces.extend(b.model.solids.iter().enumerate().map(|(k, s)| topo_draw::hlr::Piece::of_solid(s, topo_core::MemberId(n + k as u32))));
+    let segs = topo_draw::hlr::hidden_lines_of(&pieces, &proj);
     let r = |v: f64| (v * 100_000.0).round() / 100_000.0;
     let visible: Vec<[f64; 5]> = segs.iter().filter(|s| !s.hidden).map(|s| [s.member.0 as f64, r(s.a.x), r(s.a.y), r(s.b.x), r(s.b.y)]).collect();
     json!({ "az": az, "el": el, "segments": visible })

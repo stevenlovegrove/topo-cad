@@ -452,7 +452,7 @@ mod tests {
         let mut m = Model::new("on a curb");
         let w = template(&mut m);
         let curb = 0.04;
-        let on_curb = Wall { curb: Some(curb), ..w.clone() };
+        let on_curb = Wall { curb: Some((Level::flat(-curb), Level::flat(0.0))), ..w.clone() };
         let mut p = Perimeter::start("Walls", Vec2::new(0.0, 0.0))
             .to(Vec2::new(ft(12.0), 0.0), Side::Wall(on_curb.clone().named("Front")))
             .to(Vec2::new(ft(12.0), ft(10.0)), Side::Wall(w.clone().named("Right")))
@@ -474,7 +474,7 @@ mod tests {
         let curbs: Vec<&Solid> = m.solids.iter().filter(|s| s.role == "curb").collect();
         assert_eq!(curbs.len(), 3);
         for c in &curbs {
-            assert!((c.top - 0.0).abs() < 1e-12 && (c.bottom + curb).abs() < 1e-12, "{c:?}");
+            assert!(c.top == Level::flat(0.0) && c.bottom == Level::flat(-curb), "{c:?}");
         }
         let front_curb = curbs.iter().find(|c| m.solid_path(c) == "Walls/Front/curb").unwrap();
         let (lo, hi) = front_curb.outline.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
