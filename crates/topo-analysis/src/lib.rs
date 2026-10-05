@@ -5,8 +5,11 @@
 //! takedown, a sparse 3D frame solver and NDS member/connection checks.
 
 pub mod code;
+pub mod frame;
 pub mod frame2d;
+pub mod frame3d;
 pub mod loadpath;
+pub mod mech;
 pub mod model;
 pub mod nds;
 pub mod takedown;

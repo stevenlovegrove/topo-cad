@@ -218,6 +218,7 @@ async function route(path, body) {
   if (path.startsWith("/api/member")) return engine("request", { op: "member", args: q(path) });
   if (path.startsWith("/api/ratios")) return engine("request", { op: "ratios", args: q(path) });
   if (path === "/api/mesh") return engine("request", { op: "mesh" });
+  if (path.startsWith("/api/deflected")) return engine("request", { op: "deflected", args: q(path) });
   if (path.startsWith("/api/view3d")) {
     const a = q(path);
     const t0 = performance.now();

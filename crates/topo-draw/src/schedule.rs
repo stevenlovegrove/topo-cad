@@ -3,12 +3,14 @@
 use crate::doc::{text_width, Align, Drawing, Layer};
 use std::collections::BTreeMap;
 use topo_core::units::{fmt_ft_in, INCH};
-use topo_core::{ConnectionId, MemberId, Model, Topology};
+use topo_core::{ConnectionId, MemberId, Model, Topology, UnitSystem};
 use topo_geom::Geometry;
 use topo_timber::lumber::board_feet;
 
-fn prefix(role: &str) -> &'static str {
-    match role {
+/// Mark prefix for a role: the framing ones by convention, anything else
+/// by its initials (`down_tube` → `DT`).
+fn prefix(role: &str) -> String {
+    let known = match role {
         "stud" => "S",
         "king_stud" => "K",
         "jack_stud" => "J",
@@ -27,8 +29,13 @@ fn prefix(role: &str) -> &'static str {
         "top_chord" => "TC",
         "bottom_chord" => "BC",
         "web" => "W",
-        _ => "M",
+        _ => "",
+    };
+    if !known.is_empty() {
+        return known.into();
     }
+    let initials: String = role.split(|c: char| !c.is_alphanumeric()).filter_map(|w| w.chars().next()).take(3).collect::<String>().to_uppercase();
+    if initials.is_empty() { "M".into() } else { initials }
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +50,8 @@ pub struct MemberRow {
     pub angles: (f64, f64),
     pub members: Vec<MemberId>,
     pub board_feet_each: Option<f64>,
+    /// Mass of one piece (kg), from its cut length.
+    pub mass_each: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -66,7 +75,7 @@ impl Marks {
             let (a0, a1) = g.cut_angles();
             let sec = model.section(m.section);
             let key = (
-                m.mark.clone().unwrap_or_else(|| prefix(&m.role).to_string()),
+                m.mark.clone().unwrap_or_else(|| prefix(&m.role)),
                 sec.name.clone(),
                 model.material(m.material).name.clone(),
                 -((len / INCH * 16.0).round() as i64),
@@ -84,6 +93,7 @@ impl Marks {
                     angles: (a0.min(a1), a0.max(a1)),
                     members: vec![],
                     board_feet_each: board_feet(sec, len),
+                    mass_each: sec.props.area * len * model.material(m.material).density,
                 })
                 .members
                 .push(m.id);
@@ -197,7 +207,29 @@ pub fn table(title: &str, headers: &[&str], widths_in: &[f64], aligns: &[Align],
     d
 }
 
-pub fn member_schedule_table(marks: &Marks) -> Drawing {
+/// The cut list: lumber by board feet in feet and inches, anything else by
+/// mass in millimetres.
+pub fn member_schedule_table(marks: &Marks, units: UnitSystem) -> Drawing {
+    if units == UnitSystem::Metric {
+        let mut rows: Vec<Vec<String>> = marks
+            .rows
+            .iter()
+            .map(|r| {
+                let cut = if r.angles.1 > 0.05 { format!("{:.1}°", r.angles.1) } else { "SQ".into() };
+                vec![r.mark.clone(), r.members.len().to_string(), r.section.clone(), r.material.clone(), format!("{:.0}", r.length / 0.001), cut, r.role.clone(), format!("{:.2}", r.mass_each * r.members.len() as f64)]
+            })
+            .collect();
+        let total: f64 = marks.rows.iter().map(|r| r.mass_each * r.members.len() as f64).sum();
+        rows.push(vec!["".into(), marks.rows.iter().map(|r| r.members.len()).sum::<usize>().to_string(), "".into(), "".into(), "".into(), "".into(), "TOTAL".into(), format!("{total:.2}")]);
+        use Align::*;
+        return table(
+            "Member schedule / cut list",
+            &["Mark", "Qty", "Section", "Material", "Length (mm, L.P.)", "Cut", "Role", "Mass (kg)"],
+            &[0.7, 0.5, 2.3, 2.6, 1.3, 0.6, 1.3, 0.8],
+            &[Middle, End, Start, Start, End, Middle, Start, End],
+            &rows,
+        );
+    }
     let rows: Vec<Vec<String>> = marks
         .rows
         .iter()

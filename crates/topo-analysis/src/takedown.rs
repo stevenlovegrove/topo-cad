@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use topo_core::{AreaBasis, GroupId, Issue, Load, LoadCaseId, MemberId, Model, NodeId, Severity, Topology, Vec3};
 use topo_geom::Geometry;
 
-const G: f64 = 9.80665;
+pub(crate) const G: f64 = 9.80665;
 /// Support points closer than this along a member are one support.
 const CLUSTER: f64 = 0.005;
 /// Spacing of support points representing a bonded (face-to-face) contact.
@@ -43,6 +43,8 @@ pub enum Behaviour {
     Column,
     /// Part of a truss solved as a plane frame.
     Truss,
+    /// Part of the whole model solved as one 3D frame.
+    Frame,
     /// No support found: its load goes nowhere (reported as an issue).
     Unsupported,
 }
@@ -90,12 +92,24 @@ pub struct Diagram {
     pub m: Vec<f64>,
     /// Deflection perpendicular to the member, downward positive (m).
     pub y: Vec<f64>,
+    /// Frame analysis only. `v` and `m` are then the shear along and the
+    /// bending about the section's depth (z) axis; these are the shear and
+    /// bending the other way (N, N·m), the torque (N·m), and the
+    /// displacement in world axes (m).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub v2: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub m2: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tq: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub d: Vec<Vec3>,
 }
 
 impl Diagram {
-    fn zeros(t: Vec<f64>) -> Diagram {
+    pub(crate) fn zeros(t: Vec<f64>) -> Diagram {
         let n = t.len();
-        Diagram { t, n: vec![0.0; n], v: vec![0.0; n], m: vec![0.0; n], y: vec![0.0; n] }
+        Diagram { t, n: vec![0.0; n], v: vec![0.0; n], m: vec![0.0; n], y: vec![0.0; n], ..Default::default() }
     }
     fn add_scaled(&mut self, o: &Diagram, f: f64) {
         for (a, b) in [(&mut self.n, &o.n), (&mut self.v, &o.v), (&mut self.m, &o.m), (&mut self.y, &o.y)] {
@@ -103,6 +117,20 @@ impl Diagram {
                 *x += f * y;
             }
         }
+        for (a, b) in [(&mut self.v2, &o.v2), (&mut self.m2, &o.m2), (&mut self.tq, &o.tq)] {
+            a.resize(b.len().max(a.len()), 0.0);
+            for (x, y) in a.iter_mut().zip(b) {
+                *x += f * y;
+            }
+        }
+        self.d.resize(o.d.len().max(self.d.len()), Vec3::ZERO);
+        for (x, y) in self.d.iter_mut().zip(&o.d) {
+            *x += *y * f;
+        }
+    }
+    /// Largest displacement (m) and where, in a frame analysis.
+    pub fn max_displacement(&self) -> (f64, usize) {
+        self.d.iter().enumerate().fold((0.0, 0), |(m, i), (k, x)| if x.norm() > m { (x.norm(), k) } else { (m, i) })
     }
     pub fn max_abs(v: &[f64]) -> (f64, usize) {
         v.iter().enumerate().fold((0.0, 0), |(m, i), (k, x)| if x.abs() > m { (x.abs(), k) } else { (m, i) })
@@ -163,7 +191,7 @@ fn i_about(model: &Model, m: MemberId, geom: &Geometry, a: Vec3) -> f64 {
     p.i_u * a.dot(g.place.u).powi(2) + p.i_v * a.dot(g.place.v).powi(2)
 }
 
-fn ei_vertical_plane(model: &Model, m: MemberId, geom: &Geometry) -> f64 {
+pub(crate) fn ei_vertical_plane(model: &Model, m: MemberId, geom: &Geometry) -> f64 {
     let (_, x, _) = axis(model, m);
     let a = x.cross(Vec3::Z).try_normalized().unwrap_or(Vec3::X);
     model.material(model.member(m).material).e * i_about(model, m, geom, a)
@@ -323,7 +351,12 @@ fn sample_points(len: f64, keys: &[f64]) -> Vec<f64> {
     t
 }
 
+/// The analysis a model asks for: the gravity takedown, or one 3D frame
+/// (`Standards::analysis`). Both give forces along every member per load case.
 pub fn takedown(model: &Model, topo: &Topology, geom: &Geometry) -> Takedown {
+    if model.standards.is_frame() {
+        return crate::frame::frame(model, geom);
+    }
     let nm = model.members.len();
     let cases: Vec<LoadCaseId> = model.load_cases.iter().map(|c| c.id).collect();
     let nc = cases.len();

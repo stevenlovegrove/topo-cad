@@ -285,6 +285,167 @@ pub fn material_weight(key: &str) -> Option<&'static MaterialWeight> {
     material_weights().rows.iter().find(|r| r.key == key)
 }
 
+// ----- engineering materials, joints and profiles (SI, as their sources give them) ------
+
+/// A metal or laminate checked by plain mechanics. Rows come from different
+/// publications, so each names its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EngMaterial {
+    /// Lookup key used in scripts, e.g. `6061-T6`.
+    pub key: String,
+    pub name: String,
+    /// `aluminum`, `steel`, `cfrp`, …
+    pub family: String,
+    /// Modulus of elasticity and shear modulus (GPa).
+    pub e_gpa: f64,
+    pub g_gpa: f64,
+    /// Density (kg/m³).
+    pub density: f64,
+    /// Yield (0.2 % proof) and ultimate tensile strength (MPa); for a
+    /// laminate, the stress taken as its limit.
+    pub fy_mpa: f64,
+    pub fu_mpa: f64,
+    pub source: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub verified: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl Verified for EngMaterial {
+    fn verified(&self) -> bool {
+        self.verified
+    }
+}
+
+table!(materials, EngMaterial, "materials.json");
+
+pub fn material(key: &str) -> Option<&'static EngMaterial> {
+    materials().rows.iter().find(|r| r.key == key)
+}
+
+/// Strength of a material beside a joint made by a process (the
+/// heat-affected zone of a weld), and how far from the joint it applies.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JointZone {
+    /// `tig_weld`, `braze`, …
+    pub process: String,
+    /// Material key (see [`material`]).
+    pub material: String,
+    /// Yield strength in the zone (MPa).
+    pub fy_mpa: f64,
+    /// Distance from the joint the zone reaches (mm).
+    pub extent_mm: f64,
+    pub source: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub verified: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl Verified for JointZone {
+    fn verified(&self) -> bool {
+        self.verified
+    }
+}
+
+table!(joint_zones, JointZone, "joint-zones.json");
+
+pub fn joint_zone(process: &str, material: &str) -> Option<&'static JointZone> {
+    joint_zones().rows.iter().find(|r| r.process == process && r.material == material)
+}
+
+/// Whether a joining process heats the parent material enough to change its
+/// strength (so missing zone data is worth a note).
+pub fn weakens(process: &str) -> bool {
+    process.contains("weld") || process.contains("braze")
+}
+
+/// A T-slot extrusion profile, with its maker's section properties.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TslotProfile {
+    /// Lookup key used in scripts, e.g. `40x40`.
+    pub key: String,
+    pub maker: String,
+    pub name: String,
+    #[serde(default)]
+    pub part: Option<String>,
+    /// Overall size across u and v (mm).
+    pub width_mm: f64,
+    pub depth_mm: f64,
+    /// Slot opening width, and how deep the slot's undercut reaches (mm).
+    pub slot_mm: f64,
+    /// Core bore diameter (mm).
+    pub bore_mm: f64,
+    pub area_cm2: f64,
+    pub ix_cm4: f64,
+    pub iy_cm4: f64,
+    /// Torsion constant (cm⁴), if the maker gives one.
+    #[serde(default)]
+    pub it_cm4: Option<f64>,
+    pub mass_kg_m: f64,
+    /// Material key (see [`material`]).
+    pub material: String,
+    pub source: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub verified: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl Verified for TslotProfile {
+    fn verified(&self) -> bool {
+        self.verified
+    }
+}
+
+table!(tslot_profiles, TslotProfile, "tslot-profiles.json");
+
+pub fn tslot_profile(key: &str) -> Option<&'static TslotProfile> {
+    tslot_profiles().rows.iter().find(|r| r.key == key)
+}
+
+/// A way of joining T-slot profiles, with what its maker rates it for.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TslotConnector {
+    /// Lookup key used in scripts, e.g. `corner-bracket-40`.
+    pub key: String,
+    pub maker: String,
+    pub name: String,
+    #[serde(default)]
+    pub part: Option<String>,
+    /// `bracket`, `plate`, `end_fastener`, …
+    pub kind: String,
+    /// Rated moment (N·m), force across the joint (N) and pull-off force (N).
+    #[serde(default)]
+    pub moment_nm: Option<f64>,
+    #[serde(default)]
+    pub shear_n: Option<f64>,
+    #[serde(default)]
+    pub tension_n: Option<f64>,
+    pub source: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub verified: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl Verified for TslotConnector {
+    fn verified(&self) -> bool {
+        self.verified
+    }
+}
+
+table!(tslot_connectors, TslotConnector, "tslot-connectors.json");
+
+pub fn tslot_connector(key: &str) -> Option<&'static TslotConnector> {
+    tslot_connectors().rows.iter().find(|r| r.key == key)
+}
+
 /// All tables, as JSON by name (for scripts and the UI).
 pub fn table_json(name: &str) -> Option<String> {
     let v = match name {
@@ -296,12 +457,29 @@ pub fn table_json(name: &str) -> Option<String> {
         "material-weights" => serde_json::to_string(material_weights()),
         "nds-flat-use" => serde_json::to_string(nds_flat_use()),
         "nds-timbers" => serde_json::to_string(nds_timbers()),
+        "materials" => serde_json::to_string(materials()),
+        "joint-zones" => serde_json::to_string(joint_zones()),
+        "tslot-profiles" => serde_json::to_string(tslot_profiles()),
+        "tslot-connectors" => serde_json::to_string(tslot_connectors()),
         _ => return None,
     };
     v.ok()
 }
 
-pub const TABLES: [&str; 8] = ["nds-lumber", "nds-size-factors", "nds-load-duration", "nails", "nail-z", "material-weights", "nds-flat-use", "nds-timbers"];
+pub const TABLES: [&str; 12] = [
+    "nds-lumber",
+    "nds-size-factors",
+    "nds-load-duration",
+    "nails",
+    "nail-z",
+    "material-weights",
+    "nds-flat-use",
+    "nds-timbers",
+    "materials",
+    "joint-zones",
+    "tslot-profiles",
+    "tslot-connectors",
+];
 
 #[cfg(test)]
 mod tests {

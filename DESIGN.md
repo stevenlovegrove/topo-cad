@@ -1,7 +1,9 @@
 # topo-cad — design
 
-Topology-first CAD-as-code for framed structures (wood house framing first,
-aluminum extrusion builds second). The user describes **what connects to what**;
+Topology-first CAD-as-code for things made of members: wood house framing
+first, and — to keep the core honest about being domain-general — a welded
+or brazed tube frame (a bicycle) and a bolted aluminium extrusion build (a
+kids' cart). The user describes **what connects to what**;
 solid geometry, drawings, schedules and (Milestone 2) structural calcs are all
 *derived* from that topology plus properties attached to it.
 
@@ -25,8 +27,10 @@ solid geometry, drawings, schedules and (Milestone 2) structural calcs are all
    (M2) code checks carry the rule / clause that produced them so an engineer
    can audit the chain.
 5. **Domain-agnostic core.** `topo-core` knows nothing about "studs". Domain
-   crates (`topo-timber`, later `topo-extrusion`) supply catalogs, generators and
-   presets. Design codes are plugins behind a trait.
+   crates (`topo-timber` for light framing, `topo-fab` for tube and extrusion
+   frames) supply catalogs, generators and presets. Checks follow the
+   material: a design code where there is one (NDS for lumber), plain
+   mechanics otherwise.
 6. **Internal units are SI** (m, N, Pa, kg/m³). Unit systems exist only at the
    edges (input helpers, formatting).
 
@@ -36,11 +40,11 @@ solid geometry, drawings, schedules and (Milestone 2) structural calcs are all
 |---|---|
 | `Node` | A point. Where members meet, loads apply, supports sit. |
 | `Member` | One **physical piece**: an ordered, collinear *path* of ≥2 nodes. Interior path nodes are connection points (T/X junctions). Carries section, material, role, priority, depth direction, anchor. |
-| `Section` | 2D profile (rect or polygon with holes) × `plies` (built-up members: 2-ply headers, double top plates). Section properties computed. |
-| `Material` | Generic mechanical props (E, G, ρ) + `design_key` that a design code resolves to its own tables (e.g. `"NDS:DFL:No.2"`). |
+| `Section` | 2D profile (rect, round tube, or polygon with holes; a catalog profile carries its maker's properties) × `plies` (built-up members: 2-ply headers, double top plates). Section properties computed. |
+| `Material` | Generic mechanical props (E, G, ρ) + `design_key` that a design code resolves to its own tables (e.g. `"NDS:DFL:No.2"`); for metals and laminates, a yield strength with its source. |
 | `Group` | Hierarchical assembly (wall, floor, roof, frame) with a local frame. Generators create groups; views are defined in group frames; groups carry drawing annotations. |
 | `JointSpec` | Optional per-node overrides: resolution rules (butt/through/miter/square), connection assignments, end fixity. |
-| `Connection` | Fastener groups + hardware + reference (e.g. "2-16d common end nail, IRC R602.3(1)"). Has both a *mechanical* meaning (capacity, M2) and an *analytical* one (fixity). |
+| `Connection` | Fastener groups + hardware + reference (e.g. "2-16d common end nail, IRC R602.3(1)"), or a joining `process` (weld, braze, bond, moulded in one piece) and a maker's `rating`. Has both a *mechanical* meaning (capacity; what the process does to the material beside it) and an *analytical* one (fixity: pinned, rigid, or a rotational spring). |
 | `Support`, `LoadCase`, `Load` | Analysis inputs, stored in the model so the IR is complete (M2 consumes them). |
 
 ### Member placement
@@ -217,6 +221,50 @@ every number can be reviewed; a plane-frame solver handles trusses.
   band, labelled, with legend) and `schedule("checks")` /
   `schedule("reactions")` tables for the engineer and permit set.
 
+### Frames (`frame`, `frame3d`, `mech`)
+
+Not everything is light framing carried down by bearing. A model may ask
+for `analysis: "frame"` (the default of a `Model` that is not a `Building`):
+
+* **One 3D frame** of all members (`frame3d`: direct stiffness,
+  Euler–Bernoulli beams, six degrees of freedom per node). A member is
+  continuous through its interior nodes; at its ends its connection's fixity
+  applies — rigid (a weld, a clamp), pinned, or a connector's rotational
+  spring (condensed out of the element). Loads are forces and moments in any
+  direction at named points, line loads, and self-weight; supports hold
+  chosen directions. A point free to spin under no load is held; a mechanism
+  under load is reported in the model's words. The results have the
+  takedown's form (per-member diagrams, now with both bending axes, torque
+  and displacement), so checks, diagrams and drawings work on either.
+  Verified against closed forms in tests (cantilever, bent cantilever with
+  torsion, sprung ends, pin-jointed truss).
+* **Load cases are situations** (`combinations: "each-case"`): "Seated",
+  "Front brake", each checked on its own on top of self-weight, instead of
+  a building code's combinations of load kinds.
+* **Checks by plain mechanics** (`mech`) for materials with a strength but
+  no design code here: von Mises stress against yield over a factor of
+  safety, Euler buckling between joints, displacement against a stated
+  limit, and joints against their makers' ratings. Beside a joint made by a
+  process with zone data, the zone's strength applies (6061-T6 within an
+  inch of a weld: 15 ksi instead of 35). Each check carries the same kind of
+  trace, in SI. Not covered, and said so on each check: fatigue, local
+  buckling of thin walls, stress concentration; a laminate is checked as if
+  isotropic and marked indicative.
+* **Reference data** as for lumber, with provenance and `verified` per row:
+  `materials` (aluminium, steels, carbon/epoxy), `joint-zones`,
+  `tslot-profiles` (maker's area, I, torsion constant) and
+  `tslot-connectors` (maker's rated force and moment). Where no number
+  could be read in a public source there is no row, and the check says what
+  it assumed instead (e.g. no strength for chromoly beside a braze; no
+  stiffness for any T-slot connector, so those joints are analysed rigid).
+* **Geometry**: round sections are polygons with exact section properties,
+  drawn by their silhouette; T-slot profiles are drawn schematically from
+  size, slot and bore. Tube ends are cut flat against the tube they meet —
+  a cope is a non-planar feature (below), recorded on the joint only.
+* **Presentation**: units follow the model (`metric`: mm, N, MPa); the 3D
+  view overlays the deflected shape with an exaggeration slider; sheets take
+  `deflection(...)` views.
+
 Next: lateral loads (wind, seismic), sheathing and shear walls (SDPWS),
 hold-downs and straps from part catalogs, and a 3D frame solver for irregular
 and as-built conditions.
@@ -229,7 +277,8 @@ and as-built conditions.
 | `topo-geom` | junction resolution, member solids, clash detection, mesh (OBJ) |
 | `topo-draw` | views, HLR, annotations, schedules, sheets, SVG + DXF writers |
 | `topo-timber` | lumber catalog, NDS reference data, connection presets, wall/floor generators, examples |
-| `topo-analysis` | analytical-model extraction, load/combination types, `DesignCode` trait, `CalcTrace` (M2 grows here) |
+| `topo-fab` | fabricated frames: tube and bar sections, T-slot profiles, metals and laminates, joining processes, catalog connectors |
+| `topo-analysis` | support graph and load takedown, plane- and 3D-frame solvers, combinations, NDS and plain-mechanics checks with `CalcTrace` |
 | `topo-script` | model scripts → one JavaScript bundle (oxc strips types, rewrites modules to functions) → scene spec → model; QuickJS host |
 | `topo-app` | the app engine: `Session` (files → build → state/sheets/3D/checks/measurements as JSON) for any host |
 | `topo-wasm` | wasm-bindgen: the app engine for the browser worker; JSON model in → SVG/DXF/report out |
@@ -272,6 +321,18 @@ variants (existing vs. proposed) are functions of each other.
   computed in the local frame, so a moved or rotated copy is identical.
 * **Plated/hardware joints** are exempt from the bearing check (the hardware
   carries the load; fit-up gaps such as at a scissors apex are expected).
+* **Not only buildings.** A script exports a `Model`; `Building.named(...)`
+  is a model with a building's defaults (imperial, takedown, ASCE 7), and
+  `Model.named(...)` one with a product's (metric, frame, each case on its
+  own). `Assembly` members take lumber (`size`, `grade`) or any `section`
+  (`tube`, `rod`, `boxTube`, `tslot("40x40")`) and `material`; joints are
+  nailing or made (`Joint.welded()`, `Joint.brazed({ lugged: true })`,
+  `Joint.moulded()`, `Connector.angleBracket({ count: 2 })`), per assembly
+  and per point; `force` / `moment` / `support` take vectors and restraints.
+  The bike and the cart ([examples/bike.ts](examples/bike.ts),
+  [examples/kids-cart.ts](examples/kids-cart.ts)) are written entirely from
+  these: parametric points, members between them, a joining method chosen
+  by `scenarios(...)`.
 * **Stable names** for generated pieces: members have paths such as
   `Existing trusses/T2/bottom_chord.F-H1`, matched by suffix.
 
@@ -331,5 +392,7 @@ project from its files. Everything is computed client-side:
   analytical extraction; WASM build.
 * **M2:** loads → tributary takedown → NDS member checks + ASCE 7 ASD combos →
   calc report; frame solver.
-* **M3:** features (notches, birdsmouth, drilled holes), roofs, extrusion
-  domain crate (T-slot profiles, brackets), DSL front-end, 3D web viewer.
+* **M3:** features (notches, birdsmouth, tube copes, drilled holes), roofs.
+* **Beyond buildings (started):** tube and extrusion frames with a 3D frame
+  analysis. Next there: butted and tapered tubes, non-round sections along a
+  member, connector stiffness from test data, fatigue, laminates by ply.

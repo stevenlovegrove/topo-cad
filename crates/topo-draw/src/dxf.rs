@@ -17,7 +17,7 @@ fn color(l: Layer) -> u8 {
         Layer::Annot => 9,
         Layer::Tags => 2,
         Layer::Title => 7,
-        Layer::Nodes => 1,
+        Layer::Nodes | Layer::Deflected => 1,
         Layer::Supports => 6,
         Layer::Knockout => 7,
         Layer::Heat0 => 3,

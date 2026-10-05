@@ -1194,6 +1194,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "topo-fab"
+version = "0.1.0"
+dependencies = [
+ "topo-core",
+ "topo-data",
+]
+
+[[package]]
 name = "topo-geom"
 version = "0.1.0"
 dependencies = [
@@ -1220,6 +1228,7 @@ dependencies = [
  "topo-core",
  "topo-data",
  "topo-draw",
+ "topo-fab",
  "topo-geom",
  "topo-timber",
 ]

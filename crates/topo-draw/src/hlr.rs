@@ -180,6 +180,9 @@ pub fn hidden_lines(members: &[&MemberGeom], proj: &Projector) -> Vec<Seg> {
     for (i, it) in items.iter().enumerate() {
         // Unique edges of this ply's front-facing faces.
         let mut edges: BTreeMap<EdgeKey, Edge> = BTreeMap::new();
+        // Edges between two visible facets of a curved surface are not drawn:
+        // only its silhouette and its ends are.
+        let mut smooth_count: BTreeMap<EdgeKey, usize> = BTreeMap::new();
         for f in it.geom.ply_faces(it.ply) {
             if f.normal.dot(proj.toward) <= 1e-9 {
                 continue;
@@ -194,10 +197,14 @@ pub fn hidden_lines(members: &[&MemberGeom], proj: &Projector) -> Vec<Seg> {
                     }
                     let (ka, kb) = (key(a), key(b));
                     let k2 = if ka <= kb { (ka, kb) } else { (kb, ka) };
+                    if f.smooth {
+                        *smooth_count.entry(k2).or_default() += 1;
+                    }
                     edges.entry(k2).or_insert((a, b, a3, b3));
                 }
             }
         }
+        edges.retain(|k, _| smooth_count.get(k).is_none_or(|&c| c < 2));
         for (_, (a, b, a3, b3)) in edges {
             let mut vis = vec![(0.0, 1.0)];
             let bb = BBox2::from_points([a, b]);

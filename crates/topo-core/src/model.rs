@@ -267,13 +267,27 @@ pub struct Standards {
     /// Load combinations from another code instead of ASCE 7: `ubc-1976`
     /// (the 1976 Uniform Building Code: unfactored sums, with its own
     /// load-duration increases), e.g. to check a building as permitted.
+    /// `each-case`: no code combinations — every load case is checked on its
+    /// own, on top of the dead load (for things that are not buildings).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combinations: Option<String>,
+    /// How internal forces are found: `None` — the gravity load takedown of
+    /// light framing; `frame` — one 3D frame of all members, with the joints'
+    /// fixity (welded, bracketed, pinned) and loads in any direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<String>,
+    /// Factor of safety on a material's yield (or laminate) strength in the
+    /// elastic stress check of members without a design code of their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_factor: Option<f64>,
+    /// Largest displacement accepted anywhere under any combination (m).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deflection_limit: Option<f64>,
 }
 
 impl Default for Standards {
     fn default() -> Self {
-        Standards { asce7: "7-16".into(), combinations: None }
+        Standards { asce7: "7-16".into(), combinations: None, analysis: None, safety_factor: None, deflection_limit: None }
     }
 }
 
@@ -282,9 +296,15 @@ impl Standards {
     pub fn combinations_label(&self) -> String {
         match self.combinations.as_deref() {
             Some("ubc-1976") => "1976 UBC".into(),
+            Some("each-case") => "each load case on its own".into(),
             Some(o) => o.into(),
             None => format!("ASCE {}", self.asce7),
         }
+    }
+
+    /// Whether the model is analysed as one 3D frame.
+    pub fn is_frame(&self) -> bool {
+        self.analysis.as_deref() == Some("frame")
     }
 }
 
@@ -518,7 +538,7 @@ impl Model {
     }
 
     pub fn add_material(&mut self, mut m: Material) -> MaterialId {
-        if let Some(existing) = self.materials.iter().find(|e| e.name == m.name && e.design_key == m.design_key) {
+        if let Some(existing) = self.materials.iter().find(|e| e.name == m.name && e.design_key == m.design_key && e.e == m.e && e.strength == m.strength) {
             return existing.id;
         }
         m.id = MaterialId(self.materials.len() as u32);
@@ -529,7 +549,7 @@ impl Model {
 
     pub fn add_connection(&mut self, mut c: Connection) -> ConnectionId {
         if let Some(existing) = self.connections.iter().find(|e| {
-            e.name == c.name && e.fasteners == c.fasteners && e.hardware == c.hardware
+            e.name == c.name && e.fasteners == c.fasteners && e.hardware == c.hardware && e.fixity == c.fixity && e.process == c.process && e.rating == c.rating
         }) {
             return existing.id;
         }
@@ -816,6 +836,7 @@ mod tests {
             g: 1e9,
             density: 500.0,
             design_key: None,
+            strength: None,
         });
         (m, MemberSpec::new("beam", s, mat))
     }

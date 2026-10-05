@@ -35,6 +35,8 @@ pub struct Analysis {
     /// Per member: index of its governing check (highest ratio).
     pub governing: Vec<Option<usize>>,
     pub issues: Vec<Issue>,
+    /// What the checks rest on (design standard, or plain mechanics), for labels.
+    pub basis: String,
 }
 
 impl Analysis {
@@ -121,27 +123,27 @@ fn wood(model: &Model, m: MemberId) -> Option<Wood<'static>> {
     Some(Wood { v, cite: source, nominal })
 }
 
-struct Trace {
+pub(crate) struct Trace {
     steps: Vec<CalcStep>,
 }
 
 impl Trace {
-    fn new() -> Trace {
+    pub(crate) fn new() -> Trace {
         Trace { steps: vec![] }
     }
-    fn s(&mut self, symbol: &str, formula: &str, substituted: String, value: f64, unit: &str, reference: Option<&str>) -> f64 {
+    pub(crate) fn s(&mut self, symbol: &str, formula: &str, substituted: String, value: f64, unit: &str, reference: Option<&str>) -> f64 {
         self.steps.push(CalcStep { symbol: symbol.into(), formula: formula.into(), substituted, value, unit: unit.into(), reference: reference.map(Into::into) });
         value
     }
-    fn given(&mut self, symbol: &str, what: &str, value: f64, unit: &str, reference: Option<&str>) -> f64 {
+    pub(crate) fn given(&mut self, symbol: &str, what: &str, value: f64, unit: &str, reference: Option<&str>) -> f64 {
         self.s(symbol, what, fmt(value), value, unit, reference)
     }
-    fn done(self) -> CalcTrace {
+    pub(crate) fn done(self) -> CalcTrace {
         CalcTrace { steps: self.steps }
     }
 }
 
-fn fmt(v: f64) -> String {
+pub(crate) fn fmt(v: f64) -> String {
     let a = v.abs();
     if a >= 1000.0 {
         format!("{v:.0}")
@@ -614,6 +616,7 @@ pub fn combinations(model: &Model, exclude: &[topo_core::LoadCaseId]) -> Vec<Com
     let mut out: Vec<Combination> = vec![];
     let base = match model.standards.combinations.as_deref() {
         Some("ubc-1976") => crate::code::ubc1976(&model.load_cases),
+        Some("each-case") => crate::code::each_case(&model.load_cases),
         _ => asce7_asd(&model.load_cases, &model.standards.asce7),
     };
     for mut c in base {
@@ -646,29 +649,50 @@ pub fn nds_asd_excluding(model: &Model, geom: &topo_geom::Geometry, td: &Takedow
     let mut checks = vec![];
     let mut issues = vec![];
     let mut unknown = vec![false; model.members.len()];
+    let (mut any_wood, mut any_mech) = (false, false);
     for combo in &combos {
         let (ds, rs) = td.combine(&combo.factors);
         let (cd, cd_why, cd_verified) = load_duration(model, combo);
         let cx = Ctx { model, rs: &rs, combo, cd, cd_why, cd_verified };
         for m in &model.members {
             let info = &td.info[m.id.idx()];
-            let Some(w) = wood(model, m.id) else {
+            let d = &ds[m.id.idx()];
+            let mut skip = |why: &str, issues: &mut Vec<Issue>| {
                 if !unknown[m.id.idx()] {
                     unknown[m.id.idx()] = true;
-                    issues.push(Issue::new(Severity::Info, "no-design-values", format!("{}: no NDS design values for its material; not checked", model.member_path(m.id))).members([m.id]));
+                    issues.push(Issue::new(Severity::Info, "no-design-values", format!("{}: {why}; not checked", model.member_path(m.id))).members([m.id]));
+                }
+            };
+            let Some(w) = wood(model, m.id) else {
+                // Not lumber: plain mechanics, if its strength is known.
+                if model.material(m.material).strength.is_some() {
+                    any_mech = true;
+                    crate::mech::member_checks(model, geom, &combo.name, m.id, info, d, &mut checks);
+                } else {
+                    skip("no design values for its material", &mut issues);
                 }
                 continue;
             };
-            let d = &ds[m.id.idx()];
+            any_wood = true;
             match info.behaviour {
                 Behaviour::Beam => beam_checks(&cx, m.id, info, d, &w, geom.member(m.id).place.v, &mut checks),
                 Behaviour::Column => column_checks(&cx, m.id, info, d, &w, is_wall_stud(model, m.id), &mut checks),
                 Behaviour::Truss => truss_checks(&cx, m.id, info, d, &w, &mut checks),
+                Behaviour::Frame => skip("NDS checks of lumber in a frame analysis are not implemented", &mut issues),
                 Behaviour::Unsupported => {}
             }
         }
         nail_checks(&cx, &mut checks, &mut issues);
+        crate::mech::joint_checks(model, &combo.name, &ds, &mut checks);
     }
+    let mut basis = vec![];
+    if any_wood || !any_mech {
+        basis.push("NDS 2018 ASD".to_string());
+    }
+    if any_mech {
+        basis.push(crate::mech::basis(model));
+    }
+    let basis = format!("{} · {}", basis.join("; "), model.standards.combinations_label());
     // Serviceability: deflection under each variable load alone (IRC Table
     // R301.7: floors L/360 under live load; roofs L/240 under snow/roof live).
     for case in model.load_cases.iter().filter(|c| matches!(c.kind, LoadKind::Live | LoadKind::Snow | LoadKind::RoofLive) && !exclude.contains(&c.id)) {
@@ -713,7 +737,7 @@ pub fn nds_asd_excluding(model: &Model, geom: &topo_geom::Geometry, td: &Takedow
             *g = Some(i);
         }
     }
-    Analysis { combos, checks, governing, issues }
+    Analysis { combos, checks, governing, issues, basis }
 }
 
 #[cfg(test)]

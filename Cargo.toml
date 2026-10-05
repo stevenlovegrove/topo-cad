@@ -4,6 +4,7 @@ members = [
     "crates/topo-core",
     "crates/topo-geom",
     "crates/topo-timber",
+    "crates/topo-fab",
     "crates/topo-draw",
     "crates/topo-analysis",
     "crates/topo-cli",
@@ -25,6 +26,7 @@ topo-core = { path = "crates/topo-core" }
 topo-geom = { path = "crates/topo-geom" }
 topo-draw = { path = "crates/topo-draw" }
 topo-timber = { path = "crates/topo-timber" }
+topo-fab = { path = "crates/topo-fab" }
 topo-analysis = { path = "crates/topo-analysis" }
 topo-script = { path = "crates/topo-script", default-features = false }
 topo-data = { path = "crates/topo-data" }

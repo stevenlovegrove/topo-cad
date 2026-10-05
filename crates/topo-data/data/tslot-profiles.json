@@ -1,0 +1,30 @@
+{
+ "source": {
+  "publication": "T-slot profile catalogs",
+  "edition": "collected 2026-10",
+  "table": "(each row names its source)",
+  "note": "Makers' section properties. Profiles of different makers (and slot sizes) do not share connectors."
+ },
+ "rows": [
+  {
+   "key": "40x40",
+   "maker": "item",
+   "name": "Profile 8 40x40 light",
+   "part": "0.0.026.33",
+   "width_mm": 40,
+   "depth_mm": 40,
+   "slot_mm": 8,
+   "bore_mm": 6.8,
+   "area_cm2": 6.46,
+   "ix_cm4": 9,
+   "iy_cm4": 9,
+   "it_cm4": 1.36,
+   "mass_kg_m": 1.74,
+   "material": "6060-T66",
+   "source": "item, Profile 8 40x40 light, natural (0.0.026.33): A = 6.46 cm2, Ix = Iy = 9 cm4, It = 1.36 cm4, Wx = Wy = 4.5 cm3, m = 1.74 kg/m; Line 8 groove 8.0 mm, core bore 6.8 mm for M8 (item Technische Daten)",
+   "url": "https://www.item24.com/en-us/profile-8-40x40-light-natural-2633",
+   "verified": true,
+   "note": "Permissible groove pull-out force 2500 N."
+  }
+ ]
+}

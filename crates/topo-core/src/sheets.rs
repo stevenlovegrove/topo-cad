@@ -37,6 +37,8 @@ pub enum ViewKind {
     Analytical,
     /// Members filled by their highest demand/capacity ratio, labelled.
     Utilization,
+    /// The deflected shape under a load combination, exaggerated.
+    Deflection,
     /// A table: `members`, `connections`, `junctions`, `checks` (governing
     /// check per member), `reactions` (foundation reactions by load case),
     /// or the title of a table the tool supplies (e.g. `Field measurements`).
@@ -121,6 +123,13 @@ pub struct ViewSpec {
     /// Text, for `kind: notes`.
     #[serde(default)]
     pub lines: Vec<String>,
+    /// Load combination, for `kind: deflection` (default: the one that
+    /// moves the model most).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combination: Option<String>,
+    /// Exaggeration of the deflected shape (default: chosen to read clearly).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor: Option<f64>,
 }
 
 impl ViewSpec {
@@ -140,6 +149,8 @@ impl ViewSpec {
             dims: true,
             table: None,
             lines: vec![],
+            combination: None,
+            factor: None,
         }
     }
 }

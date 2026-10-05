@@ -94,6 +94,7 @@ pub fn graded(species: &str, grade: &str) -> Material {
         // Approx. oven-dry SG scaled to ~12 % MC: ρ ≈ 62.4·G·(1 + MC) pcf.
         density: 62.4 * r.g * 1.12 * PCF,
         design_key: Some(format!("NDS:{species}:{grade}")),
+        strength: None,
     }
 }
 

@@ -1,0 +1,108 @@
+{
+ "source": {
+  "publication": "Engineering materials",
+  "edition": "collected 2026-10",
+  "table": "(each row names its source)",
+  "note": "Metals and laminates checked by plain mechanics. SI: GPa, kg/m3, MPa. verified: the strength values were read in the source named; anything taken from elsewhere is said in the note."
+ },
+ "rows": [
+  {
+   "key": "6061-T6",
+   "name": "6061-T6 aluminium",
+   "family": "aluminum",
+   "e_gpa": 69.6,
+   "g_gpa": 26.2,
+   "density": 2713,
+   "fy_mpa": 241,
+   "fu_mpa": 262,
+   "source": "Aluminum Design Manual minimums for 6061-T6 extrusions (Fty 35 ksi, Ftu 38 ksi; E 10,100 ksi, G 3,800 ksi, 0.098 lb/in3), as given in Kissell, Designing Aluminum Structures, slides 52-53 and 59",
+   "url": "https://cdn.fs.pathlms.com/6s1hNVyQG3gOdGJGJ1zQ",
+   "verified": true,
+   "note": "Read in a secondary source; the Manual's own Table A.4.3 is not public."
+  },
+  {
+   "key": "6060-T66",
+   "name": "AlMgSi0.5 F25 (6060-T66) extrusion",
+   "family": "aluminum",
+   "e_gpa": 70,
+   "g_gpa": 25,
+   "density": 2700,
+   "fy_mpa": 195,
+   "fu_mpa": 245,
+   "source": "item Technical Data for profiles: Al Mg Si 0.5 F 25, Rp0.2 min. 195, Rm min. 245 N/mm2, E approx. 70,000, G approx. 25,000 N/mm2, 2.7 kg/dm3",
+   "url": "https://catalog.item24.com/images/medienelemente/DOK/DATA/DOK_DATA_profil-tech-daten-D30__SEN__AIN__V1.pdf",
+   "verified": true,
+   "note": "The same strengths and E are in Bosch Rexroth's technical data for its strut profiles (6063-T66)."
+  },
+  {
+   "key": "4130N",
+   "name": "4130 chromoly steel, normalized",
+   "family": "steel",
+   "e_gpa": 205,
+   "g_gpa": 80,
+   "density": 7850,
+   "fy_mpa": 480,
+   "fu_mpa": 590,
+   "source": "Wikipedia, 41xx steel: 4130 cold drawn, normalized, yield 480-590 MPa, tensile 590-760 MPa (lower ends used); E 205 GPa and 7.85 g/cm3 from Wicks Aircraft's 4130 sheet",
+   "url": "https://en.wikipedia.org/wiki/41xx_steel",
+   "verified": false,
+   "note": "Strengths read through a page fetch, not by eye; MIL-T-6736 Condition N minimums were not readable. G from AZoM (fetch)."
+  },
+  {
+   "key": "columbus-cromor",
+   "name": "Columbus Cromor (25CrMo4) tube",
+   "family": "steel",
+   "e_gpa": 205,
+   "g_gpa": 80,
+   "density": 7850,
+   "fy_mpa": 700,
+   "fu_mpa": 750,
+   "source": "Columbus 2020 Steel Catalogue: Cromor, UTS = 750 MPa, Ys = 700 MPa (homogeneous section)",
+   "url": "https://www.framebuilding.com/acrobat%20files/Columbus%202020%20Steel%20Catalogue%20v1%20web.pdf",
+   "verified": true,
+   "note": "The catalogue gives no stiffness or density: E 205 GPa and 7.85 g/cm3 are from Wicks Aircraft's 4130 sheet (read), G 80 GPa from AZoM (fetch)."
+  },
+  {
+   "key": "columbus-omnicrom",
+   "name": "Columbus Omnicrom (SL, Spirit, Life) tube",
+   "family": "steel",
+   "e_gpa": 205,
+   "g_gpa": 80,
+   "density": 7850,
+   "fy_mpa": 920,
+   "fu_mpa": 1300,
+   "source": "Columbus 2020 Steel Catalogue: Omnicrom, UTS = 1300 MPa, Ys >= 920 MPa (homogeneous section)",
+   "url": "https://www.framebuilding.com/acrobat%20files/Columbus%202020%20Steel%20Catalogue%20v1%20web.pdf",
+   "verified": true,
+   "note": "The catalogue gives no stiffness or density: E 205 GPa and 7.85 g/cm3 are from Wicks Aircraft's 4130 sheet (read), G 80 GPa from AZoM (fetch)."
+  },
+  {
+   "key": "carbon-fabric-0-90",
+   "name": "Carbon/epoxy fabric laminate, 0/90",
+   "family": "cfrp",
+   "e_gpa": 70,
+   "g_gpa": 5,
+   "density": 1600,
+   "fy_mpa": 570,
+   "fu_mpa": 600,
+   "source": "Performance Composites Ltd, Mechanical Properties of Carbon Fibre Composite Materials (standard carbon fabric, 0/90, Vf 50 %, 120 C cure epoxy): E 70 GPa, in-plane shear modulus 5 GPa, tension 600 MPa, compression 570 MPa, 1.60 g/cc",
+   "url": "http://www.performance-composites.com/carbonfibre/mechanicalproperties_2.asp",
+   "verified": false,
+   "note": "Generic guide values, read through a page fetch. The limit stress is the compressive strength (the lower). A real frame's layup adds +/-45 plies, which raise the shear modulus a great deal: describe your own laminate with customMaterial(...)."
+  },
+  {
+   "key": "carbon-ud-t700s",
+   "name": "Carbon/epoxy unidirectional, Toray T700S",
+   "family": "cfrp",
+   "e_gpa": 134,
+   "g_gpa": 5,
+   "density": 1600,
+   "fy_mpa": 1450,
+   "fu_mpa": 2860,
+   "source": "Toray T700S data sheet (rev. 11/24/2025), composite properties at 60 % fibre volume: 0 deg tensile modulus 134 GPa, tensile strength 2,860 MPa, compressive strength 1,450 MPa",
+   "url": "https://www.toraycma.com/wp-content/uploads/T700S-Data-Sheet.pdf",
+   "verified": true,
+   "note": "Along the fibres only: across them the sheet gives 81 MPa. Toray gives no shear modulus or laminate density: 5 GPa and 1.60 g/cc are Performance Composites' generic values (fetch). The limit stress is the compressive strength."
+  }
+ ]
+}

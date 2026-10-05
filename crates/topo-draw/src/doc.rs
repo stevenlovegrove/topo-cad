@@ -26,6 +26,8 @@ pub enum Layer {
     Knockout,
     /// Analytical (centre-line) model.
     Analytical,
+    /// Deflected shape, drawn over everything.
+    Deflected,
     /// Utilization fills, by band: ≤ 0.5, ≤ 0.8, ≤ 1.0, ≤ 1.5, > 1.5.
     Heat0,
     Heat1,
@@ -35,7 +37,7 @@ pub enum Layer {
 }
 
 impl Layer {
-    pub const ALL: [Layer; 17] = [
+    pub const ALL: [Layer; 18] = [
         Layer::Heat0,
         Layer::Heat1,
         Layer::Heat2,
@@ -53,6 +55,7 @@ impl Layer {
         Layer::Title,
         Layer::Nodes,
         Layer::Supports,
+        Layer::Deflected,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -68,6 +71,7 @@ impl Layer {
             Layer::Supports => "S-SUPP",
             Layer::Knockout => "S-MASK",
             Layer::Analytical => "S-ANLY",
+            Layer::Deflected => "S-DEFL",
             Layer::Heat0 => "S-UTIL-0",
             Layer::Heat1 => "S-UTIL-1",
             Layer::Heat2 => "S-UTIL-2",

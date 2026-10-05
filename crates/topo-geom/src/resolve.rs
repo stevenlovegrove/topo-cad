@@ -79,7 +79,9 @@ pub(crate) fn placement(model: &Model, m: &Member) -> Placement {
         bb.min.x + (a.u + 0.5) * bb.width() + a.offset.x,
         bb.min.y + (a.v + 0.5) * bb.height() + a.offset.y,
     );
-    Placement::new(&axes, sec.ply_outlines(), shift, sec.props.centroid)
+    let mut p = Placement::new(&axes, sec.ply_outlines(), shift, sec.props.centroid);
+    p.round = sec.is_round();
+    p
 }
 
 pub(crate) struct Resolver<'a> {

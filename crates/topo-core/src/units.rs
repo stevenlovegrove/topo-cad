@@ -53,6 +53,21 @@ impl UnitSystem {
             UnitSystem::Metric => format!("{:.0}", metres / MM),
         }
     }
+    /// A length with its unit, for text (`8'-1 1/8"`, `412 mm`).
+    pub fn fmt_len_unit(self, metres: f64) -> String {
+        match self {
+            UnitSystem::Imperial => fmt_ft_in(metres),
+            UnitSystem::Metric => format!("{:.0} mm", metres / MM),
+        }
+    }
+    /// Unit names and SI factors for showing results: (length along a
+    /// member, force, moment, small displacement, stress).
+    pub fn result_units(self) -> ResultUnits {
+        match self {
+            UnitSystem::Imperial => ResultUnits { length: ("ft", FOOT), force: ("lb", LBF), moment: ("lb·ft", LBF * FOOT), deflection: ("in", INCH), line: ("plf", PLF), pressure: ("psf", PSF) },
+            UnitSystem::Metric => ResultUnits { length: ("mm", MM), force: ("N", 1.0), moment: ("N·m", 1.0), deflection: ("mm", MM), line: ("N/m", 1.0), pressure: ("Pa", 1.0) },
+        }
+    }
     /// Short lengths such as section sizes (inches or mm, no feet).
     pub fn fmt_short(self, metres: f64) -> String {
         match self {
@@ -60,6 +75,17 @@ impl UnitSystem {
             UnitSystem::Metric => format!("{:.0}", metres / MM),
         }
     }
+}
+
+/// A unit's name and its size in SI, per kind of quantity shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResultUnits {
+    pub length: (&'static str, f64),
+    pub force: (&'static str, f64),
+    pub moment: (&'static str, f64),
+    pub deflection: (&'static str, f64),
+    pub line: (&'static str, f64),
+    pub pressure: (&'static str, f64),
 }
 
 /// Whole number plus reduced fraction of sixteenths, e.g. `3 1/2`.

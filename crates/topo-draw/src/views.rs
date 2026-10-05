@@ -62,7 +62,7 @@ pub fn standard_scales(units: UnitSystem) -> Vec<(f64, String)> {
         .into_iter()
         .map(|(p, l)| (p * INCH / FOOT, format!("{l} = 1'-0\"")))
         .collect(),
-        UnitSystem::Metric => [10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0]
+        UnitSystem::Metric => [1.0, 2.0, 2.5, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0]
             .into_iter()
             .map(|d| (1.0 / d, format!("1:{d}")))
             .collect(),

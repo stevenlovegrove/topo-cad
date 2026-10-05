@@ -23,7 +23,7 @@ pub use connection::*;
 pub use frames::{axis_direction, nearest_axis, WORLD_DIRECTIONS};
 pub use ids::*;
 pub use loads::*;
-pub use material::Material;
+pub use material::{Material, Strength};
 pub use math::*;
 pub use model::*;
 pub use refs::{resolve_direction, resolve_direction_in, DirRef, Feature, PlaneRef};

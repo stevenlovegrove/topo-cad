@@ -31,6 +31,8 @@ fn nailed(name: &str, penny: u32, count: u32, method: FastenMethod, spacing_in: 
         fixity: Fixity::Pinned,
         reference: Some(reference.into()),
         notes: None,
+        process: None,
+        rating: None,
     }
 }
 
@@ -90,6 +92,8 @@ pub fn truss_plate() -> Connection {
         fixity: Fixity::Pinned,
         reference: Some("ANSI/TPI 1".into()),
         notes: None,
+        process: None,
+        rating: None,
     }
 }
 pub fn joist_hanger(model: &str) -> Connection {
@@ -101,5 +105,7 @@ pub fn joist_hanger(model: &str) -> Connection {
         fixity: Fixity::Pinned,
         reference: Some("Manufacturer's catalog".into()),
         notes: Some("Fill all nail holes per manufacturer".into()),
+        process: None,
+        rating: None,
     }
 }

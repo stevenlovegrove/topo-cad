@@ -1,0 +1,54 @@
+{
+ "source": {
+  "publication": "T-slot connector catalogs",
+  "edition": "collected 2026-10",
+  "table": "(each row names its source)",
+  "note": "What makers rate their connectors for (N, N·m), per connector. None publishes a rotational stiffness, so joints are analysed as rigid. Line 8 (8 mm slot) parts only."
+ },
+ "rows": [
+  {
+   "key": "angle-bracket-40",
+   "maker": "item",
+   "name": "Angle Bracket 8 40x40 Zn (die-cast)",
+   "part": "0.0.411.15",
+   "kind": "bracket",
+   "moment_nm": 50,
+   "shear_n": 1000,
+   "source": "item fastening technology catalogue: Angle Bracket 8 40x40 Zn, F < 1,000 N and F x l < 50 Nm (both to be met)",
+   "url": "https://bibus-pim-production-storage.sos-ch-dk-2.exoscale-cdn.com/media/filer_public/e2/25/e225b25c-54bc-44ed-b6c8-825136d11abd/item_aluminium_profile_fasteners_bibus_india.pdf",
+   "verified": true,
+   "note": "Two M8 screws into T-slot nuts at 25 N·m; the profile groove's pull-out limit (2500 N) also applies."
+  },
+  {
+   "key": "standard-fastener-8",
+   "maker": "item",
+   "name": "Standard-Fastening Set 8 (screw into the tapped core bore)",
+   "part": "0.0.026.07",
+   "kind": "end_fastener",
+   "source": "item fastening technology catalogue: Standard-Fastening Set 8, M8x20 button-head screw, 25 N·m; no permissible force or moment is printed",
+   "url": "https://bibus-pim-production-storage.sos-ch-dk-2.exoscale-cdn.com/media/filer_public/e2/25/e225b25c-54bc-44ed-b6c8-825136d11abd/item_aluminium_profile_fasteners_bibus_india.pdf",
+   "verified": true,
+   "note": "No rated capacity published: the joint is not checked."
+  },
+  {
+   "key": "automatic-fastener-8",
+   "maker": "item",
+   "name": "Automatic-Fastening Set 8",
+   "part": "0.0.388.08",
+   "kind": "end_fastener",
+   "source": "item fastening technology catalogue: Automatic-Fastening Set 8, 14 N·m; no permissible force or moment is printed",
+   "url": "https://bibus-pim-production-storage.sos-ch-dk-2.exoscale-cdn.com/media/filer_public/e2/25/e225b25c-54bc-44ed-b6c8-825136d11abd/item_aluminium_profile_fasteners_bibus_india.pdf",
+   "verified": true,
+   "note": "No rated capacity published: the joint is not checked."
+  },
+  {
+   "key": "joining-plate",
+   "maker": "generic",
+   "name": "Flat joining plate",
+   "kind": "plate",
+   "source": "no published rating found for a Line 8 joining plate",
+   "verified": false,
+   "note": "No rated capacity: give your own with a source (rating: { … }), or the joint is not checked."
+  }
+ ]
+}

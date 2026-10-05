@@ -26,7 +26,10 @@ pub fn all_issues(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<Issue>
     issues.extend(geom.issues.iter().cloned());
     issues.extend(geom.clash_issues());
     issues.extend(geom.bearing_issues(model));
-    issues.extend(topo_analysis::load_path_issues(model, topo, geom));
+    // A frame carries load through its joints: bearing paths are not its concern.
+    if !model.standards.is_frame() {
+        issues.extend(topo_analysis::load_path_issues(model, topo, geom));
+    }
     let td = topo_analysis::takedown(model, topo, geom);
     issues.extend(td.issues);
     issues
@@ -187,6 +190,7 @@ impl Session {
             "mesh" => mesh(b),
             "view3d" => view3d(b, n("az", 225.0), n("el", 30.0)),
             "ratios" => ratios(b, &s("mode"), &s("combo")),
+            "deflected" => deflected(b, &s("combo")),
             "member" => member_detail(b, &s("path"), &s("combo"))?,
             "pick" => {
                 let Some(sheet) = b.set.sheets.get(i("sheet")) else { return Ok("null".into()) };
@@ -233,36 +237,46 @@ impl Session {
 /// in use with their factors and load duration factor.
 fn loads_summary(b: &Built, excluded: &[String]) -> Value {
     use topo_core::{AreaBasis, Load};
-    const PSF: f64 = 47.880259;
-    const PLF: f64 = 14.593903;
     let m = &b.model;
+    let u = m.units.result_units();
+    let metric = m.units == topo_core::UnitSystem::Metric;
+    let vec = |v: topo_core::Vec3, k: f64| format!("({:.0}, {:.0}, {:.0})", v.x / k, v.y / k, v.z / k);
     let cases: Vec<Value> = m
         .load_cases
         .iter()
         .map(|c| {
             let mut items: Vec<String> = vec![];
             if c.self_weight {
-                items.push("self-weight of all framing (from member sizes and species)".into());
+                items.push(if metric { "self-weight of all members (from their sections and materials)".into() } else { "self-weight of all framing (from member sizes and species)".to_string() });
             }
             let mut member_loads: BTreeMap<String, (usize, f64)> = Default::default();
             for l in &m.loads {
                 match l {
                     Load::Area { case, group, pressure, basis, label, .. } if *case == c.id => {
                         let on = if *basis == AreaBasis::Surface { "along the slope" } else { "on plan" };
-                        items.push(format!("{:.1} psf {on} on {}{}", pressure / PSF, m.group(*group).name, label.as_ref().map(|l| format!(" — {l}")).unwrap_or_default()));
+                        items.push(format!("{:.1} {} {on} on {}{}", pressure / u.pressure.1, u.pressure.0, m.group(*group).name, label.as_ref().map(|l| format!(" — {l}")).unwrap_or_default()));
                     }
                     Load::MemberUniform { case, member, w, range } if *case == c.id => {
                         let what = if range.is_some() { "part-length line loads" } else { "line loads" };
                         let e = member_loads.entry(format!("{what} on {}", m.member(*member).role)).or_insert((0, 0.0));
                         e.0 += 1;
-                        e.1 = e.1.max(-w.z / PLF);
+                        e.1 = e.1.max(w.norm() / u.line.1);
+                    }
+                    Load::Node { case, node, force, moment } if *case == c.id && metric => {
+                        let at = m.members.iter().find(|x| x.path.contains(node)).map(|x| short(m, x.id)).unwrap_or_default();
+                        if force.norm() > 0.0 {
+                            items.push(format!("{:.0} N {} (x, y, z) on {at}", force.norm(), vec(*force, 1.0)));
+                        }
+                        if moment.norm() > 0.0 {
+                            items.push(format!("{:.1} N·m moment {} on {at}", moment.norm(), vec(*moment, 1.0)));
+                        }
                     }
                     Load::Node { case, force, .. } if *case == c.id => items.push(format!("{:.0} lb point load", -force.z / 4.448_221_615)),
                     _ => {}
                 }
             }
             for (k, (n, w)) in member_loads {
-                items.push(format!("{k}: {n} members, up to {w:.1} plf"));
+                items.push(format!("{k}: {n} members, up to {w:.1} {}", u.line.0));
             }
             json!({ "name": c.name, "kind": format!("{:?}", c.kind), "excluded": excluded.contains(&c.name), "items": items })
         })
@@ -281,18 +295,19 @@ fn loads_summary(b: &Built, excluded: &[String]) -> Value {
             })
         })
         .collect();
-    json!({ "standard": format!("NDS 2018 ASD design values; {} load combinations", m.standards.combinations_label()), "cases": cases, "combos": combos })
+    json!({ "standard": b.analysis.basis, "cases": cases, "combos": combos, "duration_factors": !m.standards.is_frame() && m.standards.combinations.as_deref() != Some("each-case") })
 }
 
 /// Checks matching a colour-by mode.
 fn mode_matches(mode: &str, title: &str) -> bool {
     match mode {
         "bending" => title.starts_with("Bending") || title.starts_with("Truss member"),
+        "stress" => title.starts_with("Stress"),
         "shear" => title.starts_with("Shear"),
-        "compression" => title.starts_with("Compression") || title.starts_with("Truss member: compression"),
+        "compression" => title.starts_with("Compression") || title.starts_with("Truss member: compression") || title.starts_with("Buckling"),
         "bearing" => title.starts_with("Bearing"),
-        "deflection" => title.starts_with("Deflection"),
-        "connections" => title.starts_with("Nailed"),
+        "deflection" => title.starts_with("Deflection") || title.starts_with("Displacement"),
+        "connections" => title.starts_with("Nailed") || title.starts_with("Joint"),
         _ => true,
     }
 }
@@ -330,6 +345,8 @@ fn analysis_summary(b: &Built) -> Value {
     json!({
         "asce7": b.model.standards.asce7,
         "combinations": b.model.standards.combinations_label(),
+        "standard": a.basis,
+        "displacement": max_displacement(b),
         "combos": combos,
         "checked": checked,
         "over": over,
@@ -381,10 +398,10 @@ fn member_detail(b: &Built, path: &str, combo: &str) -> Result<Value, String> {
     };
     let (ds, _) = b.td.combine(&factors);
     let d = &ds[m.idx()];
-    const FT: f64 = 0.3048;
-    const LB: f64 = 4.448_221_615_260_5;
+    let u = b.model.units.result_units();
     let step = (d.t.len() / 300).max(1);
-    let pick = |v: &[f64], f: f64| -> Vec<f64> { v.iter().step_by(step).map(|x| x * f).collect() };
+    let pick = |v: &[f64], f: f64| -> Vec<f64> { v.iter().step_by(step).map(|x| x / f).collect() };
+    let disp: Vec<f64> = d.d.iter().step_by(step).map(|x| x.norm() / u.deflection.1).collect();
     Ok(json!({
         "path": b.model.member_path(m),
         "label": short(&b.model, m),
@@ -392,19 +409,24 @@ fn member_detail(b: &Built, path: &str, combo: &str) -> Result<Value, String> {
         "section": b.model.section(mem.section).name,
         "material": b.model.material(mem.material).name,
         "behaviour": info.behaviour,
-        "length_ft": info.length / FT,
+        "length": b.model.units.fmt_len_unit(info.length),
         "supports": info.supports.iter().filter(|s| s.node.is_some()).map(|s| json!({
-            "at_ft": s.t / FT,
-            "by": s.by.map(|x| short(&b.model, x)).unwrap_or_else(|| "foundation".into()),
+            "at": b.model.units.fmt_len_unit(s.t),
+            "by": s.by.map(|x| short(&b.model, x)).unwrap_or_else(|| if b.model.standards.is_frame() { "support".into() } else { "foundation".into() }),
             "transfer": s.transfer,
         })).collect::<Vec<_>>(),
         "combination": combo_name,
+        "units": { "t": u.length.0, "m": u.moment.0, "f": u.force.0, "y": u.deflection.0 },
         "diagram": {
-            "t_ft": pick(&d.t, 1.0 / FT),
-            "m_lbft": pick(&d.m, 1.0 / (LB * FT)),
-            "v_lb": pick(&d.v, 1.0 / LB),
-            "n_lb": pick(&d.n, 1.0 / LB),
-            "y_in": pick(&d.y, 1.0 / 0.0254),
+            "t": pick(&d.t, u.length.1),
+            "m": pick(&d.m, u.moment.1),
+            "v": pick(&d.v, u.force.1),
+            "n": pick(&d.n, u.force.1),
+            "y": pick(&d.y, u.deflection.1),
+            "m2": pick(&d.m2, u.moment.1),
+            "v2": pick(&d.v2, u.force.1),
+            "tq": pick(&d.tq, u.moment.1),
+            "disp": disp,
         },
         "checks": checks.iter().map(|c| json!({
             "title": c.title,
@@ -415,13 +437,62 @@ fn member_detail(b: &Built, path: &str, combo: &str) -> Result<Value, String> {
             "unit": c.unit,
             "ratio": c.ratio(),
             "other": c.other.map(|o| short(&b.model, o)),
-            "at_ft": c.at.map(|t| t / FT),
+            "at": c.at.map(|t| b.model.units.fmt_len_unit(t)),
             "notes": c.notes,
             "verified": c.verified,
             "indicative": c.indicative,
             "trace": c.trace.steps,
         })).collect::<Vec<_>>(),
     }))
+}
+
+/// The largest displacement of a frame analysis over all combinations.
+fn max_displacement(b: &Built) -> Value {
+    let mut best: Option<(f64, String, String)> = None;
+    for c in &b.analysis.combos {
+        let (ds, _) = b.td.combine(&c.factors);
+        for (i, d) in ds.iter().enumerate() {
+            let (v, _) = d.max_displacement();
+            if v > 0.0 && best.as_ref().is_none_or(|x| v > x.0) {
+                best = Some((v, short(&b.model, topo_core::MemberId(i as u32)), c.name.clone()));
+            }
+        }
+    }
+    match best {
+        Some((v, member, combo)) => json!({ "mm": v * 1000.0, "member": member, "combination": combo }),
+        None => Value::Null,
+    }
+}
+
+/// Deflected centre-lines for the 3D view: per member, points along it and
+/// their displacement (m, world) under a combination (`""`: the one that
+/// moves the model most).
+fn deflected(b: &Built, combo: &str) -> Value {
+    let peak = |ds: &[topo_analysis::Diagram]| ds.iter().map(|d| d.max_displacement().0).fold(0.0, f64::max);
+    let chosen = b
+        .analysis
+        .combos
+        .iter()
+        .filter(|c| combo.is_empty() || c.name == combo)
+        .map(|c| (c.name.clone(), b.td.combine(&c.factors).0))
+        .max_by(|x, y| peak(&x.1).total_cmp(&peak(&y.1)));
+    let Some((name, ds)) = chosen else { return json!({ "members": [], "max": 0.0 }) };
+    let r = |v: f64| (v * 1e7).round() / 1e7;
+    let members: Vec<Value> = b
+        .model
+        .members
+        .iter()
+        .filter(|m| !ds[m.id.idx()].d.is_empty())
+        .map(|m| {
+            let d = &ds[m.id.idx()];
+            let (a, e) = (b.model.pos(m.start()), b.model.pos(m.end()));
+            let x = (e - a) / a.distance(e);
+            let pts: Vec<[f64; 3]> = d.t.iter().map(|t| a + x * *t).map(|p| [r(p.x), r(p.y), r(p.z)]).collect();
+            let disp: Vec<[f64; 3]> = d.d.iter().map(|u| [r(u.x), r(u.y), r(u.z)]).collect();
+            json!({ "path": b.model.member_path(m.id), "pts": pts, "disp": disp })
+        })
+        .collect();
+    json!({ "combination": name, "max": peak(&ds), "members": members })
 }
 
 /// Member solids for the 3D view: each member's boundary faces (outer loops,

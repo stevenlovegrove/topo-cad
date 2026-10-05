@@ -796,3 +796,132 @@ fn surveyed_wall_from_typescript() {
     let e = run(&bad, "s.ts").unwrap_err().to_string();
     assert!(e.contains("say what the offset is"), "{e}");
 }
+
+// ----- things that are not buildings: one 3D frame, metric, plain mechanics -----
+
+/// A welded aluminium cantilever: the frame analysis and the stress check
+/// against a hand calculation, and the weld's heat-affected zone governing.
+#[test]
+fn welded_tube_cantilever_matches_hand_calculation() {
+    let src = r#"
+        import { Aluminum, Assembly, Joint, mm, Model, tube } from "topo-cad";
+        const al = { section: tube(mm(30), mm(2)), material: Aluminum.T6061 };
+        const a = Assembly.named("Arm")
+          .point("foot", [0, 0, 0]).point("root", [0, 0, 0.5]).point("tip", [1, 0, 0.5])
+          .member("post", ["foot", "root"], { ...al, priority: 5 })
+          .member("arm", ["root", "tip"], al)
+          .joints(Joint.welded())
+          .support("foot", "fixed").support("root", "fixed")
+          .force("Hang", "tip", [0, 0, -100]);
+        export default Model.named("Arm").designBasis({ safetyFactor: 2, selfWeight: false }).add(a);
+    "#;
+    let m = run(src, "arm.ts").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(m.units, UnitSystem::Metric);
+    assert!(m.standards.is_frame());
+    let topo = Topology::build(&m);
+    let g = Geometry::build(&m, &topo);
+    let td = topo_analysis::takedown(&m, &topo, &g);
+    assert!(td.issues.is_empty(), "{:#?}", td.issues);
+    let arm = m.find_member("arm#1").unwrap();
+    // Tip deflection P L³ / 3 E I, with the exact tube I.
+    let (e, i) = (69.6e9, std::f64::consts::PI * (0.015f64.powi(4) - 0.013f64.powi(4)) / 4.0);
+    let d = &td.diagrams[0][arm.idx()];
+    let tip = d.d.last().unwrap().z;
+    assert!((tip + 100.0 * 1.0 / (3.0 * e * i)).abs() < 1e-6 * tip.abs(), "{tip}");
+    assert!((d.m[0].abs() - 100.0).abs() < 1e-6, "root moment {}", d.m[0]);
+    // The governing check is at the root, in the weld's zone: 103 MPa / 2.
+    let a = topo_analysis::nds_asd(&m, &g, &td);
+    assert!(a.basis.contains("factor of safety 2"), "{}", a.basis);
+    let c = a.checks.iter().find(|c| c.member == arm && c.title.starts_with("Stress")).unwrap();
+    assert_eq!(c.title, "Stress (beside a joint)");
+    let sigma = 100.0 * 0.015 / i / 1e6;
+    assert!((c.demand - sigma).abs() < 0.01 * sigma, "{} vs {sigma}", c.demand);
+    assert!((c.capacity - 51.5).abs() < 1e-9, "{}", c.capacity);
+    assert!(c.verified && !c.indicative);
+    // Away from any weld the parent metal's 241 MPa would apply.
+    assert_eq!(m.material(m.member(arm).material).strength.as_ref().unwrap().yield_, 241e6);
+}
+
+/// The bike and the cart: clean in every scenario, in equilibrium, and
+/// telling their stories (the weld zone governs the aluminium frame; the
+/// cart's brackets are what gives first).
+#[test]
+fn bike_and_cart_examples() {
+    let dir = format!("{}/../../examples", env!("CARGO_MANIFEST_DIR"));
+    for (file, scenarios) in [
+        ("bike.ts", vec!["Steel, brazed into lugs", "Aluminium 6061-T6, TIG welded", "Carbon, moulded in one piece"]),
+        ("kids-cart.ts", vec!["Angle brackets, two per joint", "One angle bracket per joint", "Screw into the core bore"]),
+    ] {
+        let path = format!("{dir}/{file}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        for sc in scenarios {
+            let (m, _) = run_scenario(&text, &path, Some(sc)).unwrap_or_else(|e| panic!("{file} [{sc}]: {e}"));
+            assert_eq!(m.scenarios.current.as_deref(), Some(sc));
+            let topo = Topology::build(&m);
+            let v = topo_core::validate(&m, &topo);
+            assert!(v.iter().all(|i| i.severity < topo_core::Severity::Warning), "{file} [{sc}]: {v:#?}");
+            let g = Geometry::build(&m, &topo);
+            assert!(g.issues.is_empty() && g.clashes().is_empty() && g.bearing_issues(&m).is_empty(), "{file} [{sc}]: {:?} {:?} {:?}", g.issues, g.clashes(), g.bearing_issues(&m));
+            let td = topo_analysis::takedown(&m, &topo, &g);
+            assert!(td.issues.is_empty(), "{file} [{sc}]: {:#?}", td.issues);
+            // Every case: the supports carry exactly what is applied.
+            for (ci, case) in m.load_cases.iter().enumerate() {
+                let mut total = topo_core::Vec3::ZERO;
+                for l in &m.loads {
+                    if let topo_core::Load::Node { case: c, force, .. } = l {
+                        if *c == case.id {
+                            total += *force;
+                        }
+                    }
+                }
+                let held = td.reactions[ci].iter().fold(topo_core::Vec3::ZERO, |a, r| a + r.force);
+                let weight = td.applied[ci] + total.z;
+                let err = (held + total - topo_core::Vec3::Z * weight).norm();
+                assert!(err < 1e-6 * (1.0 + total.norm() + weight.abs()), "{file} [{sc}] {}: reactions {held:?} vs applied {total:?} + weight {weight}", case.name);
+            }
+            let a = topo_analysis::nds_asd(&m, &g, &td);
+            assert!(a.issues.is_empty(), "{file} [{sc}]: {:#?}", a.issues);
+            assert!(a.governing.iter().all(|c| c.is_some()), "{file} [{sc}]: every member is checked");
+            let worst = a.governing.iter().flatten().map(|&i| &a.checks[i]).max_by(|x, y| x.ratio().total_cmp(&y.ratio())).unwrap();
+            match sc {
+                "Steel, brazed into lugs" => assert!(worst.ratio() < 1.0 && worst.title == "Stress", "{} {}", worst.title, worst.ratio()),
+                "Aluminium 6061-T6, TIG welded" => assert!(worst.title == "Stress (beside a joint)" && worst.ratio() > 1.0, "{} {}", worst.title, worst.ratio()),
+                // The laminate's checks are for information (the governing member may be a metal part).
+                "Carbon, moulded in one piece" => {
+                    let tube = m.find_member("down_tube#1").unwrap();
+                    assert!(a.checks.iter().filter(|c| c.member == tube && c.title.starts_with("Stress")).all(|c| c.indicative && !c.verified));
+                }
+                "Angle brackets, two per joint" | "One angle bracket per joint" => assert!(worst.title.starts_with("Joint:") && worst.verified, "{}", worst.title),
+                _ => assert!(!a.checks.iter().any(|c| c.title.starts_with("Joint:")), "no rating, no joint check"),
+            }
+            // The drawing set builds with no view errors.
+            let set = topo_draw::DrawingSet::build(&m, &topo, &g);
+            assert!(set.errors.is_empty(), "{file} [{sc}]: {:?}", set.errors);
+            assert_eq!(set.sheets.len(), 4, "{file} [{sc}]");
+        }
+    }
+}
+
+/// Mistakes in a model of this kind are reported in its own terms.
+#[test]
+fn frame_models_report_helpful_errors() {
+    let model = |body: &str| format!(r#"
+        import {{ Aluminum, Assembly, Connector, Joint, mm, Model, Building, tube, tslot, material }} from "topo-cad";
+        const al = {{ section: tube(mm(30), mm(2)), material: Aluminum.T6061 }};
+        {body}
+    "#);
+    let e = run(&model(r#"export default Model.named("x").add(Assembly.named("A").point("a", [0,0,0]).point("b", [1,0,0]).member("m", ["a","b"], { section: tslot("45x45") }));"#), "x.ts").unwrap_err().to_string();
+    assert!(e.contains("45x45") && e.contains("40x40"), "{e}");
+    let e = run(&model(r#"export default Model.named("x").add(Assembly.named("A").point("a", [0,0,0]).point("b", [1,0,0]).member("m", ["a","b"], { section: tube(mm(30), mm(2)), material: material("unobtainium") }));"#), "x.ts").unwrap_err().to_string();
+    assert!(e.contains("unobtainium") && e.contains("6061-T6"), "{e}");
+    // A load case of one's own needs the each-case basis (a building has load kinds).
+    let e = run(&model(r#"export default Building.named("x").add(Assembly.named("A").point("a", [0,0,0]).point("b", [1,0,0]).member("m", ["a","b"], al).force("Sat on", "b", [0,0,-1]));"#), "x.ts").unwrap_err().to_string();
+    assert!(e.contains("each-case"), "{e}");
+    // Nothing holding it: the analysis says what moves, in the model's words.
+    let m = run(&model(r#"export default Model.named("x").add(Assembly.named("A").point("a", [0,0,0]).point("b", [1,0,0]).member("m", ["a","b"], al).support("a", "pinned").force("Push", "b", [0,0,-1]));"#), "x.ts").unwrap();
+    let topo = Topology::build(&m);
+    let g = Geometry::build(&m, &topo);
+    let td = topo_analysis::takedown(&m, &topo, &g);
+    assert_eq!(td.issues.len(), 1);
+    assert!(td.issues[0].code == "frame-unsolved" && td.issues[0].message.contains("A/m#1"), "{}", td.issues[0].message);
+}

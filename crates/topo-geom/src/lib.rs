@@ -103,13 +103,13 @@ impl Geometry {
         out
     }
 
-    /// Partial-bearing issues, excluding ends fastened with engineered
-    /// hardware (truss plates, hangers): there the hardware carries the load
-    /// and fit-up gaps are expected, so bearing contact is not relied upon.
+    /// Partial-bearing issues, excluding ends held by an engineered joint
+    /// (truss plates, hangers, a weld, a bracket): there the joint carries
+    /// the load and fit-up gaps are expected, so bearing is not relied upon.
     pub fn bearing_issues(&self, model: &Model) -> Vec<Issue> {
         let hardware_at = |m: MemberId, n: topo_core::NodeId| {
             model.joint(n).is_some_and(|j| {
-                j.connections.iter().any(|c| c.member == m && !model.connection(c.connection).hardware.is_empty())
+                j.connections.iter().any(|c| c.member == m && model.connection(c.connection).engineered())
             })
         };
         self.bearing_overhangs()

@@ -19,4 +19,28 @@ pub struct Material {
     pub density: f64,
     /// Key into a design code's tables, e.g. `NDS:DFL:No.2`.
     pub design_key: Option<String>,
+    /// Strength, for materials checked by plain mechanics (stress against
+    /// yield) rather than by a design code: metals, laminates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<Strength>,
+}
+
+/// A material's strength and where the values come from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Strength {
+    /// Yield strength (Pa): 0.2 % proof stress of a metal; for a laminate,
+    /// the stress it is taken to carry without damage.
+    pub yield_: f64,
+    /// Ultimate tensile strength (Pa).
+    pub ultimate: f64,
+    pub source: String,
+    /// Whether the values were checked against that source.
+    pub verified: bool,
+}
+
+impl Material {
+    /// A material with stiffness and density only (no design values).
+    pub fn new(name: &str, family: &str, e: f64, g: f64, density: f64) -> Material {
+        Material { id: MaterialId(0), name: name.into(), family: family.into(), e, g, density, design_key: None, strength: None }
+    }
 }

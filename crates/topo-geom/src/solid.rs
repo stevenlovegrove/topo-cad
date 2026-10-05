@@ -80,6 +80,10 @@ pub struct Placement {
     pub hull: Vec<Vec2>,
     /// Section centroid (shifted).
     pub centroid: Vec2,
+    /// The side surface is curved (a round section): its facets are one
+    /// smooth face, drawn by its silhouette.
+    #[serde(default)]
+    pub round: bool,
 }
 
 impl Placement {
@@ -101,6 +105,7 @@ impl Placement {
             hull: convex_hull(&all),
             plies,
             centroid: centroid - shift,
+            round: false,
         }
     }
 
@@ -132,6 +137,10 @@ pub struct Face {
     pub outer: Vec<Vec3>,
     pub holes: Vec<Vec<Vec3>>,
     pub normal: Vec3,
+    /// A facet of a curved surface: edges it shares with the next facet are
+    /// not real edges.
+    #[serde(default)]
+    pub smooth: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -169,7 +178,7 @@ impl MemberGeom {
                 let poly = clip_all(quad, None);
                 if poly.len() >= 3 && area3(&poly) > 1e-12 {
                     let nrm = pl.side_normal(a, b);
-                    out.push(Face { outer: poly, holes: vec![], normal: if inward { -nrm } else { nrm } });
+                    out.push(Face { outer: poly, holes: vec![], normal: if inward { -nrm } else { nrm }, smooth: pl.round });
                 }
             }
         };
@@ -182,7 +191,7 @@ impl MemberGeom {
             let cap = clip_all(onto(outer), Some(i));
             if cap.len() >= 3 && area3(&cap) > 1e-12 {
                 let hs = holes.iter().map(|h| clip_all(onto(h), Some(i))).filter(|h| h.len() >= 3).collect();
-                out.push(Face { outer: cap, holes: hs, normal: p.normal });
+                out.push(Face { outer: cap, holes: hs, normal: p.normal, smooth: false });
             }
         }
         out

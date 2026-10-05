@@ -120,7 +120,12 @@ impl DrawingSet {
                     "cover" => cover_at = Some(sheets.len()),
                     "plans" => {
                         let n = next_number(&sheets, "S-", 101);
-                        sheets.extend(sheet::pack("S-", n, "Framing plans", framing_plans(&ctx)));
+                        // Something that is not a building has no framing plans: its general arrangement.
+                        if is_building(model) {
+                            sheets.extend(sheet::pack("S-", n, "Framing plans", framing_plans(&ctx)));
+                        } else {
+                            sheets.extend(sheet::pack("S-", n, "General arrangement", general_arrangement(&ctx)));
+                        }
                     }
                     "trusses" => {
                         let n = next_number(&sheets, "S-", 101);
@@ -137,7 +142,7 @@ impl DrawingSet {
                     "schedules" => {
                         let n = next_number(&sheets, "S-", 401);
                         let tables = vec![
-                            View::paper("Member schedule", schedule::member_schedule_table(&marks)),
+                            View::paper("Member schedule", schedule::member_schedule_table(&marks, model.units)),
                             View::paper("Connection schedule", schedule::connection_schedule_table(model)),
                         ];
                         sheets.extend(sheet::pack("S-", n, "Schedules", tables));
@@ -176,6 +181,30 @@ impl DrawingSet {
         let s = &self.sheets[i];
         dxf::to_dxf(&s.render(model, i, self.sheets.len()), model.units, 1.0)
     }
+}
+
+/// Whether the model has any building framing (walls, floors, roofs).
+fn is_building(model: &Model) -> bool {
+    model.groups.iter().any(|g| matches!(g.kind.as_str(), "wall" | "floor" | "roof" | "truss"))
+}
+
+/// Side, plan and front views of everything, at one scale.
+fn general_arrangement(ctx: &Ctx) -> Vec<View> {
+    use topo_core::Vec3;
+    let (aw, ah) = plan_area();
+    let all: Vec<MemberId> = ctx.model.members.iter().map(|m| m.id).collect();
+    if all.is_empty() {
+        return vec![];
+    }
+    let projs = [("Side elevation", hlr::Projector::new(-Vec3::Y, Vec3::Z)), ("Plan", hlr::Projector::new(Vec3::Z, Vec3::Y)), ("Front elevation", hlr::Projector::new(Vec3::X, Vec3::Z))];
+    let (w, h) = projs.iter().map(|(_, p)| views::projected_extent(ctx, &all, p)).fold((0.0f64, 0.0f64), |(w, h), b| (w.max(b.width()), h.max(b.height())));
+    let scale = views::fit_scale(ctx.model.units, w, h, aw / 2.0 - 3.0 * INCH, ah / 2.0 - 3.0 * INCH);
+    projs
+        .into_iter()
+        .map(|(title, proj)| {
+            views::projected(ctx, views::Projected { title: title.into(), subtitle: None, members: all.clone(), dashed: vec![], proj, scale: scale.clone(), tags: true, annotate: vec![], clip: None })
+        })
+        .collect()
 }
 
 fn plan_area() -> (f64, f64) {
@@ -276,7 +305,8 @@ fn cover_sheets(ctx: &Ctx, others: &[Sheet], extras: Vec<View>) -> Vec<Sheet> {
     ));
     notes.push("Member lengths are derived from topology and are long-point cut lengths; verify in field.".into());
     cover_views.push(View::paper("General notes", text_block("General notes", &notes, 7.0)));
-    let lp = topo_analysis::load_path_issues(model, topo, geom);
+    // (A frame carries load through its joints, not by bearing: no such review.)
+    let lp = if model.standards.is_frame() { vec![] } else { topo_analysis::load_path_issues(model, topo, geom) };
     if !lp.is_empty() {
         let items: Vec<String> = lp.iter().map(|i| load_path_text(model, ctx.marks, i)).collect();
         cover_views.push(View::paper("Load path review", text_block("Load path review", &items, 7.0)));
@@ -292,7 +322,7 @@ fn cover_sheets(ctx: &Ctx, others: &[Sheet], extras: Vec<View>) -> Vec<Sheet> {
     let all: Vec<MemberId> = model.members.iter().map(|m| m.id).collect();
     let ext = views::projected_extent(ctx, &all, &views::iso_projector());
     let s_iso = ((aw * 0.55) / ext.width()).min((ah * 0.55) / ext.height());
-    cover_views.push(views::isometric(ctx, &all, "3D framing view", s_iso));
+    cover_views.push(views::isometric(ctx, &all, if is_building(model) { "3D framing view" } else { "3D view" }, s_iso));
     let mut cover = sheet::pack("G-", 1, "General notes, index, 3D view", cover_views);
     for (i, c) in cover.iter_mut().enumerate() {
         c.number = format!("G-{:03}", i + 1);

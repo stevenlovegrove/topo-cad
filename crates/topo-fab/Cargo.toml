@@ -1,0 +1,10 @@
+[package]
+name = "topo-fab"
+description = "Fabricated frames: tubes and T-slot extrusions, their materials, joining processes and connectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+topo-core.workspace = true
+topo-data.workspace = true

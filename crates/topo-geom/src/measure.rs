@@ -282,7 +282,7 @@ mod tests {
         let mut m = Model::new("t");
         let s24 = m.add_section(Section::rect("2x4", inch(1.5), inch(3.5)));
         let s26 = m.add_section(Section::rect("2x6", inch(1.5), inch(5.5)));
-        let mat = m.add_material(Material { id: MaterialId(0), name: "x".into(), family: "x".into(), e: 1e10, g: 1e9, density: 500.0, design_key: None });
+        let mat = m.add_material(Material { id: MaterialId(0), name: "x".into(), family: "x".into(), e: 1e10, g: 1e9, density: 500.0, design_key: None, strength: None });
         let ax = m.axes_between(Vec3::ZERO, Vec3::X, None);
         let beam = MemberSpec::new("beam", s26, mat).named("beam").priority(10).anchor(Anchor::body_toward(&ax, None, Some(Vec3::Z)));
         m.add_member_between(v3(0.0, 0.0, 2.0), v3(3.0, 0.0, 2.0), &beam);

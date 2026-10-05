@@ -89,6 +89,9 @@
   #layers3d .sw { width: 12px; height: 12px; border: 1px solid #888; border-radius: 2px; }
   #layers3d .lyr span.n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #layers3d .lyr span.v { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #deflect3d { position: absolute; left: 10px; top: 10px; background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; font-size: 12px; display: flex; gap: 10px; align-items: center; }
+  #deflect3d[hidden] { display: none; }
+  #deflect3d input[type=range] { width: 110px; vertical-align: middle; }
   #hint3d { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.85); padding: 2px 6px; border-radius: 4px; }
   #scriptBar { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
   #scriptBar .file { border: 1px solid var(--line); background: var(--bg); padding: 2px 8px; border-radius: 4px; cursor: pointer; font: 12px ui-monospace, monospace; }
@@ -172,6 +175,11 @@
           <div id="layersList"></div>
         </div>
       </div>
+      <div id="deflect3d" hidden>
+        <label><input type="checkbox" id="deflectOn" checked> deflected shape</label>
+        <label>× <input type="range" id="deflectScale" min="0" max="100" value="50"></label>
+        <span id="deflectInfo" class="muted"></span>
+      </div>
       <div id="hint3d">drag to orbit · shift/right-drag to pan · scroll to zoom · click a member for its checks · double-click to fit</div>
     </div>
   </div>
@@ -195,12 +203,13 @@
             <select id="heatMode">
               <option value="off">off</option>
               <option value="utilization">utilization (all checks)</option>
+              <option value="stress">stress</option>
               <option value="bending">bending</option>
               <option value="shear">shear</option>
               <option value="compression">compression</option>
               <option value="bearing">bearing</option>
               <option value="deflection">deflection</option>
-              <option value="connections">nailed connections</option>
+              <option value="connections">connections</option>
             </select>
           </label>
           <label>Load combination <select id="heatCombo"></select></label>
@@ -416,14 +425,16 @@ function renderStructure() {
         await api("/api/exclude", off);
       };
     }
-    $("combos").innerHTML = `<tr><th>Combination</th><th>Factors</th><th class=num>C<sub>D</sub></th></tr>` +
-      L.combos.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.factors.map(([n, f]) => `<span class="chip">${f === 1 ? "" : f + "×"}${esc(n)}</span>`).join("")}</td><td class=num title="${esc(c.cd_why)}">${c.cd.toFixed(2)}</td></tr>`).join("");
+    const cd = L.duration_factors !== false;  // the wood load-duration factor, where it applies
+    $("combos").innerHTML = `<tr><th>Combination</th><th>Factors</th>${cd ? "<th class=num>C<sub>D</sub></th>" : ""}</tr>` +
+      L.combos.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.factors.map(([n, f]) => `<span class="chip">${f === 1 ? "" : f + "×"}${esc(n)}</span>`).join("")}</td>${cd ? `<td class=num title="${esc(c.cd_why)}">${c.cd.toFixed(2)}</td>` : ""}</tr>`).join("");
   }
-  $("asce").textContent = `NDS 2018 ASD · ${a.combinations || "ASCE " + a.asce7}`;
+  $("asce").textContent = a.standard || `NDS 2018 ASD · ${a.combinations || "ASCE " + a.asce7}`;
   const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : `<b class="ok">all within capacity</b>`;
   const ind = a.indicative_over ? ` · <span class="muted" title="Members designed by others (e.g. manufactured trusses): checked for information only">${a.indicative_over} indicative over 1.0</span>` : "";
   $("strSummary").innerHTML = `${a.checked} members checked · ${over}${ind} · max ratio ${a.max.toFixed(2)}` +
     (a.unverified ? `<span class="badge" title="Some reference values are not yet verified against their source">unverified data</span>` : "") +
+    (a.displacement ? `<div style="margin-top:4px">Largest displacement ${a.displacement.mm.toFixed(2)} mm <span class="muted">at ${esc(a.displacement.member)} (${esc(a.displacement.combination)})</span></div>` : "") +
     (a.issues.length ? `<div class="muted" style="margin-top:4px">${a.issues.map(esc).join("<br>")}</div>` : "");
   const sel = $("heatCombo"), prev = sel.value;
   sel.innerHTML = `<option value="">governing (all)</option>` + a.combos.map((c) => `<option>${esc(c)}</option>`).join("");
@@ -465,7 +476,7 @@ $("scenario").addEventListener("change", async (e) => { await api("/api/scenario
 $("heatCombo").addEventListener("change", () => { loadHeat(); if (inspected) inspect(inspected, true); });
 
 function chart(t, v, title, unit, color, down) {
-  if (!v.length || v.every((x) => Math.abs(x) < 1e-9)) return "";
+  if (!v.length || v.every((x) => Math.abs(x) < 5e-4)) return "";  // nothing but rounding noise
   const shown = v;
   if (down) v = v.map((x) => -x);  // draw downward-positive values below the axis
   const w = 380, h = 70, pad = 4;
@@ -475,13 +486,14 @@ function chart(t, v, title, unit, color, down) {
   const y = (vv) => h / 2 - (h / 2 - pad) * vv / vmax;
   const pts = t.map((tt, i) => `${x(tt).toFixed(1)},${y(v[i]).toFixed(1)}`).join(" ");
   const i = v.reduce((k, vv, j) => (Math.abs(vv) > Math.abs(v[k]) ? j : k), 0);
-  return `<div class="muted" style="font-size:11px;margin-top:6px">${title}: max ${fmtNum(shown[i])} ${unit} at ${fmtNum(t[i])} ft</div>
+  return `<div class="muted" style="font-size:11px;margin-top:6px">${title}: max ${fmtNum(shown[i])} ${unit} at ${fmtNum(t[i])} ${chartLen}</div>
     <svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
       <line x1="0" x2="${w}" y1="${h / 2}" y2="${h / 2}" stroke="#bbb" stroke-width="1"/>
       <polygon points="${x(t0)},${h / 2} ${pts} ${x(t1)},${h / 2}" fill="${color}" fill-opacity="0.18"/>
       <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>
     </svg>`;
 }
+let chartLen = "ft";
 function fmtNum(v) { const a = Math.abs(v); return a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : v.toFixed(2); }
 
 async function inspect(path, keep) {
@@ -489,11 +501,15 @@ async function inspect(path, keep) {
   if (!keep) showTab("member");
   const r = await api(`/api/member?path=${encodeURIComponent(path)}&combo=${encodeURIComponent($("heatCombo").value)}`);
   if (r.error) { $("inspector").innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
-  const sup = r.supports.map((s) => `${esc(s.by)} at ${s.at_ft.toFixed(2)} ft${s.transfer === "Fastened" ? " (nails only)" : ""}`).join("; ");
-  const d = r.diagram;
-  let html = `<div class="head"><b>${esc(r.label)}</b> — ${esc(r.section)} ${esc(r.material)}, ${esc(r.role)}, ${r.behaviour}, ${r.length_ft.toFixed(2)} ft<br><span class="muted">Supported by: ${sup || "—"}</span></div>`;
+  const sup = r.supports.map((s) => `${esc(s.by)} at ${esc(s.at)}${s.transfer === "Fastened" ? " (nails only)" : ""}`).join("; ");
+  const d = r.diagram, u = r.units, frame = r.behaviour === "frame";
+  chartLen = u.t;
+  let html = `<div class="head"><b>${esc(r.label)}</b> — ${esc(r.section)}, ${esc(r.material)}, ${esc(r.role.replace(/_/g, " "))}, ${r.behaviour}, ${esc(r.length)}<br><span class="muted">${frame ? "Supports" : "Supported by"}: ${sup || "—"}</span></div>`;
   html += `<div class="muted" style="font-size:11px;margin-top:6px">Diagrams for ${esc(r.combination)}</div>`;
-  html += chart(d.t_ft, d.m_lbft, "Moment", "lb·ft", "#1d4ed8") + chart(d.t_ft, d.v_lb, "Shear", "lb", "#2b9348") + chart(d.t_ft, d.n_lb, "Axial (tension +)", "lb", "#8a2be2") + chart(d.t_ft, d.y_in, "Deflection (downward)", "in", "#d62828", true);
+  html += frame
+    ? chart(d.t, d.m, "Moment about y (bending along the section's z)", u.m, "#1d4ed8") + chart(d.t, d.m2, "Moment about z", u.m, "#4f83e8") + chart(d.t, d.tq, "Torque", u.m, "#b35900") +
+      chart(d.t, d.v, "Shear along z", u.f, "#2b9348") + chart(d.t, d.v2, "Shear along y", u.f, "#6fbf73") + chart(d.t, d.n, "Axial (tension +)", u.f, "#8a2be2") + chart(d.t, d.disp, "Displacement", u.y, "#d62828")
+    : chart(d.t, d.m, "Moment", u.m, "#1d4ed8") + chart(d.t, d.v, "Shear", u.f, "#2b9348") + chart(d.t, d.n, "Axial (tension +)", u.f, "#8a2be2") + chart(d.t, d.y, "Deflection (downward)", u.y, "#d62828", true);
   html += `<h3 style="margin-top:12px">Checks</h3>`;
   r.checks.forEach((c, k) => {
     const pct = Math.min(100, c.ratio * 100 / 1.5);
@@ -551,6 +567,28 @@ async function load3d(force) {
 async function loadRatios3d() {
   const mode = $("heatMode").value;
   ratios3d = mode === "off" || !state || state.error ? {} : await api(`/api/ratios?mode=${mode}&combo=${encodeURIComponent($("heatCombo").value)}`);
+  // The deflected shape of a frame analysis, for the chosen combination.
+  deflected3d = !state || state.error || !(state.analysis && state.analysis.displacement) ? null : await api(`/api/deflected?combo=${encodeURIComponent($("heatCombo").value)}`);
+  $("deflect3d").hidden = !(deflected3d && deflected3d.members && deflected3d.members.length);
+}
+let deflected3d = null;
+/// Exaggeration: the slider's middle draws the largest displacement as about 5 % of the model.
+function deflectFactor() {
+  if (!deflected3d || !deflected3d.max) return 0;
+  let size = 0;
+  for (const f of faces3d) for (const p of f.pts) size = Math.max(size, Math.hypot(p[0] - center3d[0], p[1] - center3d[1], p[2] - center3d[2]));
+  return (0.1 * size / deflected3d.max) * Math.pow(Number($("deflectScale").value) / 50, 2);
+}
+function drawDeflected(g, P) {
+  if (!deflected3d || $("deflect3d").hidden || !$("deflectOn").checked) return;
+  const k = deflectFactor();
+  $("deflectInfo").textContent = `×${k >= 10 ? k.toFixed(0) : k.toFixed(1)} · max ${(deflected3d.max * 1000).toFixed(2)} mm · ${deflected3d.combination}`;
+  g.strokeStyle = "#d62828"; g.lineWidth = 2; g.lineJoin = "round";
+  for (const m of deflected3d.members) {
+    g.beginPath();
+    m.pts.forEach((p, i) => { const d = m.disp[i]; const [x, y] = P([p[0] + k * d[0], p[1] + k * d[1], p[2] + k * d[2]]); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+    g.stroke();
+  }
 }
 
 function canvasSize() {
@@ -645,6 +683,7 @@ function draw3d() {
     $("hint3d").textContent = "preview (hidden lines not removed) — release to render exactly";
     if (!drag3dActive) requestExact();
   }
+  drawDeflected(g, P);
   drawCompass(r, u, t);
 }
 
@@ -826,7 +865,7 @@ function pick3d(x, y) {
   let drag = null;
   el.addEventListener("contextmenu", (e) => e.preventDefault());
   el.addEventListener("mousedown", (e) => {
-    if (e.target.closest("#compass .hot, #compass .link") || e.target.closest("#layers3d")) return;
+    if (e.target.closest("#compass .hot, #compass .link") || e.target.closest("#layers3d") || e.target.closest("#deflect3d")) return;
     drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2, moved: false, az: cam.az, elv: cam.el, p: cam.pan.slice() };
     drag3dActive = !drag.pan;
     el.classList.add("dragging");
@@ -876,6 +915,8 @@ function pick3d(x, y) {
   el.addEventListener("dblclick", (e) => { if (!e.target.closest("#compass .hot, #compass .link") && !e.target.closest("#layers3d")) { fit3d(); draw3d(); } });
   el.addEventListener("wheel", (e) => { if (e.target.closest("#layers3d")) e.stopPropagation(); }, { capture: true });
   $("layersOn").onchange = () => draw3d();
+  $("deflectOn").onchange = () => draw3d();
+  $("deflectScale").oninput = () => draw3d();
   $("layersToggle").onclick = () => { const b = $("layersBody"); b.hidden = !b.hidden; $("layersToggle").textContent = (b.hidden ? "▸" : "▾") + " Roof layers"; };
   const copyView = async () => {
     const { t } = basis3d();

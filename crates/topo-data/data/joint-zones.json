@@ -1,0 +1,30 @@
+{
+ "source": {
+  "publication": "Strength beside joints",
+  "edition": "collected 2026-10",
+  "table": "(each row names its source)",
+  "note": "Yield strength of a material in the zone a joining process affects, and how far the zone reaches. No numeric value was found for chromoly steel beside a weld or braze, so it has no row: the checks then use the parent strength and say so."
+ },
+ "rows": [
+  {
+   "process": "tig_weld",
+   "material": "6061-T6",
+   "fy_mpa": 103,
+   "extent_mm": 25,
+   "source": "Aluminum Association, Aluminum Structures FAQ (2020): welded 6061 tensile yield 15 ksi (Aluminum Design Manual Table A.4.3); about 1 in. either side of the weld is heat affected",
+   "url": "https://www.aluminum.org/sites/default/files/2021-09/DesigningAluminumStructuresFAQs20201012_0.pdf",
+   "verified": true,
+   "note": "The 1 in. extent is the FAQ's description, not the Specification's clause."
+  },
+  {
+   "process": "mig_weld",
+   "material": "6061-T6",
+   "fy_mpa": 103,
+   "extent_mm": 25,
+   "source": "Aluminum Association, Aluminum Structures FAQ (2020): welded 6061 tensile yield 15 ksi (Aluminum Design Manual Table A.4.3); about 1 in. either side of the weld is heat affected",
+   "url": "https://www.aluminum.org/sites/default/files/2021-09/DesigningAluminumStructuresFAQs20201012_0.pdf",
+   "verified": true,
+   "note": "The 1 in. extent is the FAQ's description, not the Specification's clause."
+  }
+ ]
+}

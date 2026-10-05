@@ -8,8 +8,9 @@
  * Lengths are metres. Use the unit helpers (`ft`, `inch`, `ftIn`, `mm`) at the
  * edges; arithmetic is ordinary number arithmetic.
  *
- * A script's default export is a `Building`; topo-cad expands it into the
- * topology/geometry model and renders drawings.
+ * A script's default export is a `Model` (a `Building` is one, with a
+ * building's defaults) or a `Site`; topo-cad expands it into the
+ * topology/geometry model, analyses it and renders drawings.
  */
 
 // ----- units ---------------------------------------------------------------
@@ -30,6 +31,11 @@ export const plf = (v: number): number => v * 14.593903;
 export const lbf = (v: number): number => v * 4.4482216;
 /** Kips → newtons. */
 export const kip = (v: number): number => v * 4448.2216;
+/** Weight of a mass in kilograms → newtons. */
+export const kgf = (v: number): number => v * 9.80665;
+/** Megapascals / gigapascals → pascals. */
+export const MPa = (v: number): number => v * 1e6;
+export const GPa = (v: number): number => v * 1e9;
 
 // ----- reference data (tables with provenance, see crates/topo-data) ----------
 
@@ -214,6 +220,158 @@ export function dressed(nominal: number): Length {
   const table: Record<number, number> = { 1: 0.75, 2: 1.5, 3: 2.5, 4: 3.5, 6: 5.5, 8: 7.25, 10: 9.25, 12: 11.25, 14: 13.25, 16: 15.25 };
   return inch(table[nominal] ?? nominal - 0.75);
 }
+
+// ----- sections and materials that are not lumber ----------------------------
+
+/** A member's cross-section: a tube, a bar, or a catalog profile. */
+export type SectionSpec =
+  | { readonly kind: "round"; readonly od: Length; readonly wall: Length }
+  | { readonly kind: "rect"; readonly b: Length; readonly d: Length; readonly wall?: Length }
+  | { readonly kind: "tslot"; readonly profile: string };
+/** Round tube: outside diameter and wall, e.g. `tube(mm(28.6), mm(0.8))`. */
+export const tube = (od: Length, wall: Length): SectionSpec => ({ kind: "round", od, wall });
+/** Solid round rod. */
+export const rod = (d: Length): SectionSpec => ({ kind: "round", od: d, wall: 0 });
+/** Rectangular tube `b` (across) × `d` (depth) × `wall`. */
+export const boxTube = (b: Length, d: Length, wall: Length): SectionSpec => ({ kind: "rect", b, d, wall });
+/** Solid rectangular bar. */
+export const bar = (b: Length, d: Length): SectionSpec => ({ kind: "rect", b, d });
+
+interface TslotProfileRow {
+  readonly key: string;
+  readonly maker: string;
+  readonly name: string;
+  readonly material: string;
+}
+/**
+ * A T-slot aluminium extrusion by its key in the `tslot-profiles` table
+ * (e.g. `tslot("40x40")`), with its maker's section properties. It comes in
+ * the maker's alloy unless a member gives another material.
+ */
+export function tslot(profile: string): SectionSpec {
+  const t = dataTable<TslotProfileRow>("tslot-profiles");
+  if (!t.rows.some((r) => r.key === profile)) throw new Error(`no T-slot profile "${profile}" (known: ${t.rows.map((r) => r.key).join(", ")})`);
+  return { kind: "tslot", profile };
+}
+
+/** A metal or laminate: a row of the `materials` table, or described in full. */
+export type MaterialSpec =
+  | { readonly material: string }
+  | { readonly name: string; readonly family: string; readonly e: number; readonly g: number; readonly density: number; readonly strength: number; readonly ultimate?: number; readonly source: string };
+/** A material by its key in the `materials` table, e.g. `material("6061-T6")`. */
+export function material(key: string): MaterialSpec {
+  const t = dataTable<{ key: string }>("materials");
+  if (!t.rows.some((r) => r.key === key)) throw new Error(`no material "${key}" (known: ${t.rows.map((r) => r.key).join(", ")})`);
+  return { material: key };
+}
+/**
+ * A material of your own (a particular layup, a tube maker's alloy), SI:
+ * moduli and strengths in Pa (use `GPa`, `MPa`), density in kg/m³.
+ * `strength` is the stress it is checked against (yield; for a laminate the
+ * stress it carries without damage). Say where the values come from.
+ */
+export function customMaterial(o: { name: string; family: "aluminum" | "steel" | "titanium" | "cfrp" | string; e: number; g: number; density: number; strength: number; ultimate?: number; source: string }): MaterialSpec {
+  if (!o.source.trim()) throw new Error(`material ${o.name}: say where its values come from (source)`);
+  return { ...o };
+}
+/** Aluminium alloys of the `materials` table. */
+export const Aluminum = {
+  /** 6061-T6: tube and extrusion that is welded (and then weak beside the weld). */
+  get T6061() { return material("6061-T6"); },
+  /** AlMgSi0.5 F25, the alloy of European T-slot profiles. */
+  get T6060() { return material("6060-T66"); },
+} as const;
+/** Steels of the `materials` table. */
+export const Steel = {
+  /** 4130 chromoly, normalized. */
+  get Chromoly4130() { return material("4130N"); },
+  /** Columbus Cromor (25CrMo4) bicycle tube. */
+  get ColumbusCromor() { return material("columbus-cromor"); },
+  /** Columbus Omnicrom (the SL tube set). */
+  get ColumbusOmnicrom() { return material("columbus-omnicrom"); },
+} as const;
+/** Carbon/epoxy laminates of the `materials` table (generic guide values). */
+export const Carbon = {
+  /** Woven fabric, 0/90. */
+  get Fabric() { return material("carbon-fabric-0-90"); },
+  /** Unidirectional Toray T700S, along the fibres. */
+  get UnidirectionalT700S() { return material("carbon-ud-t700s"); },
+} as const;
+
+// ----- joints that are made, not nailed ----------------------------------------
+
+/** Capacities you give a joint (N·m, N), with their source; each is checked. */
+export interface JointRating {
+  readonly moment?: number;
+  readonly shear?: number;
+  readonly tension?: number;
+  readonly source: string;
+}
+/** Options any made joint takes. */
+export interface JointOptions {
+  readonly name?: string;
+  /** Analysed as `rigid` (carries moment) or `pinned`; default the joint's own. */
+  readonly fixity?: "rigid" | "pinned";
+  /** Rotational stiffness (N·m/rad): the joint is then semi-rigid. */
+  readonly stiffness?: number;
+  readonly rating?: JointRating;
+}
+/** A joint made by a process or a connector (see `Joint`, `Connector`). */
+export interface MadeJoint extends JointOptions {
+  readonly joint: "welded" | "brazed" | "bonded" | "moulded" | "clamped" | "pinned" | "connector";
+  readonly process?: "tig" | "mig";
+  readonly lugged?: boolean;
+  readonly connector?: string;
+  readonly count?: number;
+}
+/**
+ * How members are joined when it is not with nails. All carry moment except
+ * `pinned`. A check uses what the process does to the material beside the
+ * joint where that is known (6061-T6 loses more than half its yield
+ * strength within an inch of a weld).
+ */
+export const Joint = {
+  /** Fusion welded all round, tube ends coped (notched) to fit. */
+  welded: (o: JointOptions & { process?: "tig" | "mig" } = {}): MadeJoint => ({ joint: "welded", ...o }),
+  /** Brazed: fillet-brazed tube to tube, or into lugs with `lugged: true`. */
+  brazed: (o: JointOptions & { lugged?: boolean } = {}): MadeJoint => ({ joint: "brazed", ...o }),
+  /** Adhesive bonded (tubes into lugs or sleeves). */
+  bonded: (o: JointOptions = {}): MadeJoint => ({ joint: "bonded", ...o }),
+  /** One moulded piece: a single laminate, continuous through the joint. */
+  moulded: (o: JointOptions = {}): MadeJoint => ({ joint: "moulded", ...o }),
+  /** Clamped or bolted solid (a stem, a seatpost in its tube). */
+  clamped: (name: string, o: JointOptions = {}): MadeJoint => ({ joint: "clamped", ...o, name }),
+  /** A pivot: carries force but no bending moment. */
+  pinned: (name = "Pivot", o: JointOptions = {}): MadeJoint => ({ joint: "pinned", ...o, name }),
+} as const;
+
+interface TslotConnectorRow {
+  readonly key: string;
+  readonly name: string;
+}
+function connector(key: string, o: JointOptions & { count?: number }): MadeJoint {
+  const t = dataTable<TslotConnectorRow>("tslot-connectors");
+  if (!t.rows.some((r) => r.key === key)) throw new Error(`no connector "${key}" (known: ${t.rows.map((r) => r.key).join(", ")})`);
+  return { joint: "connector", connector: key, ...o };
+}
+/**
+ * Ways of joining T-slot profiles, from the `tslot-connectors` table. Each
+ * is checked against its maker's rating where one is published (times
+ * `count`); none publishes a stiffness, so joints are analysed as rigid
+ * unless you give a `stiffness` or `fixity: "pinned"`.
+ */
+export const Connector = {
+  /** Die-cast angle brackets (cast corners) in the corner between two profiles. */
+  angleBracket: (o: JointOptions & { count?: number } = {}): MadeJoint => connector("angle-bracket-40", o),
+  /** A screw through one profile into the tapped core bore of the other's end. */
+  endFastener: (o: JointOptions & { count?: number } = {}): MadeJoint => connector("standard-fastener-8", o),
+  /** A hidden fastener in the end of one profile, clamping into the other's slot. */
+  automaticFastener: (o: JointOptions & { count?: number } = {}): MadeJoint => connector("automatic-fastener-8", o),
+  /** Flat plates across the joint, screwed into both profiles' slots. */
+  plate: (o: JointOptions & { count?: number } = {}): MadeJoint => connector("joining-plate", o),
+  /** Any row of the table by key. */
+  of: connector,
+} as const;
 
 // ----- openings ------------------------------------------------------------
 
@@ -1022,16 +1180,32 @@ export class Placement {
  * How members that meet are fastened: typical nailing, truss plates, none,
  * or explicit nails, e.g. `{ nails: 4, penny: 16, method: "end" }`.
  */
-export type Joints = "nailed" | "truss_plate" | "none" | { readonly nails: number; readonly penny: 6 | 8 | 10 | 12 | 16 | 20; readonly method: "end" | "toe" | "face" };
+export type Joints = "nailed" | "truss_plate" | "none" | { readonly nails: number; readonly penny: 6 | 8 | 10 | 12 | 16 | 20; readonly method: "end" | "toe" | "face" } | MadeJoint;
 
-type AssemblyLoad = { readonly kind: LoadKind; readonly member: string; readonly w: number } | { readonly kind: LoadKind; readonly point: string; readonly force: number };
+type AssemblyLoad =
+  | { readonly kind: LoadKind; readonly member: string; readonly w: number }
+  | { readonly kind: LoadKind; readonly point: string; readonly force: number }
+  | { readonly case: string; readonly point: string; readonly vector?: Point3; readonly moment?: Point3 }
+  | { readonly case: string; readonly member: string; readonly vector: Point3 };
+
+/** The directions a support holds a point in (world axes); `r…` are rotations. */
+export type Restraint = "pinned" | "fixed" | "roller" | Partial<Record<"x" | "y" | "z" | "rx" | "ry" | "rz", boolean>>;
+type AssemblySupport = string | { readonly point: string; readonly restraint: readonly boolean[] };
+
+/** What a member is made of: lumber by nominal size and grade, or any section and material. */
+export type Stock =
+  | { readonly size: Nominal; readonly grade: Grade; readonly plies?: number }
+  /** `material` may be left out for a T-slot profile (its maker's alloy). */
+  | { readonly section: SectionSpec; readonly material?: MaterialSpec };
 
 interface AssemblyMemberSpec {
   readonly role: string;
   readonly path: readonly string[];
-  readonly size: Nominal;
+  readonly size?: Nominal;
   readonly plies: number;
-  readonly grade: Grade;
+  readonly grade?: Grade;
+  readonly section?: SectionSpec;
+  readonly material?: MaterialSpec;
   readonly depth?: Point3;
   readonly anchor?: readonly [number, number];
   readonly priority: number;
@@ -1049,18 +1223,19 @@ export class Assembly {
     readonly placement: Placement,
     readonly points: readonly { readonly name: string; readonly at: Point3 }[],
     readonly members: readonly AssemblyMemberSpec[],
-    readonly joints_: Joints,
+    readonly joints_: Joints | undefined,
     readonly bearsOn: readonly string[],
-    readonly supports: readonly string[],
+    readonly supports: readonly AssemblySupport[],
     readonly loads: readonly AssemblyLoad[],
     readonly bonds: readonly (readonly [string, string])[],
+    readonly jointsAt: readonly { readonly point: string; readonly member?: string; readonly joint: Joints }[] = [],
   ) {}
 
   static named(name: string): Assembly {
-    return new Assembly(name, Placement.identity, [], [], "nailed", [], [], [], []);
+    return new Assembly(name, Placement.identity, [], [], undefined, [], [], [], []);
   }
   private copy(
-    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly string[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"] }>,
+    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly AssemblySupport[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; jointsAt: Assembly["jointsAt"] }>,
   ): Assembly {
     return new Assembly(
       p.name ?? this.name,
@@ -1072,7 +1247,47 @@ export class Assembly {
       p.supports ?? this.supports,
       p.loads ?? this.loads,
       p.bonds ?? this.bonds,
+      p.jointsAt ?? this.jointsAt,
     );
+  }
+  /**
+   * A force at a point in a load case you name (a situation: `"Seated"`,
+   * `"Hard braking"`), as a vector in the assembly's frame, in N. Needs the
+   * design basis `combinations: "each-case"` (the default of `Model`).
+   */
+  force(loadCase: string, point: string, f: Point3): Assembly {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
+    return this.copy({ loads: [...this.loads, { case: loadCase, point, vector: f }] });
+  }
+  /** A moment at a point (N·m, right-handed about the vector) in a named load case. */
+  moment(loadCase: string, point: string, m: Point3): Assembly {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
+    return this.copy({ loads: [...this.loads, { case: loadCase, point, moment: m }] });
+  }
+  /** A uniform load along members (N/m, a vector in the assembly's frame) in a named load case. */
+  lineForce(loadCase: string, member: string, w: Point3): Assembly {
+    if (!this.members.some((m) => m.role === member.split("#")[0])) throw new Error(`assembly ${this.name}: no member ${member}`);
+    return this.copy({ loads: [...this.loads, { case: loadCase, member, vector: w }] });
+  }
+  /**
+   * Holds a point: `"pinned"` (no movement), `"fixed"` (nor rotation),
+   * `"roller"` (held vertically only), or the world directions it is held
+   * in, e.g. `{ y: true, z: true }`.
+   */
+  support(point: string, how: Restraint = "pinned"): Assembly {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
+    const r = how === "pinned" ? { x: true, y: true, z: true } : how === "fixed" ? { x: true, y: true, z: true, rx: true, ry: true, rz: true } : how === "roller" ? { z: true } : how;
+    const restraint = [r.x, r.y, r.z, r.rx, r.ry, r.rz].map((v) => v === true);
+    return this.copy({ supports: [...this.supports, { point, restraint }] });
+  }
+  /**
+   * The joint at one point, where it differs from the assembly's
+   * (`.joints(...)`): for every member ending there, or only `member`
+   * (`"stay"` or `"stay#2"`).
+   */
+  jointAt(point: string, kind: Joints, o: { member?: string } = {}): Assembly {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
+    return this.copy({ jointsAt: [...this.jointsAt, { point, member: o.member, joint: kind }] });
   }
   /** Two members fastened face to face (e.g. a cap nailed onto a header): `"header_cap"`, `"header"` or `"post#2"`. */
   bonded(a: string, b: string): Assembly {
@@ -1103,16 +1318,18 @@ export class Assembly {
     return this.copy({ points: [...this.points, { name, at }] });
   }
   /** Add a member through named points (straight, in order). */
-  member(
-    role: string,
-    path: readonly string[],
-    o: { size: Nominal; grade: Grade; plies?: number; depth?: Point3; anchor?: readonly [number, number]; priority?: number },
-  ): Assembly {
+  member(role: string, path: readonly string[], o: Stock & { depth?: Point3; anchor?: readonly [number, number]; priority?: number }): Assembly {
     for (const n of path) if (!this.points.some((p) => p.name === n)) throw new Error(`assembly ${this.name}: unknown point ${n}`);
-    const m: AssemblyMemberSpec = { role, path, size: o.size, plies: o.plies ?? 1, grade: o.grade, depth: o.depth, anchor: o.anchor, priority: o.priority ?? 0 };
+    const stock = "section" in o ? { section: o.section, material: o.material, plies: 1 } : { size: o.size, grade: o.grade, plies: o.plies ?? 1 };
+    const m: AssemblyMemberSpec = { role, path, ...stock, depth: o.depth, anchor: o.anchor, priority: o.priority ?? 0 };
     return this.copy({ members: [...this.members, m] });
   }
-  /** How members that meet are fastened (default `nailed`). */
+  /**
+   * How members that meet are joined: nailing, or a made joint
+   * (`Joint.welded()`, `Connector.angleBracket({ count: 2 })`). Default:
+   * nailed for lumber; otherwise nothing is recorded and members are taken
+   * as continuous with each other.
+   */
   joints(kind: Joints): Assembly {
     return this.copy({ joints: kind });
   }
@@ -1137,6 +1354,7 @@ export class Assembly {
       points: this.points,
       members: this.members,
       joints: this.joints_,
+      joints_at: this.jointsAt,
       bears_on: this.bearsOn,
       supports: this.supports,
       loads: this.loads,
@@ -1343,7 +1561,7 @@ export interface ViewOptions {
   readonly dims?: boolean;
 }
 
-export type ViewKind = "plan" | "elevation" | "iso" | "detail" | "analytical" | "utilization" | "schedule" | "notes";
+export type ViewKind = "plan" | "elevation" | "iso" | "detail" | "analytical" | "utilization" | "deflection" | "schedule" | "notes";
 export interface ViewSpec {
   readonly kind: ViewKind;
   readonly [k: string]: unknown;
@@ -1393,6 +1611,17 @@ export const analytical = (of?: Target | readonly Target[], o: ViewOptions = {})
  * in plan, walls and trusses in elevation (override with `from`).
  */
 export const utilization = (of?: Target | readonly Target[], o: ViewOptions = {}): ViewSpec => projectedView("utilization", of, o);
+/**
+ * The deflected shape under a load combination (default: the one that moves
+ * it most), drawn over the members and exaggerated by `factor` (default: to
+ * read clearly), with the largest displacement labelled. An elevation unless
+ * `from` says otherwise.
+ */
+export const deflection = (of?: Target | readonly Target[], o: ViewOptions & { combination?: string; factor?: number } = {}): ViewSpec => ({
+  ...projectedView("deflection", of, { tags: false, ...o }),
+  combination: o.combination,
+  factor: o.factor,
+});
 /**
  * A table: `"members"`, `"connections"`, `"junctions"`, `"checks"` (the
  * governing check of each member), `"reactions"` (foundation reactions by
@@ -1445,12 +1674,30 @@ export interface DesignBasis {
    * summed unfactored, with its load-duration increases) — to check a
    * building against the code it was permitted under.
    */
-  readonly combinations?: "ubc-1976";
+  readonly combinations?: "ubc-1976" | "each-case";
   readonly selfWeight?: boolean;
+  /** How lengths, forces and stresses are shown: feet, inches and pounds, or millimetres and newtons. */
+  readonly units?: "imperial" | "metric";
+  /**
+   * How forces in the members are found. `"takedown"`: gravity carried down
+   * through bearing, as light framing is checked by hand. `"frame"`: all
+   * members as one 3D frame, joints carrying moment as they are made, loads
+   * in any direction.
+   */
+  readonly analysis?: "takedown" | "frame";
+  /** Factor of safety on yield in the stress check of metals and laminates (default 1). */
+  readonly safetyFactor?: number;
+  /** Largest displacement accepted anywhere, checked per member. */
+  readonly deflectionLimit?: Length;
 }
 
-/** A building, in its own frame; a script exports one, or a `Site` of several. */
-export class Building {
+/**
+ * A model, in its own frame: what a script exports (or a `Site` of several).
+ * `Model.named(...)` is for anything — a vehicle, a machine frame,
+ * furniture: metric, analysed as a 3D frame, each load case on its own.
+ * `Building.named(...)` is the same thing with a building's defaults.
+ */
+export class Model {
   private constructor(
     readonly name: string,
     readonly info_: Partial<Info>,
@@ -1462,14 +1709,18 @@ export class Building {
     readonly basis_: DesignBasis,
   ) {}
 
-  static named(name: string): Building {
-    return new Building(name, {}, [], [], undefined, {}, undefined, {});
+  static named(name: string): Model {
+    return new Model(name, {}, [], [], undefined, {}, undefined, { units: "metric", analysis: "frame", combinations: "each-case" });
+  }
+  /** A model with a building's defaults: feet and inches, load takedown, ASCE 7 combinations. */
+  static building(name: string): Model {
+    return new Model(name, {}, [], [], undefined, {}, undefined, {});
   }
   private with(
     o: Partial<{ info_: Partial<Info>; items: readonly Item[]; measurements: readonly Measurement[]; placement_: BuildingPlacement; directions_: Record<string, Point3>; sheets_: readonly SheetSpec[]; basis_: DesignBasis }>,
-  ): Building {
+  ): Model {
     const v = { ...this, ...o };
-    return new Building(this.name, v.info_, v.items, v.measurements, v.placement_, v.directions_, v.sheets_, v.basis_);
+    return new Model(this.name, v.info_, v.items, v.measurements, v.placement_, v.directions_, v.sheets_, v.basis_);
   }
   /**
    * Design basis: the ASCE 7 edition the loads come from (`"7-16"`, the
@@ -1477,7 +1728,7 @@ export class Building {
    * at 0.7S), and whether member self-weight is added to the dead load
    * (default true; turn off when the dead load already includes it).
    */
-  designBasis(b: DesignBasis): Building {
+  designBasis(b: DesignBasis): Model {
     return this.with({ basis_: { ...this.basis_, ...b } });
   }
   /**
@@ -1485,26 +1736,26 @@ export class Building {
    * with it, only what is listed: `.sheets(standardSheets("cover"), sheet("S-501", "Details", …), standardSheets("schedules"))`.
    * Repeated calls append.
    */
-  sheets(...s: (SheetSpec | readonly SheetSpec[])[]): Building {
+  sheets(...s: (SheetSpec | readonly SheetSpec[])[]): Model {
     return this.with({ sheets_: [...(this.sheets_ ?? []), ...(s.flat() as SheetSpec[])] });
   }
-  info(i: Partial<Info>): Building {
+  info(i: Partial<Info>): Model {
     return this.with({ info_: { ...this.info_, ...i } });
   }
   /** Add items (arrays, e.g. from `repeat`, are flattened). */
-  add(...items: (Item | readonly Item[])[]): Building {
+  add(...items: (Item | readonly Item[])[]): Model {
     return this.with({ items: [...this.items, ...items.flat()] });
   }
   /** Field measurements; `unknown`s are fitted to them when the model is run. */
-  measure(...ms: (Measurement | readonly Measurement[])[]): Building {
+  measure(...ms: (Measurement | readonly Measurement[])[]): Model {
     return this.with({ measurements: [...this.measurements, ...ms.flat()] });
   }
   /** Places the building in the world (+x east, +y north, +z up); items stay in building coordinates. */
-  placed(p: BuildingPlacement): Building {
+  placed(p: BuildingPlacement): Model {
     return this.with({ placement_: { ...this.placement_, ...p } });
   }
   /** Names a direction in the building frame, e.g. `.direction("street", [0, -1, 0])`, usable as `facing(m, "street")`. */
-  direction(name: string, v: Point3): Building {
+  direction(name: string, v: Point3): Model {
     return this.with({ directions_: { ...this.directions_, [name]: v } });
   }
   toJSON() {
@@ -1521,11 +1772,19 @@ export class Building {
       asce7: this.basis_.asce7,
       self_weight: this.basis_.selfWeight,
       combinations: this.basis_.combinations,
+      units: this.basis_.units,
+      analysis: this.basis_.analysis,
+      safety_factor: this.basis_.safetyFactor,
+      deflection_limit: this.basis_.deflectionLimit,
       scenarios: scenarioRegistry,
       scenario: scenarioRegistry.length ? currentScenario() : undefined,
     };
   }
 }
+
+/** A building: a `Model` with a building's defaults (feet and inches, load takedown, ASCE 7). */
+export const Building = { named: (name: string): Model => Model.building(name) } as const;
+export type Building = Model;
 
 /** Several buildings placed in one world (e.g. a house and a detached garage). */
 export class Site {

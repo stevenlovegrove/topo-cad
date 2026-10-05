@@ -12,6 +12,22 @@ pub enum Shape {
     Rect { b: f64, d: f64 },
     /// Arbitrary polygon with holes; any orientation, in (u, v) coordinates.
     Polygon { outer: Vec<Vec2>, holes: Vec<Vec<Vec2>> },
+    /// Round tube of outside diameter `d` and wall thickness `wall`; a solid
+    /// rod if `wall` is zero or at least `d / 2`. Section properties are
+    /// exact; the outline is a polygon of [`ROUND_FACETS`] sides.
+    Round { d: f64, wall: f64 },
+}
+
+/// Sides of the polygon a round section is drawn and cut as.
+pub const ROUND_FACETS: usize = 24;
+
+fn circle(r: f64) -> Vec<Vec2> {
+    (0..ROUND_FACETS)
+        .map(|k| {
+            let a = std::f64::consts::TAU * k as f64 / ROUND_FACETS as f64;
+            v2(r * a.cos(), r * a.sin())
+        })
+        .collect()
 }
 
 impl Shape {
@@ -22,16 +38,28 @@ impl Shape {
                 vec![v2(-hb, -hd), v2(hb, -hd), v2(hb, hd), v2(-hb, hd)]
             }
             Shape::Polygon { outer, .. } => ccw(outer.clone()),
+            Shape::Round { d, .. } => circle(d / 2.0),
         }
     }
     fn holes(&self) -> Vec<Vec<Vec2>> {
         match self {
             Shape::Rect { .. } => vec![],
             Shape::Polygon { holes, .. } => holes.iter().map(|h| ccw(h.clone())).collect(),
+            Shape::Round { .. } => match self.bore() {
+                Some(r) => vec![circle(r)],
+                None => vec![],
+            },
         }
     }
     fn bbox(&self) -> BBox2 {
         BBox2::from_points(self.outer())
+    }
+    /// Inside radius of a round tube (`None` for a solid rod or other shapes).
+    fn bore(&self) -> Option<f64> {
+        match self {
+            Shape::Round { d, wall } if *wall > 0.0 && *wall < d / 2.0 => Some(d / 2.0 - wall),
+            _ => None,
+        }
     }
 }
 
@@ -109,9 +137,50 @@ impl Section {
         s
     }
 
+    /// Round tube (or solid rod, with `wall` zero), e.g. `round("28.6 x 0.8", …)`.
+    pub fn round(name: impl Into<String>, d: f64, wall: f64) -> Section {
+        Section::new(name, Shape::Round { d, wall })
+    }
+
+    /// Rectangular hollow section `b` × `d` of wall thickness `wall`.
+    pub fn rect_tube(name: impl Into<String>, b: f64, d: f64, wall: f64) -> Section {
+        let ring = |hb: f64, hd: f64| vec![v2(-hb, -hd), v2(hb, -hd), v2(hb, hd), v2(-hb, hd)];
+        let mut s = Section::new(name, Shape::Polygon { outer: ring(b / 2.0, d / 2.0), holes: vec![ring(b / 2.0 - wall, d / 2.0 - wall)] });
+        // Closed thin-walled section (Bredt): J = 4 A_m² t / p_m, on the mid-line.
+        let (bm, dm) = (b - wall, d - wall);
+        s.props.j = 2.0 * wall * bm * bm * dm * dm / (bm + dm);
+        s
+    }
+
     pub fn with_tag(mut self, k: &str, v: &str) -> Section {
         self.tags.insert(k.into(), v.into());
         self
+    }
+
+    /// Replaces computed properties with published ones (a maker's catalog
+    /// values for a profile whose outline is drawn only approximately).
+    /// Extents and the centroid are kept.
+    pub fn with_catalog_props(mut self, area: f64, i_u: f64, i_v: f64, j: Option<f64>) -> Section {
+        let p = &mut self.props;
+        (p.s_u, p.s_v) = (p.s_u * i_u / p.i_u, p.s_v * i_v / p.i_v);
+        (p.area, p.i_u, p.i_v) = (area, i_u, i_v);
+        if let Some(j) = j {
+            p.j = j;
+        }
+        self
+    }
+
+    /// Whether the side surface is curved (drawn without facet edges).
+    pub fn is_round(&self) -> bool {
+        matches!(self.shape, Shape::Round { .. })
+    }
+
+    /// Outside diameter and wall of a round section (`wall` zero for a rod).
+    pub fn round_dims(&self) -> Option<(f64, f64)> {
+        match self.shape {
+            Shape::Round { d, wall } => Some((d, if self.shape.bore().is_some() { wall } else { 0.0 })),
+            _ => None,
+        }
     }
 
     /// Ply outlines, laid out along `u` and centred on the section's bounding box.
@@ -144,6 +213,29 @@ impl Section {
     }
 
     fn compute_props(&self) -> SectionProps {
+        if let Shape::Round { d, .. } = self.shape {
+            // Exact for the circle (the outline polygon is only for drawing).
+            let (ro, ri) = (d / 2.0, self.shape.bore().unwrap_or(0.0));
+            let n = self.plies as f64;
+            let area = std::f64::consts::PI * (ro * ro - ri * ri);
+            let i = std::f64::consts::PI * (ro.powi(4) - ri.powi(4)) / 4.0;
+            let bb = self.bbox();
+            // Plies side by side along u: parallel-axis terms about the group's centre.
+            let pitch = d + self.ply_gap;
+            let offsets: f64 = (0..self.plies).map(|k| (k as f64 - (n - 1.0) / 2.0) * pitch).map(|o| o * o).sum();
+            let i_v = n * i + area * offsets;
+            return SectionProps {
+                area: n * area,
+                centroid: v2(0.0, 0.0),
+                i_u: n * i,
+                i_v,
+                j: n * 2.0 * i,
+                s_u: n * i / ro,
+                s_v: i_v / (bb.width() / 2.0),
+                width: bb.width(),
+                depth: bb.height(),
+            };
+        }
         // Integrals about the section origin, accumulated over all plies and holes.
         let (mut a, mut qu, mut qv, mut iuu, mut ivv) = (0.0, 0.0, 0.0, 0.0, 0.0);
         let mut acc = |poly: &[Vec2], sign: f64| {
@@ -177,6 +269,7 @@ impl Section {
                 let ip = (i_u + i_v) / self.plies as f64;
                 ap.powi(4) / (40.0 * ip)
             }
+            Shape::Round { .. } => unreachable!("handled above"),
         };
         let c_v = (bb.max.y - centroid.y).max(centroid.y - bb.min.y);
         let c_u = (bb.max.x - centroid.x).max(centroid.x - bb.min.x);
@@ -222,6 +315,33 @@ mod tests {
         assert!((s.props.i_u - 2.0 * 1.0 * 8.0 / 12.0).abs() < 1e-12);
         assert!((s.props.i_v - 2.0 * 8.0 / 12.0).abs() < 1e-12);
         assert_eq!(s.ply_outlines().len(), 2);
+    }
+
+    #[test]
+    fn round_tube_props_are_exact() {
+        use std::f64::consts::PI;
+        // 28.6 x 0.8 mm tube.
+        let s = Section::round("t", 0.0286, 0.0008);
+        let (ro, ri) = (0.0143f64, 0.0135f64);
+        assert!((s.props.area - PI * (ro * ro - ri * ri)).abs() < 1e-15);
+        let i = PI * (ro.powi(4) - ri.powi(4)) / 4.0;
+        assert!((s.props.i_u - i).abs() < 1e-18 && (s.props.i_v - i).abs() < 1e-18);
+        assert!((s.props.j - 2.0 * i).abs() < 1e-18);
+        assert!((s.props.width - 0.0286).abs() < 1e-12 && (s.props.depth - 0.0286).abs() < 1e-12);
+        assert_eq!(s.ply_outlines()[0].holes.len(), 1);
+        assert_eq!(s.round_dims(), Some((0.0286, 0.0008)));
+        // A rod has no bore.
+        let r = Section::round("r", 0.01, 0.0);
+        assert!(r.ply_outlines()[0].holes.is_empty());
+        assert!((r.props.area - PI * 0.005f64.powi(2)).abs() < 1e-15);
+    }
+
+    #[test]
+    fn rect_tube_torsion_is_bredt() {
+        // Square 40 x 40 x 2: J = t·b_m³ = 2e-3 · 0.038³.
+        let s = Section::rect_tube("q", 0.04, 0.04, 0.002);
+        assert!((s.props.j - 0.002 * 0.038f64.powi(3)).abs() < 1e-15);
+        assert!((s.props.area - (0.04f64.powi(2) - 0.036f64.powi(2))).abs() < 1e-12);
     }
 
     #[test]

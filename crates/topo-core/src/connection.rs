@@ -88,9 +88,46 @@ pub struct Connection {
     /// Prescriptive reference, e.g. `IRC Table R602.3(1)`.
     pub reference: Option<String>,
     pub notes: Option<String>,
+    /// How the joint is made when not with discrete fasteners: `tig_weld`,
+    /// `braze`, `bond`, `moulded` … A design check may reduce the parent
+    /// material's strength beside such a joint (a weld's heat-affected zone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<String>,
+    /// What the joint is rated to carry, from its maker or a test.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<Rating>,
+}
+
+/// Rated capacities of a connection (allowable values, SI) and where they
+/// come from. A value left out is not checked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rating {
+    /// Bending moment about any axis across the joint (N·m).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moment: Option<f64>,
+    /// Force across the member's axis: shear or slip along the other member (N).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shear: Option<f64>,
+    /// Force along the member's axis, pulling it off (N).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tension: Option<f64>,
+    pub source: String,
+    /// Whether the values were checked against that source.
+    pub verified: bool,
 }
 
 impl Connection {
+    /// A connection with no fasteners or hardware yet: `name` and its fixity.
+    pub fn new(name: &str, fixity: Fixity) -> Connection {
+        Connection { id: ConnectionId(0), name: name.into(), fasteners: vec![], hardware: vec![], fixity, reference: None, notes: None, process: None, rating: None }
+    }
+
+    /// Whether the joint carries load by itself (hardware, a weld, a bond),
+    /// so the members need not bear on each other.
+    pub fn engineered(&self) -> bool {
+        !self.hardware.is_empty() || self.process.is_some()
+    }
+
     /// One-line description, e.g. `(2) 16d common end nail`.
     pub fn describe(&self) -> String {
         let mut parts: Vec<String> = self
@@ -113,6 +150,9 @@ impl Connection {
             Some(m) => format!("({}) {} {}", h.count, h.kind, m),
             None => format!("({}) {}", h.count, h.kind),
         }));
+        if let Some(p) = &self.process {
+            parts.push(p.replace('_', " "));
+        }
         parts.join(" + ")
     }
 }

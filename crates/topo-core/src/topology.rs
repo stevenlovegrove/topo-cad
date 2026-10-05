@@ -183,6 +183,7 @@ mod tests {
             g: 1.0,
             density: 1.0,
             design_key: None,
+            strength: None,
         });
         let spec = MemberSpec::new("b", s, mat);
         // Plate along x; stud landing mid-span (T); second plate spliced; post at the corner (L).

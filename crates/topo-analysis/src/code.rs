@@ -169,6 +169,24 @@ pub fn ubc1976(cases: &[LoadCase]) -> Vec<Combination> {
     out
 }
 
+/// No code: every load case on its own, on top of the dead load (things that
+/// are not buildings, whose cases are situations rather than load kinds).
+pub fn each_case(cases: &[LoadCase]) -> Vec<Combination> {
+    let dead: Vec<&LoadCase> = cases.iter().filter(|c| c.kind == LoadKind::Dead).collect();
+    let rest: Vec<&LoadCase> = cases.iter().filter(|c| c.kind != LoadKind::Dead).collect();
+    let dead_name = dead.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(" + ");
+    let dead_factors: Vec<(LoadCaseId, f64)> = dead.iter().map(|c| (c.id, 1.0)).collect();
+    if rest.is_empty() {
+        return if dead.is_empty() { vec![] } else { vec![Combination { name: dead_name, factors: dead_factors }] };
+    }
+    rest.iter()
+        .map(|c| Combination {
+            name: if dead.is_empty() { c.name.clone() } else { format!("{dead_name} + {}", c.name) },
+            factors: dead_factors.iter().copied().chain([(c.id, 1.0)]).collect(),
+        })
+        .collect()
+}
+
 /// NDS load duration factor C_D for a combination: governed by the
 /// shortest-duration load present (NDS 2.3.2, Table 2.3.2).
 pub fn nds_load_duration(model: &Model, combo: &Combination) -> f64 {

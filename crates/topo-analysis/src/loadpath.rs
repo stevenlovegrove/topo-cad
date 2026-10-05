@@ -82,7 +82,7 @@ pub fn load_path_issues(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<
     let mut hardware = vec![false; model.members.len()];
     for j in &model.joints {
         for c in &j.connections {
-            if !model.connection(c.connection).hardware.is_empty() {
+            if model.connection(c.connection).engineered() {
                 hardware[c.member.idx()] = true;
                 if let Some(t) = c.to {
                     hardware[t.idx()] = true;

@@ -31,9 +31,21 @@ pub struct SceneSpec {
     /// Include member self-weight in the dead load (default true).
     #[serde(default)]
     pub self_weight: Option<bool>,
-    /// Load combinations from another code (`ubc-1976`); default ASCE 7.
+    /// Load combinations from another code (`ubc-1976`), or `each-case`; default ASCE 7.
     #[serde(default)]
     pub combinations: Option<String>,
+    /// `imperial` (default) or `metric`: how lengths, forces and stresses are shown.
+    #[serde(default)]
+    pub units: Option<String>,
+    /// `takedown` (default) or `frame`.
+    #[serde(default)]
+    pub analysis: Option<String>,
+    /// Factor of safety on yield in the stress check of metals and laminates.
+    #[serde(default)]
+    pub safety_factor: Option<f64>,
+    /// Largest displacement accepted (m).
+    #[serde(default)]
+    pub deflection_limit: Option<f64>,
     #[serde(default)]
     pub scenarios: Vec<ScenarioInfo>,
     #[serde(default)]
@@ -63,9 +75,21 @@ pub struct BuildingSpec {
     pub asce7: Option<String>,
     #[serde(default)]
     pub self_weight: Option<bool>,
-    /// Load combinations from another code (`ubc-1976`); default ASCE 7.
+    /// Load combinations from another code (`ubc-1976`), or `each-case`; default ASCE 7.
     #[serde(default)]
     pub combinations: Option<String>,
+    /// `imperial` (default) or `metric`: how lengths, forces and stresses are shown.
+    #[serde(default)]
+    pub units: Option<String>,
+    /// `takedown` (default) or `frame`.
+    #[serde(default)]
+    pub analysis: Option<String>,
+    /// Factor of safety on yield in the stress check of metals and laminates.
+    #[serde(default)]
+    pub safety_factor: Option<f64>,
+    /// Largest displacement accepted (m).
+    #[serde(default)]
+    pub deflection_limit: Option<f64>,
     #[serde(default)]
     pub scenarios: Vec<ScenarioInfo>,
     #[serde(default)]
@@ -120,6 +144,10 @@ impl SceneSpec {
             asce7: b.asce7.take(),
             self_weight: b.self_weight.take(),
             combinations: b.combinations.take(),
+            units: b.units.take(),
+            analysis: b.analysis.take(),
+            safety_factor: b.safety_factor.take(),
+            deflection_limit: b.deflection_limit.take(),
             scenarios: std::mem::take(&mut b.scenarios),
             scenario: b.scenario.take(),
             buildings: vec![b],
@@ -185,10 +213,18 @@ pub struct AssemblyPoint {
 pub struct AssemblyMember {
     pub role: String,
     pub path: Vec<String>,
-    pub size: (u32, u32),
+    /// Lumber: nominal size and grade …
+    #[serde(default)]
+    pub size: Option<(u32, u32)>,
     #[serde(default = "one")]
     pub plies: u32,
-    pub grade: GradeSpec,
+    #[serde(default)]
+    pub grade: Option<GradeSpec>,
+    /// … or any section and material.
+    #[serde(default)]
+    pub section: Option<SectionSpec>,
+    #[serde(default)]
+    pub material: Option<MaterialSpec>,
     /// Local depth direction (defaults as for any member: up, or +y if vertical).
     #[serde(default)]
     pub depth: Option<[f64; 3]>,
@@ -203,20 +239,121 @@ fn one() -> u32 {
     1
 }
 
+/// A section that is not lumber.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SectionSpec {
+    /// Round tube (a rod with `wall` 0).
+    Round { od: f64, wall: f64 },
+    /// Rectangular tube, or a solid bar without `wall`.
+    Rect {
+        b: f64,
+        d: f64,
+        #[serde(default)]
+        wall: Option<f64>,
+    },
+    /// A T-slot profile by its catalog key.
+    Tslot { profile: String },
+}
+
+/// A material that is not lumber: a key of the materials table, or given in full.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum MaterialSpec {
+    Key {
+        material: String,
+    },
+    Custom {
+        name: String,
+        family: String,
+        e: f64,
+        g: f64,
+        density: f64,
+        strength: f64,
+        #[serde(default)]
+        ultimate: Option<f64>,
+        source: String,
+    },
+}
+
+/// A joint made by a process or a catalog connector (see `Joint` and
+/// `Connector` in topo-cad.ts).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MadeJointSpec {
+    /// `welded`, `brazed`, `bonded`, `moulded`, `clamped`, `pinned`, `connector`.
+    pub joint: String,
+    /// `tig` / `mig` for welds.
+    #[serde(default)]
+    pub process: Option<String>,
+    #[serde(default)]
+    pub lugged: bool,
+    /// Catalog key of a T-slot connector, and how many at the joint.
+    #[serde(default)]
+    pub connector: Option<String>,
+    #[serde(default = "one")]
+    pub count: u32,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `rigid` or `pinned`, overriding the joint's own.
+    #[serde(default)]
+    pub fixity: Option<String>,
+    /// Rotational stiffness (N·m/rad), making the joint semi-rigid.
+    #[serde(default)]
+    pub stiffness: Option<f64>,
+    #[serde(default)]
+    pub rating: Option<RatingSpec>,
+}
+
+/// Capacities the script gives for a joint (SI), with their source.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RatingSpec {
+    #[serde(default)]
+    pub moment: Option<f64>,
+    #[serde(default)]
+    pub shear: Option<f64>,
+    #[serde(default)]
+    pub tension: Option<f64>,
+    pub source: String,
+}
+
+/// A joint at one point that differs from the assembly's.
+#[derive(Debug, Deserialize)]
+pub struct JointAtSpec {
+    pub point: String,
+    /// Only for members of this role (`role` or `role#i`); default all ending there.
+    #[serde(default)]
+    pub member: Option<String>,
+    pub joint: JointsSpec,
+}
+
+/// A support: a point name (pinned to the foundation), or a point with the
+/// directions it is held in (tx, ty, tz, rx, ry, rz).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum SupportSpec {
+    Point(String),
+    Held { point: String, restraint: [bool; 6] },
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AssemblySpec {
     pub name: String,
     pub placement: FrameSpec,
     pub points: Vec<AssemblyPoint>,
     pub members: Vec<AssemblyMember>,
-    /// `nailed`, `truss_plate`, `none`, or explicit nailing: connection
-    /// recorded where members meet.
-    pub joints: JointsSpec,
+    /// `nailed`, `truss_plate`, `none`, explicit nailing, or a made joint:
+    /// the connection recorded where members meet. Left out: nailed for
+    /// lumber, nothing recorded (continuous) otherwise.
+    #[serde(default)]
+    pub joints: Option<JointsSpec>,
+    /// Joints at particular points.
+    #[serde(default)]
+    pub joints_at: Vec<JointAtSpec>,
     #[serde(default)]
     pub bears_on: Vec<String>,
-    /// Points that bear on the foundation.
+    /// Points held by the foundation (or whatever carries the thing).
     #[serde(default)]
-    pub supports: Vec<String>,
+    pub supports: Vec<SupportSpec>,
     #[serde(default)]
     pub loads: Vec<AssemblyLoadSpec>,
     /// Pairs of members fastened face to face (`role` or `role#i`).
@@ -296,18 +433,28 @@ pub struct AreaLoadSpec {
     pub layers: Option<Vec<topo_core::Layer>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum JointsSpec {
     Kind(String),
     Nails { nails: u32, penny: u32, method: String },
+    Made(MadeJointSpec),
 }
 
 /// A load on an assembly: along a member (`w`, N/m downward) or at a point
-/// (`force`, N downward).
+/// (`force`, N downward) — or a `vector` (N at a point, N/m along a member)
+/// or `moment` (N·m at a point) in the assembly's frame. It belongs to the
+/// load case of its `kind`, or to a `case` named by the script.
 #[derive(Debug, Deserialize)]
 pub struct AssemblyLoadSpec {
-    pub kind: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub case: Option<String>,
+    #[serde(default)]
+    pub vector: Option<[f64; 3]>,
+    #[serde(default)]
+    pub moment: Option<[f64; 3]>,
     #[serde(default)]
     pub member: Option<String>,
     #[serde(default)]
@@ -355,6 +502,8 @@ pub struct ShapeOverrideSpec {
 struct Builder {
     m: Model,
     grades: HashMap<GradeSpec, MaterialId>,
+    /// Whether loads may name their own cases (not a building's load kinds).
+    named_cases: bool,
     perimeters: HashMap<String, (PerimeterParts, f64)>,
     /// Assembly members by assembly name (roofs may bear on them).
     assemblies: HashMap<String, Vec<MemberId>>,
@@ -378,6 +527,116 @@ impl Builder {
             Some(c) => c.id,
             None => self.m.add_load_case(name, kind),
         })
+    }
+
+    /// The load case a load belongs to: one named by the script, or its kind's.
+    fn case_of(&mut self, kind: &Option<String>, name: &Option<String>) -> Result<LoadCaseId, String> {
+        match (name, kind) {
+            (Some(n), _) => Ok(match self.m.load_cases.iter().find(|c| c.name == *n) {
+                Some(c) => c.id,
+                None => {
+                    let id = self.m.add_load_case(n, LoadKind::Other);
+                    self.m.load_cases[id.idx()].self_weight = false;
+                    id
+                }
+            }),
+            (None, Some(k)) => self.case(k),
+            (None, None) => Err("a load needs a kind or a case".into()),
+        }
+    }
+
+    /// A member's section and material: lumber by nominal size and grade,
+    /// or any section and material.
+    fn member_stock(&mut self, name: &str, i: usize, mm: &AssemblyMember) -> Result<(SectionId, MaterialId), String> {
+        match (&mm.section, &mm.material, mm.size, &mm.grade) {
+            (None, None, Some(size), Some(grade)) => {
+                let sec = if mm.plies > 1 { built_up(mm.plies, size.0, size.1, 0.0) } else { sawn(size.0, size.1) };
+                Ok((self.m.add_section(sec), self.material(grade)?))
+            }
+            (Some(sec), mat, None, None) => {
+                let section = match sec {
+                    SectionSpec::Round { od, wall } if *od > 0.0 && *wall >= 0.0 => topo_fab::sections::round(*od, *wall),
+                    SectionSpec::Rect { b, d, wall } if *b > 0.0 && *d > 0.0 => topo_fab::sections::rect(*b, *d, *wall),
+                    SectionSpec::Tslot { profile } => topo_fab::tslot::profile(profile)
+                        .ok_or_else(|| format!("assembly {name}: no T-slot profile \"{profile}\" (known: {})", topo_fab::tslot::known_profiles().join(", ")))?,
+                    _ => return Err(format!("assembly {name}: member {i} ({}) has a section with no size", mm.role)),
+                };
+                let material = match (mat, sec) {
+                    (Some(MaterialSpec::Key { material }), _) => topo_fab::materials::engineering(material)
+                        .ok_or_else(|| format!("assembly {name}: no material \"{material}\" (known: {})", topo_fab::materials::known().join(", ")))?,
+                    (Some(MaterialSpec::Custom { name: n, family, e, g, density, strength, ultimate, source }), _) => {
+                        if source.trim().is_empty() {
+                            return Err(format!("assembly {name}: material {n} needs a source for its values"));
+                        }
+                        topo_fab::materials::custom(n, family, *e, *g, *density, *strength, ultimate.unwrap_or(*strength), source)
+                    }
+                    // A profile comes in its maker's alloy.
+                    (None, SectionSpec::Tslot { profile }) => {
+                        topo_fab::tslot::profile_material(profile).and_then(topo_fab::materials::engineering).ok_or_else(|| format!("assembly {name}: profile {profile} has no material"))?
+                    }
+                    (None, _) => return Err(format!("assembly {name}: member {i} ({}) needs a material", mm.role)),
+                };
+                Ok((self.m.add_section(section), self.m.add_material(material)))
+            }
+            _ => Err(format!("assembly {name}: member {i} ({}) needs either size and grade (lumber) or section and material", mm.role)),
+        }
+    }
+
+    /// The connection a joint spec stands for (`None`: nothing recorded).
+    fn joint(&mut self, name: &str, j: &JointsSpec) -> Result<Option<ConnectionId>, String> {
+        let c = match j {
+            JointsSpec::Kind(k) => match k.as_str() {
+                "nailed" => fx::plate_corner(),
+                "truss_plate" => fx::truss_plate(),
+                "none" => return Ok(None),
+                j => return Err(format!("assembly {name}: unknown joint kind {j}")),
+            },
+            JointsSpec::Nails { nails, penny, method } => {
+                let method = match method.as_str() {
+                    "end" => FastenMethod::EndNail,
+                    "toe" => FastenMethod::ToeNail,
+                    "face" => FastenMethod::FaceNail,
+                    m => return Err(format!("assembly {name}: unknown nailing method {m} (end, toe, face)")),
+                };
+                if ![6, 8, 10, 12, 16, 20].contains(penny) {
+                    return Err(format!("assembly {name}: no {penny}d common nail"));
+                }
+                fx::nails(&format!("{name} joints"), *penny, *nails, method)
+            }
+            JointsSpec::Made(j) => {
+                use topo_fab::joints as fj;
+                let label = j.name.clone();
+                let mut c = match j.joint.as_str() {
+                    "welded" => fj::welded(j.process.as_deref().unwrap_or("tig")),
+                    "brazed" => fj::brazed(j.lugged),
+                    "bonded" => fj::bonded(),
+                    "moulded" => fj::moulded(),
+                    "clamped" => fj::clamped(label.as_deref().unwrap_or("Clamped")),
+                    "pinned" => fj::pinned(label.as_deref().unwrap_or("Pivot")),
+                    "connector" => {
+                        let key = j.connector.as_deref().ok_or_else(|| format!("assembly {name}: a connector joint needs a connector"))?;
+                        topo_fab::tslot::connector(key, j.count).ok_or_else(|| format!("assembly {name}: no connector \"{key}\" (known: {})", topo_fab::tslot::known_connectors().join(", ")))?
+                    }
+                    k => return Err(format!("assembly {name}: unknown joint {k} (welded, brazed, bonded, moulded, clamped, pinned, connector)")),
+                };
+                if let (Some(n), true) = (&label, !matches!(j.joint.as_str(), "clamped" | "pinned")) {
+                    c.name = n.clone();
+                }
+                match j.fixity.as_deref() {
+                    None => {}
+                    Some("rigid") => c.fixity = Fixity::Rigid,
+                    Some("pinned") => c.fixity = Fixity::Pinned,
+                    Some(f) => return Err(format!("assembly {name}: unknown fixity {f} (rigid or pinned)")),
+                }
+                let rating = match &j.rating {
+                    Some(r) if r.source.trim().is_empty() => return Err(format!("assembly {name}: a joint rating needs a source")),
+                    Some(r) => Some(Rating { moment: r.moment, shear: r.shear, tension: r.tension, source: r.source.clone(), verified: false }),
+                    None => None,
+                };
+                fj::with_properties(c, j.stiffness, rating)
+            }
+        };
+        Ok(Some(self.m.add_connection(c)))
     }
 
     fn material(&mut self, g: &GradeSpec) -> Result<MaterialId, String> {
@@ -578,9 +837,7 @@ impl Builder {
             if path.len() < 2 {
                 return Err(format!("assembly {}: member {i} needs two points", a.name));
             }
-            let sec = if mm.plies > 1 { built_up(mm.plies, mm.size.0, mm.size.1, 0.0) } else { sawn(mm.size.0, mm.size.1) };
-            let sec = self.m.add_section(sec);
-            let mat = self.material(&mm.grade)?;
+            let (sec, mat) = self.member_stock(&a.name, i, mm)?;
             // Depth direction in the assembly's local frame (default: up, or +y
             // for vertical members), then placed with it, so a rotated copy is
             // identical to the original.
@@ -611,41 +868,45 @@ impl Builder {
             let c = self.m.add_connection(fx::double_top_plate());
             self.m.bond(mx, my, c);
         }
+        // The assembly's joint: as given; else nailed for lumber, and nothing
+        // recorded (members continuous) for anything else.
+        let lumber = a.members.iter().all(|m| m.grade.is_some());
         let conn = match &a.joints {
-            JointsSpec::Kind(k) => match k.as_str() {
-                "nailed" => Some(self.m.add_connection(fx::plate_corner())),
-                "truss_plate" => Some(self.m.add_connection(fx::truss_plate())),
-                "none" => None,
-                j => return Err(format!("assembly {}: unknown joint kind {j}", a.name)),
-            },
-            JointsSpec::Nails { nails, penny, method } => {
-                let method = match method.as_str() {
-                    "end" => FastenMethod::EndNail,
-                    "toe" => FastenMethod::ToeNail,
-                    "face" => FastenMethod::FaceNail,
-                    m => return Err(format!("assembly {}: unknown nailing method {m} (end, toe, face)", a.name)),
-                };
-                if ![6, 8, 10, 12, 16, 20].contains(penny) {
-                    return Err(format!("assembly {}: no {penny}d common nail", a.name));
-                }
-                Some(self.m.add_connection(fx::nails(&format!("{} joints", a.name), *penny, *nails, method)))
-            }
+            Some(j) => self.joint(&a.name, j)?,
+            None if lumber => self.joint(&a.name, &JointsSpec::Kind("nailed".into()))?,
+            None => None,
         };
-        if let Some(c) = conn {
-            for &id in &ids {
-                for end in [self.m.member(id).start(), self.m.member(id).end()] {
-                    if let Some(&to) = ids.iter().find(|&&o| o != id && self.m.member(o).path.contains(&end)) {
-                        self.m.connect(end, id, Some(to), c);
-                    }
+        // Joints at particular points replace it there.
+        let mut at: Vec<(NodeId, Option<MemberId>, Option<ConnectionId>)> = vec![];
+        for j in &a.joints_at {
+            let node = *nodes.get(j.point.as_str()).ok_or(format!("assembly {}: unknown joint point {}", a.name, j.point))?;
+            let member = j.member.as_deref().map(&find).transpose()?;
+            at.push((node, member, self.joint(&a.name, &j.joint)?));
+        }
+        for &id in &ids {
+            for end in [self.m.member(id).start(), self.m.member(id).end()] {
+                let here = at.iter().rev().find(|(n, m, _)| *n == end && m.is_none_or(|m| m == id)).map(|x| x.2);
+                let Some(c) = here.unwrap_or(conn) else { continue };
+                if let Some(&to) = ids.iter().find(|&&o| o != id && self.m.member(o).path.contains(&end)) {
+                    self.m.connect(end, id, Some(to), c);
                 }
             }
         }
-        for name in &a.supports {
+        for sup in &a.supports {
+            let (name, restraint, what) = match sup {
+                SupportSpec::Point(p) => (p, Restraint::PINNED, format!("{} on foundation", a.name)),
+                SupportSpec::Held { point, restraint: r } => (point, Restraint { tx: r[0], ty: r[1], tz: r[2], rx: r[3], ry: r[4], rz: r[5] }, format!("{}: {point}", a.name)),
+            };
             let node = *nodes.get(name.as_str()).ok_or(format!("assembly {}: unknown support point {name}", a.name))?;
-            self.m.supports.push(Support { node, restraint: Restraint::PINNED, description: Some(format!("{} on foundation", a.name)) });
+            self.m.supports.push(Support { node, restraint, description: Some(what) });
         }
         for l in &a.loads {
-            let case = self.case(&l.kind)?;
+            if l.case.is_some() && !self.named_cases {
+                return Err(format!("assembly {}: a load case of your own (\"{}\") needs the design basis combinations: \"each-case\"", a.name, l.case.as_deref().unwrap_or("")));
+            }
+            let case = self.case_of(&l.kind, &l.case).map_err(|e| format!("assembly {}: {e}", a.name))?;
+            // A vector is in the assembly's frame; the plain forms act downward.
+            let world = |v: [f64; 3]| f.dir_to_world(v3(v[0], v[1], v[2]));
             match (&l.member, &l.point) {
                 (Some(sel), None) => {
                     // `beam` (every member with that role) or `beam#2`.
@@ -661,13 +922,19 @@ impl Builder {
                     if chosen.is_empty() {
                         return Err(format!("assembly {}: no member {sel} to load", a.name));
                     }
+                    let w = l.vector.map(world).unwrap_or(-Vec3::Z * l.w);
                     for m in chosen {
-                        self.m.loads.push(Load::MemberUniform { case, member: m, w: -Vec3::Z * l.w, range: None });
+                        self.m.loads.push(Load::MemberUniform { case, member: m, w, range: None });
                     }
                 }
                 (None, Some(pt)) => {
                     let node = *nodes.get(pt.as_str()).ok_or(format!("assembly {}: unknown load point {pt}", a.name))?;
-                    self.m.loads.push(Load::Node { case, node, force: -Vec3::Z * l.force, moment: Vec3::ZERO });
+                    let force = match (l.vector, l.moment) {
+                        (Some(v), _) => world(v),
+                        (None, Some(_)) => Vec3::ZERO,
+                        (None, None) => -Vec3::Z * l.force,
+                    };
+                    self.m.loads.push(Load::Node { case, node, force, moment: l.moment.map(world).unwrap_or(Vec3::ZERO) });
                 }
                 _ => return Err(format!("assembly {}: a load needs a member or a point", a.name)),
             }
@@ -708,7 +975,7 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
     // sheets), otherwise the buildings' lists merged.
     let mut sheets = spec.sheets.clone();
     for (i, bs) in spec.buildings.iter().enumerate() {
-        let mut local = build_building(bs)?;
+        let mut local = build_building(bs, spec.combinations.as_deref() == Some("each-case"))?;
         if let Some(p) = &bs.placement {
             local.transform(&p.frame());
         }
@@ -739,10 +1006,29 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
         m.standards.asce7 = e.clone();
     }
     if let Some(c) = &spec.combinations {
-        if c != "ubc-1976" {
-            return Err(format!("unknown load combinations {c} (ubc-1976, or leave out for ASCE 7)"));
+        if c != "ubc-1976" && c != "each-case" {
+            return Err(format!("unknown load combinations {c} (ubc-1976 or each-case, or leave out for ASCE 7)"));
         }
         m.standards.combinations = Some(c.clone());
+    }
+    m.units = match spec.units.as_deref() {
+        None | Some("imperial") => UnitSystem::Imperial,
+        Some("metric") => UnitSystem::Metric,
+        Some(u) => return Err(format!("unknown units {u} (imperial or metric)")),
+    };
+    m.standards.analysis = match spec.analysis.as_deref() {
+        None | Some("takedown") => None,
+        Some("frame") => Some("frame".into()),
+        Some(a) => return Err(format!("unknown analysis {a} (takedown or frame)")),
+    };
+    if spec.safety_factor.is_some_and(|n| n < 1.0) {
+        return Err("the factor of safety must be at least 1".into());
+    }
+    m.standards.safety_factor = spec.safety_factor;
+    m.standards.deflection_limit = spec.deflection_limit;
+    // With each case on its own, self-weight is a dead load case of its own.
+    if m.standards.combinations.as_deref() == Some("each-case") && spec.self_weight != Some(false) && !m.members.is_empty() && !m.load_cases.iter().any(|c| c.kind == LoadKind::Dead) {
+        m.add_load_case("Self-weight", LoadKind::Dead);
     }
     m.scenarios = Scenarios { current: spec.scenario.clone(), available: spec.scenarios.clone() };
     if spec.self_weight == Some(false) {
@@ -753,14 +1039,14 @@ pub fn build_scene(spec: &SceneSpec) -> Result<Model, String> {
     Ok(m)
 }
 
-fn build_building(spec: &BuildingSpec) -> Result<Model, String> {
+fn build_building(spec: &BuildingSpec, named_cases: bool) -> Result<Model, String> {
     let mut m = Model::new(&spec.name);
     let root = m.add_group(&spec.name, "building", Frame::WORLD, None);
     for (name, v) in &spec.directions {
         let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
         m.name_direction(root, name, d);
     }
-    let mut b = Builder { m, grades: HashMap::new(), perimeters: HashMap::new(), assemblies: HashMap::new(), root };
+    let mut b = Builder { m, grades: HashMap::new(), named_cases, perimeters: HashMap::new(), assemblies: HashMap::new(), root };
     // Perimeters first so roofs can bear on them regardless of order.
     for item in &spec.items {
         if let ItemSpec::Perimeter(p) = item {

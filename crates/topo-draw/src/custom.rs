@@ -17,7 +17,7 @@ pub struct Results<'a> {
 
 /// Whether any view in a sheet list needs structural results.
 pub fn needs_results(specs: &[ViewSpec]) -> bool {
-    specs.iter().any(|v| v.kind == ViewKind::Utilization || (v.kind == ViewKind::Schedule && matches!(v.table.as_deref(), Some("checks") | Some("reactions"))))
+    specs.iter().any(|v| matches!(v.kind, ViewKind::Utilization | ViewKind::Deflection) || (v.kind == ViewKind::Schedule && matches!(v.table.as_deref(), Some("checks") | Some("reactions"))))
 }
 
 /// Governing check per member, worst first (up to `limit`).
@@ -46,9 +46,9 @@ fn checks_table(model: &Model, marks: &crate::Marks, r: Results, limit: usize) -
         })
         .collect();
     let mut d = crate::schedule::table(
-        "Member checks (governing per member, NDS ASD)",
+        &format!("Member checks (governing per member; {})", a.basis),
         &["Mark", "Member", "Check", "Comb.", "Demand / capacity", "Ratio", "Ref."],
-        &[0.6, 2.4, 2.6, 1.3, 1.9, 0.7, 1.0],
+        &[0.6, 2.4, 2.6, 2.4, 1.9, 0.7, 1.0],
         &[crate::Align::Start, crate::Align::Start, crate::Align::Start, crate::Align::Start, crate::Align::End, crate::Align::End, crate::Align::Start],
         &rows,
     );
@@ -65,6 +65,9 @@ fn checks_table(model: &Model, marks: &crate::Marks, r: Results, limit: usize) -
 
 /// Foundation reactions by load case (lb, downward on the foundation).
 fn reactions_table(model: &Model, r: Results) -> crate::Drawing {
+    if model.units == topo_core::UnitSystem::Metric {
+        return support_reactions_table(model, r);
+    }
     let td = r.takedown;
     let cases = &model.load_cases;
     // Group by node across cases (reaction lists are aligned).
@@ -93,6 +96,87 @@ fn reactions_table(model: &Model, r: Results) -> crate::Drawing {
     let totals: Vec<f64> = (0..cases.len()).map(|c| rows.iter().map(|r| r.1[c]).sum()).collect();
     body.push(std::iter::once("Total".to_string()).chain(totals.iter().map(|x| format!("{x:.0}"))).collect());
     crate::schedule::table("Foundation reactions (unfactored, by load case)", &hs, &widths, &aligns, &body)
+}
+
+/// Support reactions by load case as force vectors (N), for models in metric.
+fn support_reactions_table(model: &Model, r: Results) -> crate::Drawing {
+    let td = r.takedown;
+    let cases = &model.load_cases;
+    let mut headers: Vec<String> = vec!["Support".into(), "at (mm)".into()];
+    headers.extend(cases.iter().map(|c| format!("{} (N: x, y, z)", c.name)));
+    let hs: Vec<&str> = headers.iter().map(String::as_str).collect();
+    let mut widths = vec![2.6, 1.6];
+    widths.extend(cases.iter().map(|_| 2.0));
+    let mut aligns = vec![crate::Align::Start, crate::Align::End];
+    aligns.extend(cases.iter().map(|_| crate::Align::End));
+    let supports: Vec<&topo_analysis::Reaction> = td.reactions.first().map(|l| l.iter().filter(|x| x.by.is_none()).collect()).unwrap_or_default();
+    let mut body: Vec<Vec<String>> = vec![];
+    let mut totals = vec![Vec3::ZERO; cases.len()];
+    for (k, s) in supports.iter().enumerate() {
+        let name = model.supports.iter().find(|x| Some(x.node) == s.node).and_then(|x| x.description.clone()).unwrap_or_else(|| model.member_path(s.member));
+        let mut row = vec![name, format!("{:.0}, {:.0}, {:.0}", s.at.x * 1000.0, s.at.y * 1000.0, s.at.z * 1000.0)];
+        for (ci, list) in td.reactions.iter().enumerate() {
+            let f = list.iter().filter(|x| x.by.is_none()).nth(k).map(|x| x.force).unwrap_or(Vec3::ZERO);
+            totals[ci] += f;
+            row.push(format!("{:.0}, {:.0}, {:.0}", f.x, f.y, f.z));
+        }
+        body.push(row);
+    }
+    body.push(["Total".to_string(), String::new()].into_iter().chain(totals.iter().map(|f| format!("{:.0}, {:.0}, {:.0}", f.x, f.y, f.z))).collect());
+    crate::schedule::table("Support reactions (force on the model, by load case)", &hs, &widths, &aligns, &body)
+}
+
+/// The deflected centre-lines of `members` under a combination, exaggerated
+/// by `factor` (chosen to read clearly if `None`), over the drawn view.
+fn deflected_shape(ctx: &Ctx, v: &mut View, members: &[MemberId], proj: &Projector, r: Results, spec: &ViewSpec, scale: f64) -> Result<(), String> {
+    use crate::doc::{Align, Layer};
+    let model = ctx.model;
+    let st = crate::annot::Style { scale };
+    // The combination named, or the one that moves the model most.
+    let peak = |ds: &[topo_analysis::Diagram]| members.iter().map(|m| ds[m.idx()].max_displacement().0).fold(0.0, f64::max);
+    let combos: Vec<(String, Vec<topo_analysis::Diagram>)> = r.analysis.combos.iter().map(|c| (c.name.clone(), r.takedown.combine(&c.factors).0)).collect();
+    let (name, ds) = match &spec.combination {
+        Some(n) => combos.into_iter().find(|c| c.0 == *n).ok_or_else(|| format!("no load combination \"{n}\" (one of {})", r.analysis.combos.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")))?,
+        None => combos.into_iter().max_by(|a, b| peak(&a.1).total_cmp(&peak(&b.1))).ok_or("no load combinations")?,
+    };
+    let dmax = peak(&ds);
+    if members.iter().all(|m| ds[m.idx()].d.is_empty()) {
+        return Err("a deflected shape needs a frame analysis (design basis analysis: \"frame\")".into());
+    }
+    let bb = v.drawing.bbox();
+    let size = bb.width().max(bb.height());
+    // Default: the largest displacement drawn as about 8 % of the view.
+    let factor = spec.factor.unwrap_or_else(|| if dmax > 0.0 { nice(0.08 * size / dmax) } else { 1.0 });
+    let mut worst: Option<(f64, Vec2)> = None;
+    for &m in members {
+        let d = &ds[m.idx()];
+        let mem = model.member(m);
+        let (a, b) = (model.pos(mem.start()), model.pos(mem.end()));
+        let x = (b - a) / a.distance(b);
+        let pts: Vec<Vec2> = d.t.iter().zip(&d.d).map(|(t, u)| proj.p(a + x * *t + *u * factor)).collect();
+        if pts.len() > 1 {
+            v.drawing.poly(pts.clone(), false, Layer::Deflected);
+        }
+        let (dm, i) = d.max_displacement();
+        if !pts.is_empty() && worst.is_none_or(|w| dm > w.0) {
+            worst = Some((dm, pts[i]));
+        }
+    }
+    if let Some((dm, at)) = worst {
+        v.drawing.circle(at, st.m(0.04), false, Layer::Deflected);
+        v.drawing.text(at + Vec2::new(st.m(0.08), st.m(0.05)), format!("{:.2} mm", dm * 1000.0), st.text_h(), Align::Start, Layer::Text);
+    }
+    v.subtitle = Some(format!("{name}: deflected shape x{factor:.0}, largest displacement {:.2} mm", dmax * 1000.0));
+    let at = Vec2::new(bb.min.x, bb.min.y - st.m(0.75));
+    v.drawing.text(at, v.subtitle.clone().unwrap_or_default(), st.text_h(), Align::Start, Layer::Text);
+    Ok(())
+}
+
+/// 1, 2, 5 × a power of ten, at or below `x`.
+fn nice(x: f64) -> f64 {
+    let p = 10f64.powf(x.max(1e-12).log10().floor());
+    let f = x / p;
+    p * if f >= 5.0 { 5.0 } else if f >= 2.0 { 2.0 } else { 1.0 }
 }
 
 /// Sheathing and finish build-ups, layer by layer (top first).
@@ -186,6 +270,7 @@ fn default_title(model: &Model, spec: &ViewSpec) -> String {
         ViewKind::Detail => format!("Detail: {names}"),
         ViewKind::Analytical => "Analytical model".into(),
         ViewKind::Utilization => format!("Member utilization: {names}"),
+        ViewKind::Deflection => format!("Deflection: {names}"),
         ViewKind::Schedule => spec.table.clone().unwrap_or_default(),
         ViewKind::Notes => "Notes".into(),
     }
@@ -200,7 +285,7 @@ pub fn view(ctx: &Ctx, spec: &ViewSpec, avail: (f64, f64), extras: &[View], resu
         ViewKind::Schedule => {
             let name = spec.table.as_deref().ok_or("a schedule needs a table name")?;
             let t = match name {
-                "members" => View::paper("Member schedule", schedule::member_schedule_table(ctx.marks)),
+                "members" => View::paper("Member schedule", schedule::member_schedule_table(ctx.marks, model.units)),
                 "connections" => View::paper("Connection schedule", schedule::connection_schedule_table(model)),
                 "junctions" => View::paper("Junctions", schedule::junction_table(ctx.topo)),
                 "checks" => View::paper("Member checks", checks_table(model, ctx.marks, results.ok_or("no structural results")?, 40)),
@@ -230,7 +315,7 @@ pub fn view(ctx: &Ctx, spec: &ViewSpec, avail: (f64, f64), extras: &[View], resu
     let facing_group = || groups.first().map(|&g| -model.group(g).frame.y).unwrap_or(-home.y);
     let proj = match spec.kind {
         ViewKind::Plan => projector(from.unwrap_or(Vec3::Z), up.unwrap_or(home.y)),
-        ViewKind::Elevation | ViewKind::Detail => projector(from.unwrap_or_else(facing_group), up.unwrap_or(Vec3::Z)),
+        ViewKind::Elevation | ViewKind::Detail | ViewKind::Deflection => projector(from.unwrap_or_else(facing_group), up.unwrap_or(Vec3::Z)),
         // Roofs and floors in plan, walls and trusses in elevation.
         ViewKind::Utilization => {
             let flat = group.is_some_and(|g| matches!(model.group(g).kind.as_str(), "roof" | "floor"));
@@ -292,8 +377,8 @@ pub fn view(ctx: &Ctx, spec: &ViewSpec, avail: (f64, f64), extras: &[View], resu
         _ => None,
     });
     let utilization = spec.kind == ViewKind::Utilization;
-    let results = if utilization { Some(results.ok_or("no structural results")?) } else { None };
-    let subtitle = if utilization { subtitle.or_else(|| Some("Highest demand/capacity ratio of each member over all load combinations (NDS ASD)".into())) } else { subtitle };
+    let results = if utilization || spec.kind == ViewKind::Deflection { Some(results.ok_or("no structural results")?) } else { None };
+    let subtitle = if utilization { subtitle.or_else(|| Some(format!("Highest demand/capacity ratio of each member over all load combinations ({})", results.map(|r| r.analysis.basis.clone()).unwrap_or_default()))) } else { subtitle };
     let mut v = views::projected(
         ctx,
         Projected {
@@ -308,8 +393,10 @@ pub fn view(ctx: &Ctx, spec: &ViewSpec, avail: (f64, f64), extras: &[View], resu
             clip,
         },
     );
-    if let Some(r) = results {
-        heat_fills(ctx, &mut v, &members, &proj, r, scale.0);
+    match (results, spec.kind) {
+        (Some(r), ViewKind::Deflection) => deflected_shape(ctx, &mut v, &members, &proj, r, spec, scale.0)?,
+        (Some(r), _) => heat_fills(ctx, &mut v, &members, &proj, r, scale.0),
+        _ => {}
     }
     Ok(v)
 }

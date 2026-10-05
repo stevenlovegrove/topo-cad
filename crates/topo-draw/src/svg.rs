@@ -9,7 +9,7 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-const ORDER: [Layer; 17] = [
+const ORDER: [Layer; 18] = [
     Layer::Heat0,
     Layer::Heat1,
     Layer::Heat2,
@@ -23,6 +23,7 @@ const ORDER: [Layer; 17] = [
     Layer::Supports,
     Layer::Nodes,
     Layer::Dims,
+    Layer::Deflected,
     Layer::Knockout,
     Layer::Tags,
     Layer::Title,
@@ -34,6 +35,7 @@ const CSS: &str = "
   .S-FRAM-HIDN { stroke:#666; stroke-width:0.008; fill:none; stroke-dasharray:0.07 0.035 }
   .S-CNTR { stroke:#444; stroke-width:0.006; fill:none; stroke-dasharray:0.3 0.05 0.05 0.05 }
   .S-ANLY { stroke:#1f4e8c; stroke-width:0.008; fill:none }
+  .S-DEFL { stroke:#d62828; stroke-width:0.022; fill:none; stroke-linecap:round; stroke-linejoin:round }
   .S-DIMS { stroke:#000; stroke-width:0.005; fill:none }
   .S-DIMS.fill { fill:#000 }
   .S-ANNO { stroke:#555; stroke-width:0.007; fill:none; stroke-dasharray:0.06 0.04 }

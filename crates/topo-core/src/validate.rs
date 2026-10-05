@@ -163,6 +163,7 @@ mod tests {
             g: 1.0,
             density: 1.0,
             design_key: None,
+            strength: None,
         });
         let spec = MemberSpec::new("b", s, mat);
         let a = m.add_node(v3(0., 0., 0.));

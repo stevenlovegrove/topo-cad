@@ -14,6 +14,7 @@ fn lumber_model() -> (Model, SectionId, SectionId, MaterialId) {
         g: 6.9e8,
         density: 500.0,
         design_key: None,
+        strength: None,
     });
     (m, s24, dbl, mat)
 }

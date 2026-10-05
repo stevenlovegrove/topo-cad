@@ -254,7 +254,7 @@ return function (params, scenario) {{
 }};
 }})()"#,
         entry = js_str(entry),
-        no_default = js_str(&format!("{entry} has no default export (export default a Building or Site)")),
+        no_default = js_str(&format!("{entry} has no default export (export default a Model, Building or Site)")),
     ))
 }
 

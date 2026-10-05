@@ -126,6 +126,28 @@ fn render(model: &Model, out: &Path, fit: Option<&SolveReport>) -> std::io::Resu
     if let Some(f) = fit {
         report.push_str(&f.text());
     }
+    // Structural results: the basis, the highest ratios, and how far it moves.
+    let td = topo_analysis::takedown(model, &topo, &geom);
+    let checks = topo_analysis::nds_asd(model, &geom, &td);
+    report.push_str(&format!("checks: {}\n", checks.basis));
+    let mut gov: Vec<usize> = checks.governing.iter().flatten().copied().collect();
+    gov.sort_by(|a, b| checks.checks[*b].ratio().total_cmp(&checks.checks[*a].ratio()));
+    for &i in gov.iter().take(8) {
+        let c = &checks.checks[i];
+        report.push_str(&format!("  {:5.2}  {:<34} {:<30} {:.1} / {:.1} {}  [{}]{}\n", c.ratio(), model.member_path(c.member), c.title, c.demand, c.capacity, c.unit, c.combination, if c.verified { "" } else { " *unverified" }));
+    }
+    let mut moved: Option<(f64, String, String)> = None;
+    for c in &checks.combos {
+        for (i, d) in td.combine(&c.factors).0.iter().enumerate() {
+            let v = d.max_displacement().0;
+            if v > moved.as_ref().map(|m| m.0).unwrap_or(0.0) {
+                moved = Some((v, model.member_path(topo_core::MemberId(i as u32)), c.name.clone()));
+            }
+        }
+    }
+    if let Some((v, member, combo)) = moved {
+        report.push_str(&format!("largest displacement: {:.2} mm at {member} [{combo}]\n", v * 1000.0));
+    }
     for e in &set.errors {
         report.push_str(&format!("sheet problem: {e}\n"));
     }

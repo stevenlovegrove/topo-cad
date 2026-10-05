@@ -1,6 +1,7 @@
 # topo-cad
 
-Topology-first CAD-as-code for framed structures. You describe *what connects
+Topology-first CAD-as-code for things made of members — house framing, and
+also a bicycle frame or a cart of aluminium extrusion. You describe *what connects
 to what* (nodes, members, junctions); solids, cut lengths, engineering drawings,
 schedules and the analytical model are derived. See [DESIGN.md](DESIGN.md).
 
@@ -58,6 +59,30 @@ against hand calculations and published tables; start a site file from
 [examples/site-template.ts](examples/site-template.ts), or use a ready-made
 region such as [unincorporated King County, WA](examples/sites/king-county-wa.ts).
 
+### Not only buildings
+
+The core is domain-general, and two examples keep it so:
+
+- [examples/bike.ts](examples/bike.ts): a road bike from a geometry chart
+  (stack, reach, angles…) as named points and round tubes. A scenario
+  switches the same topology between brazed steel, TIG-welded 6061-T6 and
+  moulded carbon; load cases are riding situations (seated, sprinting on one
+  pedal, braking).
+- [examples/kids-cart.ts](examples/kids-cart.ts): a kids' cart of 40 x 40
+  T-slot profile joined with catalog connectors (angle brackets, end
+  fasteners), checked against the connector maker's ratings.
+
+Such a model is `Model.named(...)` rather than `Building.named(...)`:
+millimetres, all members analysed as one 3D frame with joints as they are
+made (`Joint.welded()`, `Connector.angleBracket({ count: 2 })`), and checks
+by plain mechanics (stress against yield, buckling, displacement, joint
+ratings) with the same traces and sourced data
+([materials](crates/topo-data/data/materials.json),
+[joint zones](crates/topo-data/data/joint-zones.json),
+[T-slot profiles](crates/topo-data/data/tslot-profiles.json) and
+[connectors](crates/topo-data/data/tslot-connectors.json)). The 3D tab
+shows the deflected shape; `deflection(...)` puts it on a sheet.
+
 The drawing set is code too: `.sheets(standardSheets("cover"), sheet("S-102",
 "Typical truss", elevation(roof.truss(2)), detail(heel, [roof.truss(2), walls],
 { scale: '1-1/2"' })), standardSheets("walls"))` — the sheets are the tabs in
@@ -75,8 +100,9 @@ sheet (paper space) and per view (full-size model space), `model.json` (the IR),
 | `topo-geom` | junction resolution → exact member solids, clash detection, mesh |
 | `topo-draw` | hidden-line views, dimensions, schedules, sheets, SVG/DXF |
 | `topo-timber` | lumber + NDS data, fastening presets, wall/floor generators, examples |
-| `topo-analysis` | analytical model, support graph, gravity load takedown, plane-frame solver, ASCE 7 combinations, NDS checks |
-| `topo-data` | reference tables with provenance: NDS values and factors, fasteners, material weights |
+| `topo-fab` | tube and extrusion frames: sections, T-slot profiles, metals and laminates, welds/brazes/bonds, catalog connectors |
+| `topo-analysis` | analytical model, support graph, gravity load takedown, plane- and 3D-frame solvers, combinations, NDS and plain-mechanics checks |
+| `topo-data` | reference tables with provenance: NDS values and factors, fasteners, material weights, engineering materials, T-slot catalogs |
 | `topo-script` | TypeScript models → one JS bundle (oxc) → scene spec → model; runs natively in QuickJS |
 | `topo-app` | the app engine: a model session answering the UI's requests (no server, files or clock) |
 | `topo-wasm` | wasm-bindgen: the app engine for the browser, and the `Project` API |
