@@ -572,6 +572,73 @@ fn a_loft_sits_on_a_wall_and_a_beam() {
 }
 
 #[test]
+fn interior_walls_tee_into_the_walls_they_meet() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let src = include_str!("../../../examples/primitives/19-an-interior-wall.ts");
+    let m = run(src, "19-an-interior-wall.ts").unwrap();
+    all_clean(&m);
+    let ends = |path: &str| {
+        let id = m.find_member(path).unwrap();
+        (m.pos(m.member(id).start()), m.pos(m.member(id).end()))
+    };
+    // The middle wall: on the building's middle, from the front wall's line to the back's, as tall as they are; its
+    // cap plate runs to their lines (it laps over their plates), and theirs are broken there, in two.
+    let (a, b) = ends("Middle/cap_plate#1");
+    assert!((a.x - ft(12.0)).abs() < 1e-9 && a.y.abs() < 1e-9 && (a.z - ft(8.0)).abs() < 1e-9 && (b.y - ft(9.0)).abs() < 1e-9, "{a:?} {b:?}");
+    for wall in ["Front", "Back"] {
+        let (a, b) = ends(&format!("Walls/{wall}/cap_plate#1"));
+        assert!((a.x - b.x).abs() - ft(12.0) < 1e-9 && m.find_member(&format!("Walls/{wall}/cap_plate#2")).is_ok(), "{wall} {a:?} {b:?}");
+    }
+    // Its studs keep clear of the walls it meets: none within their thickness of either line.
+    let middle = m.groups.iter().find(|g| g.name == "Middle").unwrap();
+    let studs: Vec<f64> = middle.members.iter().map(|&id| m.member(id)).filter(|x| x.role == "stud").map(|x| m.pos(x.start()).y).collect();
+    assert!(!studs.is_empty() && studs.iter().all(|y| *y > inch(3.5) && *y < ft(16.0) - inch(3.5)), "{studs:?}");
+    // One partition meets another (the cross wall, from the middle wall to the right wall, with its door); one ends free.
+    let (a, b) = ends("Cross/top_plate");
+    assert!((a.x - ft(12.0)).abs() < 1e-9 && (b.x - ft(24.0)).abs() < 1e-9 && (a.y - ft(9.0)).abs() < 1e-9, "{a:?} {b:?}");
+    assert!(m.find_member("Cross/header.Door").is_ok() && m.find_member("Middle/cap_plate#2").is_ok());
+    let (a, b) = ends("Stub/cap_plate");
+    assert!(a.x.abs() < 1e-9 && (b.x - ft(5.0)).abs() < 1e-9, "{a:?} {b:?}");
+    // The floor sits on the middle wall as on the outside walls: each joist bears on it.
+    let on_middle = m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.name.starts_with("Floor/joist#") && c.name.contains("Middle/cap_plate") && c.name.ends_with(": on both")).count();
+    assert_eq!(on_middle, 11);
+    // A place that is not along the wall is refused.
+    let e = run(&src.replace("walls.along(\"Front\", ft(12))", "walls.along(\"Front\", ft(30))"), "off.ts").unwrap_err().to_string();
+    assert!(e.contains("is not along Front"), "{e}");
+}
+
+#[test]
+fn walls_stand_on_a_floor_and_go_where_it_goes() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let src = include_str!("../../../examples/primitives/20-a-second-storey.ts");
+    let m = run(src, "20-a-second-storey.ts").unwrap();
+    all_clean(&m);
+    let z = |m: &topo_core::Model, path: &str| {
+        let id = m.find_member(path).unwrap();
+        (m.pos(m.member(id).start()).z, m.pos(m.member(id).end()).z)
+    };
+    let is = |got: (f64, f64), want: f64| (got.0 - want).abs() < 1e-6 && (got.1 - want).abs() < 1e-6;
+    // The floor on the lower walls (8 ft); its deck on its joists (9.25"); the upper walls on the deck (3/4"), 8 ft tall.
+    let up = ft(8.0) + inch(9.25) + inch(0.75);
+    for wall in ["Front", "Right", "Back", "Left"] {
+        assert!(is(z(&m, &format!("Upper floor walls/{wall}/bottom_plate")), up), "{wall} {:?}", z(&m, &format!("Upper floor walls/{wall}/bottom_plate")));
+        assert!(is(z(&m, &format!("Upper floor walls/{wall}/cap_plate")), up + ft(8.0)));
+    }
+    let deck = m.solids.iter().find(|s| s.role == "deck").unwrap();
+    assert!((deck.bottom.z - ft(8.0) - inch(9.25)).abs() < 1e-6 && (deck.top.z - up).abs() < 1e-6 && deck.top.slope.norm() < 1e-9, "{deck:?}");
+    // The roof on the upper walls.
+    let chord = m.members.iter().find(|x| x.role == "bottom_chord").unwrap();
+    assert!((m.pos(chord.start()).z - up - ft(8.0)).abs() < 1e-6);
+    // Taller lower walls: everything above goes up by as much, though nothing above was changed.
+    let taller = src.replace("const ground = box(\"Ground floor walls\");", "const ground = Perimeter.start(\"Ground floor walls\", [0, 0]).by([wide, 0], wall.height(ft(9)).named(\"Front\")).by([0, deep], wall.height(ft(9)).named(\"Right\")).by([-wide, 0], wall.height(ft(9)).named(\"Back\")).close(wall.height(ft(9)).named(\"Left\"));");
+    let t = run(&taller, "taller.ts").unwrap();
+    assert!(is(z(&t, "Upper floor walls/Front/bottom_plate"), up + ft(1.0)), "{:?}", z(&t, "Upper floor walls/Front/bottom_plate"));
+    // What walls stand on has to be there.
+    let e = run(&src.replace(".add(ground, floor, upper, roof)", ".add(ground, upper, roof)"), "none.ts").unwrap_err().to_string();
+    assert!(e.contains("nothing named Floor to stand on"), "{e}");
+}
+
+#[test]
 fn a_slab_laid_to_fall_and_a_curb_whose_top_is_level() {
     use topo_core::Vec2;
     let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);

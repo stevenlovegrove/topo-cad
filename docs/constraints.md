@@ -464,6 +464,30 @@ that each sit for themselves, as trusses do, are not done. *Not yet:* a
 deck on it, openings in it, beams and posts under it, and walls standing
 on it. (`examples/primitives/11-a-floor-on-walls.ts`.)
 
+**An interior wall** is a `Partition`: a wall from a place on one wall
+(`walls.along("Front", x)`) to a place on another, or to a point where it
+ends free. It is built by the wall generator between the walls it meets,
+as they are built (each time they are: so it goes where the solve puts
+them, and has no numbers of its own): on plan from the one's line to the
+other's, framed on its centre line, its studs clear of both; as tall as
+each where it meets it; standing where they do, or on what its wall says.
+Where it meets a wall, that wall's cap plate is broken (known before the
+walls are built) and the partition's laps over it (`lap_tee`); its lower
+plates are joined to that wall's at shared nodes. One partition may meet
+another (`partition.along(x)`), and floors and roofs bear on one as on any
+wall. (`examples/primitives/19-an-interior-wall.ts`.)
+
+**A storey is stacking.** Walls may stand on a floor
+(`Perimeter.on(floor)`, `Wall.on(floor)`): each corner of theirs is held
+as high as the floor's top is under it (`Scene::level_with`, to a point of
+the floor's body over the corner: the joists' depth, and its deck's
+thickness, above their underside), so the walls go up and down, and tilt,
+with the floor, which is itself sat on what is under it. A floor's deck
+(`Floor.deck(thickness)`) is a solid, written where the solve has sat the
+floor. *Known limitation:* the upper walls' bottom plates are still
+supports of their own (`Bottom plate on Floor`): what they carry is not
+yet taken down through the floor. (`20-a-second-storey.ts`.)
+
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
 posts (from a corner of the wall, in the corners' numbers; or from the face
@@ -550,6 +574,9 @@ is narrower than they are wide: no backing is framed for them yet.
     a length; some trusses of another shape.
 18. **A loft on a beam**: a floor over part of a room, on the back wall and
     a beam on posts.
+19. **An interior wall**: partitions that tee into the walls they meet (a
+    bearing wall under a floor, one meeting another, one ending free).
+20. **A second storey**: walls on a floor on walls, and a roof on those.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:

@@ -158,6 +158,8 @@ pub enum ItemSpec {
     Perimeter(PerimeterSpec),
     /// What walls stand on: a slab (see `SlabSpec`).
     Slab(SlabSpec),
+    /// A wall between two places on other walls (or from one to a point): an interior wall.
+    Partition(PartitionSpec),
     TrussRoof(TrussRoofSpec),
     Assembly(AssemblySpec),
     /// A frame with points in it, as nodes (`Frame/point`): a body (a scan's, placed where it is
@@ -292,6 +294,16 @@ pub struct AssemblySpec {
     /// whose height is that of what it sits on.
     #[serde(default)]
     pub on_plan: bool,
+    /// A deck on it (a floor's): a sheet this thick over its points `deck 1` to `deck 4` (its
+    /// corners, at the underside of its joists), `above` them by the joists' depth.
+    #[serde(default)]
+    pub deck: Option<DeckSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeckSpec {
+    pub thickness: f64,
+    pub above: f64,
 }
 
 /// A frame with points in it.
@@ -318,6 +330,9 @@ pub struct FramePointSpec {
 
 /// An assembly, declared in the scene: its points' nodes, its members, its rests' nodes.
 struct Declared {
+    /// Its body, and where that was put.
+    body: scene::BodyRef,
+    frame: Frame,
     points: HashMap<String, scene::NodeRef>,
     members: Vec<scene::MemberRef>,
     /// Each place one member rests on another: its node, and the two (in the scene).
@@ -379,6 +394,12 @@ pub struct StandsOn {
     pub curb: f64,
     #[serde(default)]
     pub level: Option<f64>,
+    /// A floor instead (`slab` is then empty): the wall's bottom is `above` the underside of its
+    /// joists, wherever the solve sits the floor.
+    #[serde(default)]
+    pub floor: Option<String>,
+    #[serde(default)]
+    pub above: f64,
 }
 
 impl StandsOn {
@@ -399,6 +420,26 @@ impl StandsOn {
             None => None,
         }
     }
+}
+
+/// A place on a wall of a perimeter: so far along it from its start. Or a point on plan.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum PlaceSpec {
+    On { perimeter: String, wall: String, x: f64 },
+    At { point: (f64, f64) },
+}
+
+/// An interior wall: from a place on one wall to a place on another (or to a point, where it
+/// ends free). Where it meets a wall it tees into it: that wall's cap plate is broken there and
+/// this one's laps over it, its lower plates end on that wall's, and its studs keep clear of it.
+/// It is as tall as the walls it meets, where it meets them, and stands where they do (or on
+/// what it says).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PartitionSpec {
+    pub wall: WallSpec,
+    pub from: PlaceSpec,
+    pub to: PlaceSpec,
 }
 
 /// A slab: a plan outline, this thick; its top so high at one place (`about`: its first corner,
@@ -452,7 +493,19 @@ pub struct PerimeterSpec {
 impl PerimeterSpec {
     /// What the wall of side `i` stands on, if it is said.
     fn stands_on(&self, i: usize) -> Option<&StandsOn> {
-        self.segments[i].side.as_ref().and_then(|w| w.on.as_ref().or(self.on.as_ref()))
+        self.segments[i].side.as_ref().and_then(|w| w.on.as_ref().or(self.on.as_ref())).filter(|on| on.floor.is_none())
+    }
+    /// The floor the wall of side `i` stands on, if it does: its name, and how far above the
+    /// underside of its joists the wall's bottom is (their depth, and the deck's thickness).
+    fn stands_on_floor(&self, i: usize) -> Option<(&str, f64)> {
+        self.segments[i].side.as_ref().and_then(|w| w.on.as_ref().or(self.on.as_ref())).and_then(|on| on.floor.as_deref().map(|f| (f, on.above)))
+    }
+    /// The floor a corner is on: that of the wall that leaves it, else of the one that arrives.
+    fn corner_on_floor(&self, k: usize) -> Option<(&str, f64)> {
+        let ns = self.segments.len();
+        let leaves = (k < ns).then_some(k);
+        let arrives = if k > 0 { Some(k - 1) } else if self.closed { Some(ns - 1) } else { None };
+        leaves.and_then(|i| self.stands_on_floor(i)).or(arrives.and_then(|i| self.stands_on_floor(i)))
     }
 }
 
@@ -638,6 +691,10 @@ struct Builder {
     moving: HashMap<NodeId, (scene::BodyRef, Vec3, Vec<(scene::ScalarId, Vec3)>)>,
     grades: HashMap<GradeSpec, MaterialId>,
     perimeters: HashMap<String, (PerimeterParts, f64)>,
+    /// The walls of each of those, as built (placed), side by side.
+    built_walls: HashMap<String, Vec<Option<Wall>>>,
+    /// Where partitions tee into walls: by perimeter and wall, how far along each.
+    tees: HashMap<(String, String), Vec<f64>>,
     /// Slabs by name: the body each is, its top's height where it is given (a number), and its
     /// top as it is built this time.
     slabs: HashMap<String, (scene::BodyRef, scene::ScalarId, Level)>,
@@ -733,6 +790,10 @@ impl Builder {
             let side = match &s.side {
                 Some(w) => {
                     let mut wall = self.wall(w)?;
+                    // (Its cap plate is broken where a partition tees into it, for that wall's to lap over.)
+                    for &x in self.tees.get(&(p.name.clone(), w.name.clone())).into_iter().flatten() {
+                        wall = wall.cap_break(x);
+                    }
                     wall.curb = match p.stands_on(i) {
                         Some(on) => on.curb(&self.slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?.2),
                         None => None,
@@ -799,6 +860,7 @@ impl Builder {
         for (i, wp) in parts.walls.iter().enumerate() {
             let Some(wp) = wp else { continue };
             let on = match p.stands_on(i) {
+                _ if p.stands_on_floor(i).is_some() => format!("Bottom plate on {}", p.stands_on_floor(i).unwrap().0),
                 Some(on) if on.curb > 0.0 || on.level.is_some() => format!("Bottom plate on a curb on {}", on.slab),
                 Some(on) => format!("Bottom plate on {}", on.slab),
                 None => "Bottom plate on foundation".into(),
@@ -1045,7 +1107,98 @@ impl Builder {
         }
         let top = walls.iter().flatten().map(|w| w.start.z + w.height.max(w.height_end.unwrap_or(w.height))).fold(drawn.corners[0].z, f64::max);
         self.perimeters.insert(p.name.clone(), (parts, top));
+        self.built_walls.insert(p.name.clone(), walls);
         Ok(numbers)
+    }
+
+    /// An interior wall, built between the walls it meets as they are built (so it goes where they
+    /// go, each time they are built again): on plan from the one's line to the other's, its
+    /// framing clear of both; as tall as each where it meets it; its lower plates joined to
+    /// theirs, and its cap plate lapped over theirs at the break made for it.
+    fn partition(&mut self, s: &PartitionSpec) -> Result<(), String> {
+        let name = s.wall.name.clone();
+        if name.is_empty() || self.perimeters.contains_key(&name) {
+            return Err(format!("a partition needs a name of its own (its wall's): {name:?}"));
+        }
+        // A place: the point on the wall's line there at its bottom, its top there, and the wall (none: a point on plan).
+        type Host = (Wall, topo_timber::WallParts);
+        let place = |b: &Builder, pl: &PlaceSpec| -> Result<(Vec3, Option<f64>, Option<Host>), String> {
+            match pl {
+                PlaceSpec::At { point } => Ok((v3(point.0, point.1, f64::NAN), None, None)),
+                PlaceSpec::On { perimeter, wall, x } => {
+                    let walls = b.built_walls.get(perimeter).ok_or_else(|| format!("partition {name}: no perimeter named {perimeter}"))?;
+                    let (parts, _) = &b.perimeters[perimeter];
+                    let k = walls.iter().position(|w| w.as_ref().is_some_and(|w| w.name == *wall)).ok_or_else(|| format!("partition {name}: {perimeter} has no wall named {wall}"))?;
+                    let (w, wp) = (walls[k].clone().unwrap(), parts.walls[k].clone().unwrap());
+                    if *x <= 0.0 || *x >= w.length() {
+                        return Err(format!("partition {name}: {x:.3} m is not along {wall} (it is {:.3} m long): at a wall's end, turn the perimeter's corner instead", w.length()));
+                    }
+                    let dir = v3(w.end.x - w.start.x, w.end.y - w.start.y, 0.0) / w.length();
+                    let at = v3(w.start.x, w.start.y, w.start.z + w.base_at(*x)) + dir * *x;
+                    Ok((at, Some(w.start.z + w.top_at(*x)), Some((w, wp))))
+                }
+            }
+        };
+        let (mut a, top_a, host_a) = place(self, &s.from)?;
+        let (mut b, top_b, host_b) = place(self, &s.to)?;
+        let (top_a, top_b) = match (top_a, top_b) {
+            (Some(x), Some(y)) => (x, y),
+            (Some(x), None) | (None, Some(x)) => (x, x),
+            (None, None) => return Err(format!("partition {name}: one end at least has to be on a wall")),
+        };
+        // (An end at a point stands as low as the other.)
+        if a.z.is_nan() {
+            a.z = b.z;
+        }
+        if b.z.is_nan() {
+            b.z = a.z;
+        }
+        let mut wall = self.wall(&s.wall)?;
+        // (Another partition may tee into this one: it is named as its own perimeter.)
+        for &x in self.tees.get(&(name.clone(), name.clone())).into_iter().flatten() {
+            wall = wall.cap_break(x);
+        }
+        // What it stands on, if it says: else where the walls it meets do.
+        if let Some(on) = &s.wall.on {
+            let slab = self.slabs.get(&on.slab).ok_or_else(|| format!("partition {name}: nothing named {} to stand on (a slab)", on.slab))?.2;
+            (a.z, b.z) = (on.base(&slab, Vec2::new(a.x, a.y)), on.base(&slab, Vec2::new(b.x, b.y)));
+            wall.curb = on.curb(&slab);
+        }
+        wall.start = a;
+        wall.end = b;
+        wall.height = top_a - a.z;
+        wall.height_end = ((top_b - b.z) - wall.height).abs().gt(&1e-9).then_some(top_b - b.z);
+        wall.justify = Justify::Center;
+        wall.start_inset = host_a.as_ref().map_or(0.0, |h| h.0.thickness());
+        wall.end_inset = host_b.as_ref().map_or(0.0, |h| h.0.thickness());
+        wall.parent = Some(self.root);
+        let parts = wall.try_build(&mut self.m).map_err(|e| format!("partition {name}: {e}"))?;
+        let c = self.m.add_connection(fx::plate_corner());
+        for (_, host) in [host_a, host_b].into_iter().flatten() {
+            // Lower plates tee into the wall's plates at shared nodes; the cap laps over its plate.
+            let theirs = host.plates();
+            for n in self.m.connect_members(&parts.plates(), &theirs) {
+                let here: Vec<MemberId> = parts.plates().into_iter().filter(|p| self.m.member(*p).path.contains(&n) && self.m.member(*p).role != "cap_plate").collect();
+                for p in here {
+                    let to = theirs.iter().copied().find(|e| self.m.member(*e).path.contains(&n));
+                    self.m.connect(n, p, to, c);
+                }
+            }
+            if !topo_timber::wall::lap_tee(&mut self.m, &parts, &host, c) {
+                self.m.issues.push(Issue::new(Severity::Info, "tee-unlapped", format!("{name}: its cap plate does not lap over the wall it meets (their tops are at different heights there)")));
+            }
+        }
+        let mut nodes: Vec<NodeId> = parts.bottom_plates.iter().flat_map(|&b| self.m.member(b).path.clone()).collect();
+        nodes.sort();
+        nodes.dedup();
+        for node in nodes {
+            if !self.m.supports.iter().any(|s| s.node == node) {
+                self.m.supports.push(Support { node, restraint: Restraint::PINNED, description: Some("Bottom plate on foundation".into()) });
+            }
+        }
+        self.perimeters.insert(name.clone(), (PerimeterParts { group: parts.group, walls: vec![Some(parts)] }, top_a.max(top_b)));
+        self.built_walls.insert(name, vec![Some(wall)]);
+        Ok(())
     }
 
     /// A surveyed wall's posts, as numbers of the perimeter (centres along the wall from its start,
@@ -1339,7 +1492,7 @@ impl Builder {
                 }
             }
         }
-        Ok(Declared { points, members, rests })
+        Ok(Declared { body, frame: a.placement.frame(), points, members, rests })
     }
 
     /// An assembly, once the scene is written: its fastenings, supports and loads, by its model ids.
@@ -1347,6 +1500,18 @@ impl Builder {
         let ids: Vec<MemberId> = d.members.iter().map(|m| w.members[m.0]).collect();
         let nodes: HashMap<&str, NodeId> = d.points.iter().map(|(k, n)| (k.as_str(), w.nodes[n.0])).collect();
         self.assemblies.insert(a.name.clone(), ids.clone());
+        // Its deck, where the solve has sat it: a sheet over its corners, on the joists' tops (tilted as they are).
+        if let Some(deck) = &a.deck {
+            let at = |k: usize| nodes.get(format!("deck {k}").as_str()).map(|&n| self.m.pos(n)).ok_or_else(|| format!("assembly {}: a deck needs its points deck 1 to deck 4", a.name));
+            let c = [at(1)?, at(2)?, at(3)?, at(4)?];
+            // (The plane through three of them: its rise per metre along x and y.)
+            let (u, v) = (c[1] - c[0], c[3] - c[0]);
+            let n = u.cross(v);
+            let slope = if n.z.abs() > 1e-12 { Vec2::new(-n.x / n.z, -n.y / n.z) } else { Vec2::new(0.0, 0.0) };
+            let under = Level { z: c[0].z + deck.above, at: Vec2::new(c[0].x, c[0].y), slope };
+            let group = ids.first().and_then(|&id| self.m.member(id).group);
+            self.m.solids.push(Solid { name: "deck".into(), role: "deck".into(), material: "plywood".into(), group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under, top: under.raised(deck.thickness) });
+        }
         // Face-to-face bonds (a cap nailed on a header, plies of a post).
         let find = |sel: &str| -> Result<MemberId, String> {
             let (role, index) = match sel.split_once('#') {
@@ -1599,7 +1764,7 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
         m.name_direction(root, name, d);
     }
-    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), slabs: HashMap::new(), assemblies: HashMap::new(), root };
+    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), built_walls: HashMap::new(), tees: HashMap::new(), slabs: HashMap::new(), assemblies: HashMap::new(), root };
     // One scene: perimeters (written by their generator, as bodies of it, at numbers of it),
     // assemblies, and the relations between their nodes; solved, then written into the model.
     // Then roofs, on what it placed.
@@ -1623,6 +1788,16 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         let g = b.m.add_group(&s.name, "slab", Frame::WORLD, Some(b.root));
         b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: level.raised(-s.thickness), top: level });
     }
+    // (Where partitions tee into walls is known before the walls are built: their cap plates are broken there.)
+    for item in &spec.items {
+        if let ItemSpec::Partition(p) = item {
+            for pl in [&p.from, &p.to] {
+                if let PlaceSpec::On { perimeter, wall, x } = pl {
+                    b.tees.entry((perimeter.clone(), wall.clone())).or_default().push(*x);
+                }
+            }
+        }
+    }
     let perimeters: Vec<&PerimeterSpec> = spec.items.iter().filter_map(|i| if let ItemSpec::Perimeter(p) = i { Some(p) } else { None }).collect();
     let mut numbers = vec![];
     for (k, p) in perimeters.iter().enumerate() {
@@ -1631,6 +1806,12 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         let named = spec.items.iter().flat_map(|i| i.nodes()).any(|n| n.starts_with(&prefix) && !n[prefix.len()..].starts_with("corner "))
             || spec.items.iter().any(|i| matches!(i, ItemSpec::TrussRoof(TrussRoofSpec { at: n, .. }) if n.starts_with(&prefix)));
         numbers.push(b.perimeter(p, &mut sc, &at[k], &drawn[k], named)?);
+    }
+    // Partitions, between the walls as they are built (in the order given: one may meet another).
+    for item in &spec.items {
+        if let ItemSpec::Partition(p) = item {
+            b.partition(p)?;
+        }
     }
     // Frames: their points are nodes.
     let mut frames: HashMap<String, Option<scene::BodyRef>> = HashMap::new();
@@ -1648,6 +1829,21 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         if let ItemSpec::Assembly(a) = item {
             let d = b.declare(&mut sc, a, &declared)?;
             declared.push((a, d));
+        }
+    }
+    // Walls that stand on a floor: each of their corners is as high as the floor is under it (the
+    // floor is free, and sits on what is under it: so the walls go up and down, and tilt, with it).
+    for p in &perimeters {
+        let n = if p.closed { p.segments.len() } else { p.segments.len() + 1 };
+        for k in 0..n {
+            let Some((floor, above)) = p.corner_on_floor(k) else { continue };
+            let (a, d) = declared.iter().find(|(a, _)| a.name == floor).ok_or_else(|| format!("{}: nothing named {floor} to stand on (a floor)", p.name))?;
+            let (x, y) = if k == 0 { p.start } else { p.segments[k - 1].to };
+            // (Over the corner, on the floor's top: so far above the underside of its joists, where it was put.)
+            let under = a.points.first().map_or(0.0, |q| d.frame.to_world(v3(q.at[0], q.at[1], q.at[2])).z);
+            let on_floor = sc.node(&format!("{floor} under {}/corner {}", p.name, k + 1), d.body, d.frame.to_local(v3(x, y, under + above)))?;
+            let corner = sc.node_named(&format!("{}/corner {}", p.name, k + 1)).ok_or_else(|| format!("{}: no corner {}", p.name, k + 1))?;
+            sc.level_with(&format!("{}/corner {} stands on {floor}", p.name, k + 1), corner, on_floor);
         }
     }
     // A node by name: one of the scene's; or a point of a member a generator wrote, brought

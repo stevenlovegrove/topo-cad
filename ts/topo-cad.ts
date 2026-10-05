@@ -474,6 +474,9 @@ export interface Support {
   readonly curb: Length;
   /** The height of the curb's top, where it is level whatever the slab does under it. */
   readonly level?: Length;
+  /** A floor instead of a slab: its name, and how far above the underside of its joists its top is. */
+  readonly floor?: string;
+  readonly above?: Length;
 }
 
 /**
@@ -556,7 +559,7 @@ export class Slab {
   }
 }
 
-const support = (on: Slab | Support): Support => (on instanceof Slab ? { slab: on.name, curb: 0 } : on);
+const support = (on: Slab | Floor | Support): Support => (on instanceof Slab ? { slab: on.name, curb: 0 } : on instanceof Floor ? { slab: "", curb: 0, floor: on.name, above: on.top } : on);
 
 // ----- walls ---------------------------------------------------------------
 
@@ -672,7 +675,7 @@ export class Wall {
    * and its height is above that: beside a wall as tall on something higher,
    * its top is as much lower, and the two meet at a step, top and bottom.
    */
-  on(what: Slab | Support): Wall {
+  on(what: Slab | Floor | Support): Wall {
     return this.with({ on: support(what) });
   }
   /** Interrupt the cap plate at `x` (where a partition tees in and laps over). */
@@ -719,8 +722,12 @@ export class Perimeter {
   /**
    * What its walls stand on (a `Slab`, or a curb on one): their bottoms are
    * that thing's top, not `z`. A wall may stand on something else (`Wall.on`).
+   * Or a `Floor`: the storey above. Each corner is then as high as the
+   * floor's top is under it, wherever the solve sits the floor (it is drawn
+   * anywhere: its `z` is only where the solve starts), and the walls go up
+   * and down, and tilt, with it.
    */
-  on(what: Slab | Support): Perimeter {
+  on(what: Slab | Floor | Support): Perimeter {
     return this.with({ on: support(what) });
   }
   /**
@@ -792,6 +799,13 @@ export class Perimeter {
   /** Final segment back to the start. */
   close(side: Side): Perimeter {
     return this.push(this.start, side).with({ closed: true });
+  }
+  /**
+   * A place on one of its walls, `x` along it from its start: where an
+   * interior wall meets it (`Partition.between`).
+   */
+  along(wall: string, x: Length): WallPlace {
+    return { perimeter: this.name, wall, x };
   }
   /** One of this perimeter's walls as a drawing target, e.g. `elevation(p.wall("Wall A"))`. */
   wall(name: string): string {
@@ -1151,7 +1165,7 @@ export class TrussRoof {
    * fastened at those contacts and nowhere else. A truss with none of them
    * under it is an error.
    */
-  bearingOn(...ps: (Perimeter | Assembly)[]): TrussRoof {
+  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): TrussRoof {
     return new TrussRoof({ ...this.spec, bears_on: [...this.spec.bears_on, ...ps.map((p) => p.name)] });
   }
   /**
@@ -1360,7 +1374,7 @@ export class Assembly {
    * node on both (as `resting`). They have to touch: it joins them where
    * they do, and says so where they do not.
    */
-  bearingOn(...ps: (Perimeter | Assembly)[]): Assembly {
+  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): Assembly {
     return this.copy({ bearsOn: [...this.bearsOn, ...ps.map((p) => p.name)] });
   }
   placed(p: Placement): Assembly {
@@ -1390,6 +1404,57 @@ export class Assembly {
   }
 }
 
+// ----- interior walls ----------------------------------------------------------
+
+/** A place on a wall: so far along it from its start (`walls.along("Front", ft(6))`). */
+export interface WallPlace {
+  readonly perimeter: string;
+  readonly wall: string;
+  readonly x: Length;
+}
+
+/**
+ * An interior wall: from a place on one wall to a place on another, or to a
+ * point on plan where it ends free. Where it meets a wall it tees into it:
+ * that wall's cap plate is broken there and this one's laps over it, its
+ * lower plates end on that wall's, and its studs keep clear of it. It is as
+ * tall as the walls it meets, where it meets them, and stands where they do
+ * (or on what its wall says, `Wall.on`). It is built between those walls
+ * as the solve has them, so it goes where they go.
+ *
+ *   const mid = Partition.between(walls.along("Front", ft(12)), walls.along("Back", ft(12)), wall.named("Middle"));
+ *   floor.bearingOn(walls, mid)          // a bearing wall: floors and roofs sit on it as on any wall
+ *   Partition.between(mid.along(ft(6)), walls.along("Right", ft(8)), wall.named("Cross"))   // one may meet another
+ *
+ * Its wall is framed on its centre line (its line is its middle), and has to
+ * be named. It is added to the building like anything else.
+ */
+export class Partition {
+  private constructor(
+    readonly wall_: Wall,
+    readonly from: WallPlace | { readonly point: Point },
+    readonly to: WallPlace | { readonly point: Point },
+  ) {}
+  static between(from: WallPlace, to: WallPlace | Point, wall: Wall): Partition {
+    if (!wall.spec.name) throw new Error("a partition's wall needs a name: wall.named(...)");
+    return new Partition(wall, from, Array.isArray(to) ? { point: to as Point } : (to as WallPlace));
+  }
+  get name(): string {
+    return this.wall_.spec.name;
+  }
+  /** A place on it, `x` along it from where it starts: where another partition meets it. */
+  along(x: Length): WallPlace {
+    return { perimeter: this.name, wall: this.name, x };
+  }
+  /** A member of it, e.g. `member("cap_plate")`. */
+  member(name: string): MemberRef {
+    return new MemberRef(`${this.name}/${name}`);
+  }
+  toJSON() {
+    return { type: "partition", wall: this.wall_.spec, from: this.from, to: this.to };
+  }
+}
+
 // ----- floors ---------------------------------------------------------------
 
 /**
@@ -1415,14 +1480,27 @@ export class Floor {
     readonly name: string,
     readonly framing: { readonly joists: Nominal; readonly spacing: Length; readonly grade: Grade },
     readonly rect: { readonly corner: Point; readonly along: Point; readonly length: Length; readonly width: Length; readonly z: Length } | undefined,
-    readonly bearsOn: readonly (Perimeter | Assembly)[],
+    readonly bearsOn: readonly (Perimeter | Partition | Assembly)[],
     readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
+    readonly deck_: Length = 0,
   ) {}
   static of(o: { joists: Nominal; grade: Grade; spacing?: Length }): Floor {
     return new Floor("Floor", { joists: o.joists, spacing: o.spacing ?? inch(16), grade: o.grade }, undefined, [], []);
   }
   named(name: string): Floor {
-    return new Floor(name, this.framing, this.rect, this.bearsOn, this.loads);
+    return new Floor(name, this.framing, this.rect, this.bearsOn, this.loads, this.deck_);
+  }
+  /**
+   * A deck on it, this thick (a 3/4" subfloor: `deck(inch(0.75))`): a sheet
+   * over the whole of it, on the joists. What stands on the floor stands on
+   * the deck.
+   */
+  deck(thickness: Length): Floor {
+    return new Floor(this.name, this.framing, this.rect, this.bearsOn, this.loads, thickness);
+  }
+  /** How far its top (its deck's, if it has one) is above the underside of its joists. */
+  get top(): Length {
+    return dressed(this.framing.joists[1]) + this.deck_;
   }
   /**
    * Its rectangle on plan: from `corner`, the joists run `along` (a
@@ -1433,7 +1511,7 @@ export class Floor {
    */
   from(corner: Point, o: { along: Point; length: Length; width: Length; z?: Length }): Floor {
     if (!(o.length > 0) || o.width === 0 || !(Math.hypot(o.along[0], o.along[1]) > 0)) throw new Error(`floor ${this.name}: give a direction, a length and a width`);
-    return new Floor(this.name, this.framing, { corner, along: o.along, length: o.length, width: o.width, z: o.z ?? 0 }, this.bearsOn, this.loads);
+    return new Floor(this.name, this.framing, { corner, along: o.along, length: o.length, width: o.width, z: o.z ?? 0 }, this.bearsOn, this.loads, this.deck_);
   }
   /**
    * What it sits on: each of its members rests on each cap plate of these
@@ -1441,12 +1519,12 @@ export class Floor {
    * these assemblies that it crosses (an assembly has to be added to the
    * building before the floor).
    */
-  bearingOn(...ps: (Perimeter | Assembly)[]): Floor {
-    return new Floor(this.name, this.framing, this.rect, [...this.bearsOn, ...ps], this.loads);
+  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): Floor {
+    return new Floor(this.name, this.framing, this.rect, [...this.bearsOn, ...ps], this.loads, this.deck_);
   }
   /** A load over its area (N/m², use `psf`), carried by the joists: each takes what is nearest it. */
   load(kind: LoadKind, pressure: number): Floor {
-    return new Floor(this.name, this.framing, this.rect, this.bearsOn, [...this.loads, { kind, pressure }]);
+    return new Floor(this.name, this.framing, this.rect, this.bearsOn, [...this.loads, { kind, pressure }], this.deck_);
   }
   /** One of its corners (1 to 4: start, along, along + across, across), as a node, at the underside of the joists. */
   node(point: "corner 1" | "corner 2" | "corner 3" | "corner 4"): NodeHandle {
@@ -1484,11 +1562,13 @@ export class Floor {
     for (const l of this.loads) {
       a = a.lineLoad(l.kind, "joist", l.pressure * spacing).lineLoad(l.kind, "band_joist", (l.pressure * spacing) / 2);
     }
+    // (Its outer corners, for a deck to lie over.)
+    if (this.deck_ > 0) a = a.point("deck 1", at(0, 0)).point("deck 2", at(len, 0)).point("deck 3", at(len, wid)).point("deck 4", at(0, wid));
     return a.free().bearingOn(...this.bearsOn);
   }
   toJSON() {
     // (Free, and sat on what it bears on; on plan, where it is drawn, as a fallback.)
-    return { ...this.assembly().toJSON(), on_plan: true };
+    return { ...this.assembly().toJSON(), on_plan: true, deck: this.deck_ > 0 ? { thickness: this.deck_, above: dressed(this.framing.joists[1]) } : undefined };
   }
 }
 
@@ -1888,7 +1968,7 @@ export class Frame {
   }
 }
 
-export type Item = Perimeter | Slab | Floor | TrussRoof | Assembly | Frame | Relation;
+export type Item = Perimeter | Partition | Slab | Floor | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of

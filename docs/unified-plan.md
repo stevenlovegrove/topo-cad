@@ -106,6 +106,8 @@ Each step leaves everything working and removes one row above.
    A roof can be set out from a node (`at`); each truss's station is a node.
    *Decided:* walls are not each a body: at a corner the plates lap and
    share nodes, so a wall cannot move alone; a wall moves by its corners.
+   A wall that meets others part way along them (a partition) is built
+   between them as they are, and has no numbers of its own.
    A roof is set out only `at` a node. A datum is a node: a point of the
    world (`Frame.world.point`, along only the coordinates given, if not
    all), placed by `coincide`; a scan is a frame with points in it

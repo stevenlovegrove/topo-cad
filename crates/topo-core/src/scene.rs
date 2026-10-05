@@ -299,6 +299,12 @@ impl Scene {
         }
     }
 
+    /// Two nodes are at one height (whatever else they are): held.
+    pub fn level_with(&mut self, name: &str, a: NodeRef, b: NodeRef) {
+        let (pa, pb) = (self.sys.at(self.nodes[a.0].of[0]), self.sys.at(self.nodes[b.0].of[0]));
+        self.sys.constrain(name, ts::Tier::Hard, ts::Kind::offset(pa, pb, ts::Dir(ts::WORLD, [0.0, 0.0, 1.0]), 0.0));
+    }
+
     /// A node stays over `at` on plan (its x and y), as a fallback: unless anything else, even a
     /// hint, says otherwise. (What is free and only sat on something is held on plan by this.)
     pub fn stays_on_plan(&mut self, name: &str, n: NodeRef, at: Vec3) {

@@ -73,10 +73,20 @@ pub fn support_graph(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<Sup
     // others it is on the face of). The face says which rests on which: what is at a node on a
     // member's upward face rests on the member there, and the member rests on what is at a node
     // on its downward face.
+    // (Only what is beyond that face: where the node is also the end of plates level with the member, a
+    // tee's, those are beside it, not on it.)
+    let middle = |m: MemberId| {
+        let pts: Vec<topo_core::Vec3> = geom.member(m).faces().into_iter().flat_map(|f| f.outer).collect();
+        pts.iter().fold(topo_core::Vec3::ZERO, |a, p| a + *p) / pts.len().max(1) as f64
+    };
     for at in &model.attachments {
-        let up = model.face(at.member, at.face).normal.z;
+        let face = model.face(at.member, at.face);
+        let up = face.normal.z;
         let others = topo.junction(at.node).members.iter().map(|m| m.member).chain(model.attached_at(at.node).map(|o| o.member)).filter(|&o| o != at.member);
         for other in others {
+            if (middle(other) - face.origin).dot(face.normal) <= tol {
+                continue;
+            }
             let (member, by) = if up > 0.5 {
                 (other, at.member)
             } else if up < -0.5 {
