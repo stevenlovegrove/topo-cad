@@ -160,9 +160,23 @@ impl Scene {
     /// A body (written as a group named `name`, of `kind`, in `parent`), put at `start`: fixed
     /// there, or (`free`) starting there and placed by relations, kept upright unless they say otherwise.
     pub fn body(&mut self, name: &str, kind: &str, start: Frame, free: bool, parent: Option<GroupId>) -> BodyRef {
+        self.body_as(name, kind, start, free, parent, false)
+    }
+
+    /// The same; `plane`: it is a thing in an upright plane (a truss: its x along it, its y the
+    /// plane's normal). Its plane then faces as it was put (a hint: plumb, and turned on plan
+    /// so), and how level it is in its own plane is a lesser thing (a fallback, as where a
+    /// layout puts it is). Each is held with its sense, as a direction the same as it was: a
+    /// plane only square to up is as well upside down. (As one hint, being upright decided where a truss was along a bearing whose
+    /// top slopes: sliding along it changes how level the truss sits in its plane, and every
+    /// truss slid to where it sat most level.)
+    fn body_as(&mut self, name: &str, kind: &str, start: Frame, free: bool, parent: Option<GroupId>, plane: bool) -> BodyRef {
         let joint = if free { ts::Joint::Free } else { ts::Joint::Fixed };
         let f = self.sys.frame(name, ts::WORLD, joint, pose(&start));
-        if free {
+        if free && plane {
+            self.sys.constrain(&format!("{name} facing as it was put"), ts::Tier::Default, ts::Kind::Aligned(ts::Dir(f, [0.0, 1.0, 0.0]), ts::Dir(ts::WORLD, arr(start.y))));
+            self.sys.constrain(&format!("{name} level in its plane"), ts::Tier::Fallback, ts::Kind::Aligned(ts::Dir(f, [1.0, 0.0, 0.0]), ts::Dir(ts::WORLD, arr(start.x))));
+        } else if free {
             // (Hints: its z is up, and it is turned on plan as it was put. Relations override them.)
             self.sys.constrain(&format!("{name} upright"), ts::Tier::Default, ts::Kind::Aligned(ts::Dir(f, [0.0, 0.0, 1.0]), ts::Dir(ts::WORLD, [0.0, 0.0, 1.0])));
             self.sys.constrain(&format!("{name} turned as it was put"), ts::Tier::Default, ts::Kind::Aligned(ts::Dir(f, [1.0, 0.0, 0.0]), ts::Dir(ts::WORLD, arr(start.x))));
@@ -174,7 +188,16 @@ impl Scene {
     /// A body for what a generator has already written into the model, where it put it
     /// (`start`): fixed there, or free, and then moved, all of it, to where the solve puts it.
     pub fn body_written(&mut self, name: &str, start: Frame, free: bool, content: Content) -> BodyRef {
-        let b = self.body(name, "", start, free, None);
+        self.body_written_as(name, start, free, content, false)
+    }
+
+    /// The same, of a thing in an upright plane (see `body_as`): a truss.
+    pub fn plane_written(&mut self, name: &str, start: Frame, content: Content) -> BodyRef {
+        self.body_written_as(name, start, true, content, true)
+    }
+
+    fn body_written_as(&mut self, name: &str, start: Frame, free: bool, content: Content, plane: bool) -> BodyRef {
+        let b = self.body_as(name, "", start, free, None, plane);
         self.bodies[b.0].content = Some(content);
         b
     }

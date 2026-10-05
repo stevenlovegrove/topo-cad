@@ -696,7 +696,7 @@ impl TrussRoof {
     ///
     /// - each truss's heel is a node (`Roof/T1/heel`); where the layout puts it along the ridge
     ///   from the node the roof is set out from (a point of the world, of a scan's frame, of the
-    ///   walls) is a fallback (layout: below what is read of it, and below its being upright),
+    ///   walls) is a fallback (layout: below what is read of it, and below its plane's facing as it was put; beside its being level in its plane),
     ///   a reading of it (`shifted`) a reading, and
     ///   across the ridge it is where the layout puts it (hard). Its plane is plumb and square
     ///   to the ridge, and it is level, unless what it sits on says otherwise (the body's hints);
@@ -747,7 +747,7 @@ impl TrussRoof {
                 nodes: (before.0..m.nodes.len()).map(|k| NodeId(k as u32)).collect(),
                 members: (before.1..m.members.len()).map(|k| MemberId(k as u32)).collect(),
             };
-            let body = sc.body_written(&name, Frame { origin: heel, x: span, y: normal, z: Vec3::Z }, true, content.clone());
+            let body = sc.plane_written(&name, Frame { origin: heel, x: span, y: normal, z: Vec3::Z }, content.clone());
             // Its heel (its own node there, if it has one), and its station: from the node the roof is
             // set out from, or a point of the world.
             let heel_name = format!("{name}/heel");

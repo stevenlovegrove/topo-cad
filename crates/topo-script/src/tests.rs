@@ -176,9 +176,12 @@ fn the_primitives_examples_show_what_they_say() {
     assert_eq!(t1.freedoms.iter().map(|f| f.settled.as_str()).collect::<Vec<_>>(), ["hard", "fallback", "hard", "hint", "hard", "hint"], "{t1:#?}");
     let station = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 at its station along the ridge").unwrap();
     assert!(station.tier == "fallback" && station.gap.abs() < 1e-9);
-    // The level hint (it is turned as it was put) gives way to the beams (2 inches over the span between them).
-    let level = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 turned as it was put").unwrap();
-    assert!(level.gap > 0.009 && level.gap < 0.012, "{level:?}");
+    // Its being level in its own plane (a fallback too) gives way to the beams (2 inches over the span between them);
+    // its plane faces as it was put (plumb, and turned on plan so: a hint, which the beams leave be).
+    let level = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 level in its plane").unwrap();
+    assert!(level.tier == "fallback" && level.gap.abs() > 0.009 && level.gap.abs() < 0.012, "{level:?}");
+    let facing = s.constraints.iter().find(|c| c.name == "Roof trusses/T1 facing as it was put").unwrap();
+    assert!(facing.tier == "hint" && facing.gap.abs() < 1e-9, "{facing:?}");
     // Each contact is a node of the solve on a line of the chord's underside (its axis: one number, bounded by the
     // chord, settled by the contact) and on a line of the beam's top (the far edge: sloping down to the lower beam,
     // it touches each there), held to be one point.
@@ -2008,4 +2011,28 @@ fn a_deck_follows_trusses_that_are_not_in_one_plane_and_every_one_of_them_carrie
     let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
     let on = |role: &str| m.loads.iter().filter(|l| matches!(l, topo_core::Load::MemberUniform { case, member, .. } if *case == snow && m.member(*member).role == role)).count();
     assert_eq!((on("bottom_chord"), on("top_chord")), (7, 14));
+}
+
+#[test]
+fn trusses_keep_their_stations_on_a_wall_whose_top_slopes_along_the_ridge() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    // The front wall (one of the two the trusses bear on) is an inch taller at its far end: its top slopes along
+    // the ridge, the way the trusses are set out.
+    let src = include_str!("../../../examples/primitives/30-a-flat-roof-on-trusses-of-your-own.ts").replace(r#"wall.named("Front")"#, r#"wall.named("Front").heights(ft(8), ft(8) + inch(1))"#);
+    assert!(src.contains("heights"));
+    let m = run(&src, "30.ts").unwrap();
+    // Each truss is where the layout puts it along the ridge (every 24", the last flush at 12 ft): none has slid
+    // down the wall's top to another's place, and nothing passes through anything.
+    let roof = m.groups.iter().find(|g| g.name == "Trusses").unwrap().id;
+    let mut xs: Vec<f64> = m.groups.iter().filter(|t| t.kind == "truss" && t.parent == Some(roof)).map(|t| m.pos(m.member(t.members[0]).start()).x).collect();
+    xs.sort_by(f64::total_cmp);
+    assert_eq!(xs.len(), 7);
+    for (k, x) in xs.iter().enumerate() {
+        assert!((x - ft(2.0) * k as f64).abs() < 1e-3, "{xs:?}");
+    }
+    let between: Vec<String> = through(&m).into_iter().filter(|t| t.matches("Trusses/").count() == 2).collect();
+    assert!(between.is_empty(), "{between:?}");
+    // And each sits as high as the wall is under it: its front heel an inch higher at the far end than at the near.
+    let heel = |x: f64| m.members.iter().filter(|c| c.role == "bottom_chord").map(|c| c.path.iter().map(|n| m.pos(*n)).filter(|p| p.y.abs() < 0.2).map(|p| (p.x, p.z)).next().unwrap()).min_by(|a, b| (a.0 - x).abs().total_cmp(&(b.0 - x).abs())).unwrap().1;
+    assert!((heel(ft(12.0)) - heel(0.0) - inch(1.0)).abs() < inch(0.1), "{} {}", heel(0.0), heel(ft(12.0)));
 }
