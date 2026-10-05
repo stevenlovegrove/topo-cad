@@ -544,6 +544,9 @@ pub struct RoofPartSpec {
     /// What frames it, by name (an assembly of rafters, a roof of trusses): its planes are on that.
     #[serde(default)]
     pub framing: Option<String>,
+    /// More that frames it, by name (a valley set, where it lies on another roof).
+    #[serde(default)]
+    pub framing_more: Vec<String>,
     /// What its eaves are over, by name (perimeters, partitions): an eave is as high as the cap
     /// plate under it, and `heel` above that.
     #[serde(default)]
@@ -809,6 +812,8 @@ struct Builder {
     perimeters: HashMap<String, (PerimeterParts, f64)>,
     /// The walls of each of those, as built (placed), side by side.
     built_walls: HashMap<String, Vec<Option<Wall>>>,
+    /// Each roof of trusses' top chords, once it is placed (in the scene).
+    truss_tops: HashMap<String, Vec<scene::MemberRef>>,
     /// Where partitions tee into walls: by perimeter and wall, how far along each.
     tees: HashMap<(String, String), Vec<f64>>,
     /// Slabs by name: the body each is, its top's height where it is given (a number), and its
@@ -1429,8 +1434,11 @@ impl Builder {
                 }
             } else if let Some((_, d)) = declared.iter().find(|(a, _)| a.name == *name) {
                 bearings.extend(d.members.iter().copied().filter(|&m| sc.axis(m).1.z.abs() < 1e-6));
+            } else if let Some(chords) = self.truss_tops.get(name) {
+                // Another roof's trusses, placed before this one: on their top chords (a valley set).
+                bearings.extend(chords.iter().copied());
             } else {
-                return Err(format!("roof {}: nothing named {name} to bear on (a perimeter or an assembly)", r.name));
+                return Err(format!("roof {}: nothing named {name} to bear on (a perimeter, an assembly, or a roof of trusses given before it)", r.name));
             }
         }
         if bearings.is_empty() {
@@ -1449,6 +1457,9 @@ impl Builder {
         roof.start = r.start;
         let placed = roof.place(&mut self.m, sc, set_out, &bearings)?;
         self.m.group_mut(placed.parts.group).parent = Some(self.root);
+        // (Its top chords, as members of the scene: what a roof given after it may bear on.)
+        let tops: Vec<scene::MemberRef> = placed.parts.trusses.iter().flat_map(|t| t.top_chords.clone()).map(|c| sc.import_member(&self.m, c, &self.m.member_path(c))).collect();
+        self.truss_tops.insert(r.name.clone(), tops);
         Ok(placed)
     }
 
@@ -1652,10 +1663,14 @@ impl Builder {
                         continue;
                     }
                     // On its framing: the tops of what slopes up from this eave.
-                    if let Some(f) = &p.framing {
-                        let g = named(&self.m, f).ok_or_else(|| format!("roof {}: part {} is framed by {f}, and there is nothing of that name", r.name, p.name))?;
+                    if p.framing.is_some() {
+                        let mut framed = vec![];
+                        for f in p.framing.iter().chain(&p.framing_more) {
+                            let g = named(&self.m, f).ok_or_else(|| format!("roof {}: part {} is framed by {f}, and there is nothing of that name", r.name, p.name))?;
+                            framed.extend(self.m.members_in_tree(g));
+                        }
                         let mut pts = vec![];
-                        for id in self.m.members_in_tree(g) {
+                        for id in framed {
                             if !roles.contains(&self.m.member(id).role.as_str()) {
                                 continue;
                             }
@@ -2269,7 +2284,7 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
         m.name_direction(root, name, d);
     }
-    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), built_walls: HashMap::new(), tees: HashMap::new(), slabs: HashMap::new(), assemblies: HashMap::new(), root };
+    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), built_walls: HashMap::new(), truss_tops: HashMap::new(), tees: HashMap::new(), slabs: HashMap::new(), assemblies: HashMap::new(), root };
     // One scene: perimeters (written by their generator, as bodies of it, at numbers of it),
     // assemblies, and the relations between their nodes; solved, then written into the model.
     // Then roofs, on what it placed.

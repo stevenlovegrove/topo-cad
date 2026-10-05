@@ -8,16 +8,21 @@
 // to the inside corners are where the parts' planes cross. Neither is given.
 //
 // Both are framed with trusses. The main roof, given first, is framed
-// through; the wing's trusses stop where it reaches the main roof (its
-// eave), and the stretch of the wing that lies on the main roof is its
-// surfaces only.
+// through. The wing's trusses stop where it reaches the main roof (its eave),
+// and from there the wing is carried on over the main roof by a valley set:
+// trusses of the wing's own slopes, smaller and smaller, each with a level
+// bottom chord that lies across the main roof's top chords (touching each at
+// its uphill face, since they slope). None of that is given: it follows from
+// the two parts overlapping and both being trussed.
 //
 // The wing is narrower than the bar, so its ridge is lower.
 //
-// (Not yet: what frames the wing over the main roof, a set of valley trusses
-// or valley rafters on it. The main roof's eave is drawn running on behind
-// the wing's last truss.)
-import { Building, DFL, ft, inch, Perimeter, pitch, Roof, Wall } from "topo-cad";
+// (Not yet: the last of the valley set, too short to cross two of the trusses
+// under it: the top of the wing's ridge there is its surfaces only. In
+// building, the main roof is sheathed first and the set sits on the
+// sheathing; here it sits on the chords. The main roof's eave is drawn
+// running on behind the wing's last truss.)
+import { Building, DFL, ft, inch, Perimeter, pitch, psf, Roof, Wall } from "topo-cad";
 
 const grade = DFL.No2;
 const wall = Wall.template({ height: ft(8), grade });
@@ -34,6 +39,7 @@ const wing = Perimeter.start("Wing walls", [ft(7.5), 0])
 
 const roof = Roof.named("Roof")
   .over(main, { name: "Main", pitch: pitch(6), overhang: inch(12), rake: inch(12), gables: ["Left", "Right"], trusses: { grade } })
-  .over(wing, { name: "Wing", pitch: pitch(6), overhang: inch(12), rake: inch(12), gables: ["Wing front", 4], reach: { 4: ft(8) }, trusses: { grade } });
+  .over(wing, { name: "Wing", pitch: pitch(6), overhang: inch(12), rake: inch(12), gables: ["Wing front", 4], reach: { 4: ft(8) }, trusses: { grade } })
+  .load("snow", psf(25));
 
 export default Building.named("A roof that turns a corner").add(main, wing, roof);

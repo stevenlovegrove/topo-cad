@@ -628,6 +628,10 @@ struct Under {
     /// middle), and that crossing's point on the top's axis, if the axis is in the top.
     crossing: Option<usize>,
     axis: Option<(f64, Vec3)>,
+    /// Where the top slopes along the ridge (the top chord of another roof, under a valley
+    /// truss): how far along the ridge from the truss's heel its uphill face is, which is where
+    /// its underside touches (its edge there, not its axis).
+    uphill: Option<f64>,
 }
 
 impl TrussRoof {
@@ -776,16 +780,20 @@ impl TrussRoof {
                 let a = top.origin;
                 let mut found = vec![];
                 let crossing = under.len();
+                // (A top that slopes along the ridge is highest under the truss at the truss's uphill face.)
+                let rise = if along.dot(run).abs() >= 0.2 { along.z / along.dot(run) } else { 0.0 };
+                let uphill = (rise.abs() > 1e-6).then(|| (middle - heel).dot(run) + rise.signum() * thick / 2.0);
                 let mut at = |p: Vec3, across: f64, part: &str, crossing: Option<usize>, axis: Option<(f64, Vec3)>| {
                     let s = (p - heel).dot(span);
                     if let Some(z) = underside(s) {
-                        found.push(Under { bearing: k, across, label: format!("{part} of {label}"), top: p, s, need: p.z - z - heel.z, crossing, axis });
+                        found.push(Under { bearing: k, across, label: format!("{part} of {label}"), top: p, s, need: p.z - z - heel.z, crossing, axis, uphill });
                     }
                 };
                 if along.dot(run).abs() >= 0.2 {
                     // Across the truss: under it where it crosses the chord's axis (its underside, in the
-                    // truss's plane); the top's two edges and its middle.
-                    let t = (heel - a).dot(run) / along.dot(run);
+                    // truss's plane; or, of a top that slopes along the ridge, its uphill face); the top's
+                    // two edges and its middle.
+                    let t = ((heel - a).dot(run) + uphill.unwrap_or(0.0)) / along.dot(run);
                     if t > -thick / 2.0 - 1e-6 && t < top.length + thick / 2.0 + 1e-6 {
                         let edge = top.half_width / along.dot(run).abs();
                         let side = span.dot(top.across).signum();
@@ -878,8 +886,12 @@ impl TrussRoof {
                 let chord_ref = sc.import_member(m, chord, &m.member_path(chord));
                 let (_, under_face) = sc.face_toward(chord_ref, -Vec3::Z, m);
                 let (on_chord, on_top) = if u.crossing.is_some() || u.label.starts_with("top ") {
-                    // Across the top: on the chord, its axis (which is in its underside).
-                    ((sc.axis(chord_ref).0 - under_face.origin).dot(under_face.across), u.across)
+                    // Across the top: on the chord, its axis (which is in its underside); or its uphill edge.
+                    let line = match u.uphill {
+                        Some(d) => heel + run * d,
+                        None => sc.axis(chord_ref).0,
+                    };
+                    ((line - under_face.origin).dot(under_face.across), u.across)
                 } else {
                     // Along the top: on the chord's axis, where that is over the top; else the middle of
                     // where the chord's underside and the top overlap, across.

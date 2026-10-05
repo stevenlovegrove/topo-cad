@@ -563,9 +563,21 @@ generators and the same solve; the part only says where.
   the earlier one reaches (its outline and its overhangs); the earlier is
   framed through. A truss roof may start part way along from the node it is
   set out from (`TrussRoof` `start`).
+- Where both are trussed, and the wing's ridge is square to the other's,
+  the wing is carried on over the other by a **valley set**: a second roof
+  of trusses on the wing's spacing, each of the wing's own slopes and
+  smaller than the last (its heels where its top chords' line comes down to
+  its bottom chord), bearing on the other roof's top chords
+  (`TrussRoof.bearingOn(trusses)`). A top that slopes along the ridge is
+  highest under a truss at the truss's uphill face: the truss touches it
+  there, with the edge of its chord's underside, not its axis. The set
+  frames the wing's part with the wing's own trusses: its planes are on
+  both, and its loads are theirs.
 
-*Not yet:* what frames a wing over the roof it runs into (valley rafters,
-or a set of valley trusses on the main roof); trusses at a hip, or of two
+*Not yet:* a wing of rafters over the roof it runs into (valley rafters and
+jacks); the last of a valley set, too short to cross two of the trusses
+under it; the main roof's sheathing under a valley set (it sits on the
+chords); trusses at a hip, or of two
 pitches; rafters for a shed; a ridge board, and so an end rafter at a hip;
 a hip backed to the planes; ridge, hip and valley lines as things of the
 model (they are lengths only). (`16-from-the-slab-up.ts`, `23` to `29`.)
@@ -723,7 +735,8 @@ is narrower than they are wide: no backing is framed for them yet.
 24. **A hip roof**: every edge an eave; the ridge and hips are where the
     planes meet; framed with rafters, hips and jacks.
 25. **A roof that turns a corner**: two parts that overlap, and the valleys
-    where they cross; the wing's trusses stop at the main roof.
+    where they cross; the wing's trusses stop at the main roof, and a
+    valley set carries it on over the main roof's trusses.
 26. **A dormer**: a small part on a slope, its eaves at a height given.
 27. **What a floor and a roof are made of**: a deck and a covering given
     as layers of materials; each a sheet, and their weight a dead load.

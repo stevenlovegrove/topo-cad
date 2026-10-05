@@ -1782,6 +1782,36 @@ fn hips_and_valleys_are_where_a_roofs_planes_meet() {
     // roof's eave, a foot out from the bar's front wall: six of them, from its front to there.
     let trusses = |roof: &str| -> Vec<&topo_core::Group> { let g = m.groups.iter().find(|g| g.name == roof).unwrap().id; m.groups.iter().filter(|t| t.kind == "truss" && t.parent == Some(g)).collect() };
     assert_eq!((trusses("Main trusses").len(), trusses("Wing trusses").len()), (16, 6));
+    // From there the wing is carried over the main roof by a valley set: two trusses on the wing's spacing (1 ft and
+    // 3 ft in from the bar's front wall), each smaller than the last, its bottom chord level.
+    let valley = trusses("Wing valley trusses");
+    assert_eq!(valley.len(), 2);
+    let g = Geometry::build(&m, &Topology::build(&m));
+    let chords: Vec<&topo_core::Member> = valley.iter().flat_map(|t| t.members.iter().map(|&id| m.member(id))).filter(|c| c.role == "bottom_chord").collect();
+    let long = |c: &topo_core::Member| g.member(c.id).bbox().max.x - g.member(c.id).bbox().min.x;
+    assert!(chords.len() == 2 && chords.iter().all(|c| (m.pos(c.start()).z - m.pos(c.end()).z).abs() < 1e-6) && (long(chords[0]) - long(chords[1])).abs() > ft(3.0), "{:?}", chords.iter().map(|c| long(c)).collect::<Vec<_>>());
+    // Each lies on the main roof's top chords under it: it touches one at its uphill face (its underside is as high as
+    // that chord's top is there), is on nothing else, and passes through none of them (`through`, above).
+    let tops: Vec<topo_core::MemberId> = trusses("Main trusses").iter().flat_map(|t| t.members.iter().copied()).filter(|&id| m.member(id).role == "top_chord").collect();
+    for c in &chords {
+        let on: Vec<topo_core::MemberId> = m.attachments.iter().filter(|a| c.path.contains(&a.node) || m.attached_at(a.node).any(|x| x.member == c.id)).map(|a| a.member).filter(|id| *id != c.id).collect();
+        assert!(on.len() >= 2 && on.iter().all(|id| tops.contains(id)), "{} is on {:?}", m.member_path(c.id), on.iter().map(|id| m.member_path(*id)).collect::<Vec<_>>());
+        let bb = g.member(c.id).bbox();
+        let under = deck.iter().filter(|s| s.name.starts_with("Main Front")).map(|s| s.bottom.over(topo_core::Vec2::new(ft(3.0), bb.max.y))).next().unwrap();
+        assert!((bb.min.z - under).abs() < 1e-6, "{} {under}", bb.min.z);
+    }
+    // Its top chords are in the wing's planes (the deck's underside is their tops), and it carries what is on the
+    // wing over the main roof: the snow, on its top chords.
+    for part in g.parts(&m).iter().filter(|p| p.role == "top_chord" && p.path.contains("valley")) {
+        let (face, _) = part.faces.iter().max_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap();
+        for q in face {
+            let under = deck.iter().filter(|s| s.name.starts_with("Wing Wing")).map(|s| s.bottom.over(topo_core::Vec2::new(q.x, q.y))).fold(f64::MAX, f64::min);
+            assert!((under - q.z).abs() < 1e-6, "{} {q:?} {under}", part.path);
+        }
+    }
+    let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
+    let carried = m.loads.iter().filter(|l| matches!(l, topo_core::Load::MemberUniform { case, member, .. } if *case == snow && m.member_path(*member).contains("valley") && m.member(*member).role == "top_chord")).count();
+    assert_eq!(carried, 4);
     let ys: Vec<f64> = trusses("Wing trusses").iter().flat_map(|t| t.members.iter().flat_map(|&id| m.member(id).path.iter().map(|n| m.pos(*n).y))).collect();
     assert!((ys.iter().copied().fold(f64::MAX, f64::min) + ft(10.0)).abs() < 1e-6 && (ys.iter().copied().fold(f64::MIN, f64::max) + ft(1.0)).abs() < 1e-6, "{:?}", (ys.iter().copied().fold(f64::MAX, f64::min), ys.iter().copied().fold(f64::MIN, f64::max)));
 

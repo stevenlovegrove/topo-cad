@@ -1212,8 +1212,12 @@ export class TrussRoof {
    * are lower), touching every other on the line through them. It is
    * fastened at those contacts and nowhere else. A truss with none of them
    * under it is an error.
+   *
+   * Or another roof of trusses, added to the building before this one: its
+   * top chords, which slope (a valley set on a main roof). A truss then
+   * touches each at its uphill face.
    */
-  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): TrussRoof {
+  bearingOn(...ps: (Perimeter | Partition | Assembly | TrussRoof)[]): TrussRoof {
     return new TrussRoof({ ...this.spec, bears_on: [...this.spec.bears_on, ...ps.map((p) => p.name)] });
   }
   /**
@@ -2020,6 +2024,8 @@ interface RoofPart {
   readonly on: readonly (Perimeter | Partition | Assembly)[];
   readonly heel: Length;
   readonly framing?: TrussRoof | RafterRoof | Assembly | Floor;
+  /** More that frames it: a valley set, where it lies on a part before it. */
+  readonly more?: readonly TrussRoof[];
   readonly carriedBy: readonly string[];
   readonly layers?: readonly Layer[];
   readonly loads: readonly AreaLoad[];
@@ -2064,7 +2070,10 @@ interface RoofPart {
  * - three eaves, or four: rafters, with a hip at each end that is an eave.
  *
  * A part that runs into an earlier one (a wing) is framed only as far as that
- * one reaches: where they overlap, the earlier is framed through.
+ * one reaches: where they overlap, the earlier is framed through. Where both
+ * are trussed, the wing is carried on over the other by a valley set:
+ * trusses of the wing's own slopes, smaller and smaller, each with a level
+ * bottom chord lying on the other roof's top chords.
  *
  * Or a part is given its framing, made apart (`framing`): trusses of your own
  * shapes, an assembly of your own members. Nothing of how those are given is
@@ -2089,10 +2098,10 @@ interface RoofPart {
  * told how much it has of each kind of edge (ridge, hip, valley, eave, rake)
  * and its area.
  *
- * *Not yet:* a wing's framing over the roof it runs into (its valley
- * rafters, or a set of valley trusses on the main roof): that stretch is its
- * surfaces only; trusses at a hip; rafters for a shed (a taller wall under
- * their heads).
+ * *Not yet:* a wing of rafters over the roof it runs into (valley rafters and
+ * jacks): that stretch is its surfaces only; the last of a valley set, too
+ * short to cross two of the trusses under it; trusses at a hip; rafters for a
+ * shed (a taller wall under their heads).
  */
 export class Roof {
   private constructor(
@@ -2143,14 +2152,15 @@ export class Roof {
     const reach = outline.map(() => 0);
     for (const [key, d] of Object.entries(o.reach ?? {})) reach[edge(key)] = d;
     const base: RoofPart = { name, outline: reach.some((d) => d) ? grown(outline, reach) : outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0, carriedBy: [o.carriedBy ?? []].flat(), layers: o.covering && builtUp(o.covering).layers, loads: [] };
-    return new Roof(this.name, [...this.parts, { ...base, framing: this.frame(base, o, walls, outline) }], this.deck_, this.layers_);
+    const [framing, ...more] = this.frame(base, o, walls, outline);
+    return new Roof(this.name, [...this.parts, { ...base, framing, more }], this.deck_, this.layers_);
   }
   /** A part's framing, set out from the part (`drawn`: its outline before any of its edges were moved). */
-  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined, drawn: readonly Point[]): RoofPart["framing"] {
+  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined, drawn: readonly Point[]): [RoofPart["framing"], ...TrussRoof[]] {
     const what = `roof ${this.name}: part ${p.name}`;
     if ([o.rafters, o.trusses, o.framing].filter((x) => x).length > 1) throw new Error(`${what} is framed with rafters, with trusses, or by framing made apart: one of them`);
-    if (o.framing) return o.framing;
-    if (!o.rafters && !o.trusses) return undefined;
+    if (o.framing) return [o.framing];
+    if (!o.rafters && !o.trusses) return [undefined];
     const pt = (k: number): Point => p.outline[((k % 4) + 4) % 4];
     const side = (k: number): Point => [pt(k + 1)[0] - pt(k)[0], pt(k + 1)[1] - pt(k)[1]];
     const eave = (k: number) => p.edges[((k % 4) + 4) % 4];
@@ -2175,14 +2185,19 @@ export class Roof {
     if (ends.includes("hip") && [k - 1, k + 1, k + 2].some((e) => eave(e) && eave(e)!.pitch !== pitch)) throw new Error(`${what}: a roof with a hip is framed where its eaves are all of one pitch`);
     // Framed as far as the parts before it reach: where it runs into one of them, that one is framed through.
     let [t0, t1] = [0, whole];
+    // (And which part it runs into, at which end: what a valley set would lie on.)
+    let into: { q: RoofPart; far: boolean } | undefined;
+    const alongOf = (r: Point) => (r[0] - pt(corner)[0]) * along[0] + (r[1] - pt(corner)[1]) * along[1];
     for (const q of this.parts) {
       const over = clipped(p.outline, grown(q.outline, q.edges.map((e) => (e ? e.overhang : q.rake))));
       if (over.length < 3) continue;
-      const ts = over.map((r) => (r[0] - pt(corner)[0]) * along[0] + (r[1] - pt(corner)[1]) * along[1]);
+      const ts = over.map(alongOf);
       const [lo, hi] = [Math.max(t0, Math.min(...ts)), Math.min(t1, Math.max(...ts))];
       if (hi - lo < 1e-6) continue;
       // (The longer of what is left, before it or beyond it.)
-      [t0, t1] = lo - t0 >= t1 - hi ? [t0, lo] : [hi, t1];
+      const far = lo - t0 >= t1 - hi;
+      [t0, t1] = far ? [t0, lo] : [hi, t1];
+      into = { q, far };
     }
     if ((t0 > 0 && ends[0] === "hip") || (t1 < whole && ends[1] === "hip")) throw new Error(`${what}: the end of it that runs into another part is a gable, not a hip`);
     const length = t1 - t0;
@@ -2191,10 +2206,12 @@ export class Roof {
     if (o.rafters) {
       const r = o.rafters;
       if (!far) throw new Error(`${what}: a roof with one eave is framed with trusses (rafters would need a taller wall under their heads: not yet)`);
-      return RafterRoof.of({ span, pitch, farPitch: far.pitch, rafters: r.size, grade: r.grade, spacing: r.spacing, ties: r.ties, seat: r.seat, ends })
-        .named(`${p.name} rafters`)
-        .from(from, { along, length })
-        .bearingOn(...p.on);
+      return [
+        RafterRoof.of({ span, pitch, farPitch: far.pitch, rafters: r.size, grade: r.grade, spacing: r.spacing, ties: r.ties, seat: r.seat, ends })
+          .named(`${p.name} rafters`)
+          .from(from, { along, length })
+          .bearingOn(...p.on),
+      ];
     }
     const t = o.trusses!;
     if (ends.includes("hip")) throw new Error(`${what}: a hip is framed with rafters (trusses at a hip: not yet)`);
@@ -2205,7 +2222,61 @@ export class Roof {
     if (!at) throw new Error(`${what}: say at what node its first truss's heel is (\`trusses: { at }\`), or give the part \`over\` walls`);
     const start = t.at ? t0 : (from[0] - drawn[c][0]) * along[0] + (from[1] - drawn[c][1]) * along[1];
     const shape: (o: { span: Length; pitch: number; overhang: Length; panels: number }) => TrussShape = t.shape ?? (far ? TrussShape.fink : TrussShape.mono);
-    return TrussRoof.of(shape({ span, pitch, overhang, panels: 3 }), { name: `${p.name} trusses`, at, spanDir: [-along[1], along[0]], length, spacing: t.spacing, grade: t.grade, chord: t.chord, web: t.web, start: Math.abs(start) > 1e-9 ? start : undefined }).bearingOn(...p.on);
+    const spanDir: Point = [-along[1], along[0]];
+    const trusses = TrussRoof.of(shape({ span, pitch, overhang, panels: 3 }), { name: `${p.name} trusses`, at, spanDir, length, spacing: t.spacing, grade: t.grade, chord: t.chord, web: t.web, start: Math.abs(start) > 1e-9 ? start : undefined }).bearingOn(...p.on);
+    // Where it runs into a part before it that is trussed too, across that part's trusses: a valley set on them.
+    // Trusses of this part's own planes, smaller and smaller, each with a level bottom chord that lies on the other
+    // part's top chords (at its uphill face: they slope), as far up as one still crosses two of them.
+    const main = into?.q.framing;
+    if (!far || !into || !(main instanceof TrussRoof)) return [trusses];
+    const crossing = main.spec.span_dir[0] * along[0] + main.spec.span_dir[1] * along[1];
+    if (Math.abs(Math.abs(crossing) - 1) > 1e-6) return [trusses];
+    // (Where the other part's wall line is, along this part's ridge, and its pitch up from there.)
+    const qs = into.q.outline.map(alongOf);
+    const wall = into.far ? Math.min(...qs) : Math.max(...qs);
+    const rises = into.far ? 1 : -1;
+    const inPitch = into.q.edges.find((e, k) => e && Math.abs(alongOf(into!.q.outline[k]) - wall) < 1e-6 && Math.abs(alongOf(into!.q.outline[(k + 1) % into!.q.outline.length]) - wall) < 1e-6)?.pitch;
+    if (!inPitch) return [trusses];
+    const [sp, thick, chord] = [t.spacing ?? inch(24), dressed(2), t.chord ?? ([2, 4] as Nominal)];
+    const onTop = dressed((main.spec.chord ?? [2, 4])[1]) * Math.hypot(1, inPitch);
+    // Stations on this part's own spacing, on from its last truss, each with how far in its heels are (where its
+    // top chords' line comes down to its bottom chord's underside).
+    const grid = (n: number) => t0 + n * sp;
+    const ns: number[] = [];
+    for (let n = Math.ceil((Math.min(t0, t1) - whole - t0) / sp); grid(n) < 2 * whole; n++) {
+      const inside = into.far ? grid(n) > Math.max(t1, wall) + thick : grid(n) < Math.min(t0, wall) - thick;
+      if (inside) ns.push(n);
+    }
+    const heel = (n: number, k: number, count: number) => {
+      // (Its lumber: to one side of its line at the set's two ends, about it between. Its uphill face.)
+      const [lo, hi] = k === 0 ? [0, thick] : k === count - 1 ? [-thick, 0] : [-thick / 2, thick / 2];
+      const up = rises * (grid(n) + (rises > 0 ? hi : lo) - wall);
+      return (inPitch * up + onTop) / pitch;
+    };
+    const fits = (list: number[]) => list.filter((n, k) => span - 2 * heel(n, k, list.length) > 2 * main.spec.spacing + inch(6));
+    let set = fits(ns);
+    set = fits(set);
+    if (set.length < 2) return [trusses];
+    const one = (n: number, k: number): TrussShape => {
+      const s = heel(n, k, set.length);
+      const rise = pitch * (span / 2 - s);
+      return TrussShape.custom({
+        name: `Valley truss ${k + 1}`,
+        span,
+        pitch,
+        points: { H0: [s, 0], H1: [span - s, 0], C: [span / 2, 0], P: [span / 2, rise] },
+        topChords: [["H0", "P"], ["H1", "P"]],
+        bottomChords: [["H0", "C", "H1"]],
+        webs: [["P", "C"]],
+      })
+        .sized("top_chord", chord)
+        .sized("bottom_chord", chord)
+        .sized("web", t.web ?? [2, 4]);
+    };
+    const first = grid(set[0]);
+    let valley = TrussRoof.of(one(set[0], 0), { name: `${p.name} valley trusses`, at, spanDir, length: (set.length - 1) * sp, spacing: sp, grade: t.grade, chord, web: t.web, start: start + (first - t0) });
+    set.slice(1).forEach((n, k) => (valley = valley.withShape([k + 2], one(n, k + 1))));
+    return [trusses, valley.bearingOn(main)];
   }
   /** How thick its deck is (half an inch, if not said). */
   deck(thickness: Length): Roof {
@@ -2271,7 +2342,7 @@ export class Roof {
   }
   /** What it is, as items of a building: its framing (each thing once), then its surfaces (`Building.add` does this). */
   expand(): Item[] {
-    const framing = this.parts.flatMap((p) => (p.framing ? [p.framing] : []));
+    const framing = this.parts.flatMap((p) => [...(p.framing ? [p.framing] : []), ...(p.more ?? [])]);
     return [...framing.filter((f, k) => framing.findIndex((g) => g.name === f.name) === k), this];
   }
   toJSON() {
@@ -2280,7 +2351,7 @@ export class Roof {
       name: this.name,
       deck: this.deck_,
       layers: this.layers_,
-      parts: this.parts.map((p) => ({ name: p.name, outline: p.outline, edges: p.edges, rake: p.rake, framing: p.framing?.name, on: p.on.map((x) => x.name), heel: p.heel, carried_by: p.carriedBy, layers: p.layers, loads: p.loads })),
+      parts: this.parts.map((p) => ({ name: p.name, outline: p.outline, edges: p.edges, rake: p.rake, framing: p.framing?.name, framing_more: (p.more ?? []).map((x) => x.name), on: p.on.map((x) => x.name), heel: p.heel, carried_by: p.carriedBy, layers: p.layers, loads: p.loads })),
     };
   }
 }
