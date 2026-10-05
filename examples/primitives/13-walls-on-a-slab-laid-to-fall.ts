@@ -4,7 +4,10 @@
 // The slab here rises 20 mm per metre along x (it is at zero at its west
 // side). So:
 //
-// - the west wall stands at zero and the east wall 73 mm higher (12 ft along);
+// - the east wall stands 73 mm higher than the west (12 ft along). The slab
+//   slopes across each of those walls' plates: a plate sits on the higher
+//   edge of what is under it, not through it, so the west wall is 1.8 mm
+//   above zero (its plate's inner edge is on the slab, its outer edge clear);
 // - the south and north walls' bottom plates slope with the slab, and since a
 //   wall's height is above its bottom, so do their tops: each wall is 8 ft
 //   tall all along, on a floor that is not level;

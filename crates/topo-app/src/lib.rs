@@ -25,6 +25,7 @@ pub fn all_issues(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<Issue>
     let mut issues = validate(model, topo);
     issues.extend(geom.issues.iter().cloned());
     issues.extend(geom.clash_issues());
+    issues.extend(geom.solid_clash_issues(&model));
     issues.extend(geom.bearing_issues(model));
     issues.extend(topo_analysis::load_path_issues(model, topo, geom));
     let td = topo_analysis::takedown(model, topo, geom);

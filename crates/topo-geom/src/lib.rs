@@ -59,6 +59,36 @@ impl Geometry {
         out
     }
 
+    /// Where a member passes through a solid (a slab, a curb), or one solid through another, by
+    /// more than `CLASH_TOL`: their paths, and how deep. (A solid is taken as the convex hull of
+    /// its outline: right for curbs and for slabs without a notch.)
+    pub fn solid_clashes(&self, model: &Model) -> Vec<(String, String, f64)> {
+        let solids: Vec<ConvexSolid> = model.solids.iter().map(solid_convex).collect();
+        let deep = |a: &ConvexSolid, b: &ConvexSolid| match a.separation(b, CLASH_TOL, None) {
+            Separation::Overlap { depth } => Some(depth),
+            _ => None,
+        };
+        let mut out = vec![];
+        for (i, s) in solids.iter().enumerate() {
+            for g in &self.members {
+                if let Some(d) = deep(&g.convex(), s) {
+                    out.push((model.member_path(g.member), model.solid_path(&model.solids[i]), d));
+                }
+            }
+            for (j, t) in solids.iter().enumerate().skip(i + 1) {
+                if let Some(d) = deep(s, t) {
+                    out.push((model.solid_path(&model.solids[i]), model.solid_path(&model.solids[j]), d));
+                }
+            }
+        }
+        out
+    }
+
+    /// Those as validation issues.
+    pub fn solid_clash_issues(&self, model: &Model) -> Vec<Issue> {
+        self.solid_clashes(model).into_iter().map(|(a, b, d)| Issue::new(Severity::Warning, "clash", format!("{a} and {b} interpenetrate by {:.1} mm", d * 1000.0))).collect()
+    }
+
     /// Clashes as validation issues.
     pub fn clash_issues(&self) -> Vec<Issue> {
         self.clashes()
@@ -133,6 +163,31 @@ impl Geometry {
             })
             .collect()
     }
+}
+
+/// A solid's convex envelope (over the convex hull of its outline), for telling what is in
+/// front of what and what passes through what.
+pub fn solid_convex(s: &topo_core::Solid) -> ConvexSolid {
+    let hull = topo_core::convex_hull(&s.outline);
+    let at = |p: topo_core::Vec2, l: &topo_core::Level| Vec3::new(p.x, p.y, l.over(p));
+    let n = hull.len();
+    let mut verts = vec![];
+    let mut normals = vec![s.top.normal(), -s.bottom.normal()];
+    let mut edges = vec![Vec3::Z];
+    for k in 0..n {
+        let (a, b) = (hull[k], hull[(k + 1) % n]);
+        verts.extend([at(a, &s.top), at(a, &s.bottom)]);
+        let d = b - a;
+        if let Some(side) = Vec3::new(d.y, -d.x, 0.0).try_normalized() {
+            normals.push(side);
+        }
+        for l in [&s.top, &s.bottom] {
+            if let Some(e) = (at(b, l) - at(a, l)).try_normalized() {
+                edges.push(e);
+            }
+        }
+    }
+    ConvexSolid { verts, normals, edges }
 }
 
 /// What a part of the building is: a framing member, or a solid it stands on (a slab, a curb).

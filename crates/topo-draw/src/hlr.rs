@@ -64,26 +64,7 @@ impl Piece {
     /// slab with a notch in it hides a little more than it should, seen from below.)
     pub fn of_solid(s: &topo_core::Solid, member: MemberId) -> Piece {
         let faces: Vec<topo_geom::Face> = s.faces().into_iter().map(|f| topo_geom::Face { outer: f.outer, holes: vec![], normal: f.normal }).collect();
-        let hull = convex_hull(&s.outline);
-        let at = |p: Vec2, l: &topo_core::Level| Vec3::new(p.x, p.y, l.over(p));
-        let n = hull.len();
-        let mut verts = vec![];
-        let mut normals = vec![s.top.normal(), -s.bottom.normal()];
-        let mut edges = vec![Vec3::Z];
-        for k in 0..n {
-            let (a, b) = (hull[k], hull[(k + 1) % n]);
-            verts.extend([at(a, &s.top), at(a, &s.bottom)]);
-            let d = b - a;
-            if let Some(side) = Vec3::new(d.y, -d.x, 0.0).try_normalized() {
-                normals.push(side);
-            }
-            for l in [&s.top, &s.bottom] {
-                if let Some(e) = (at(b, l) - at(a, l)).try_normalized() {
-                    edges.push(e);
-                }
-            }
-        }
-        Piece { member, ply: 0, convex: ConvexSolid { verts, normals, edges }, faces }
+        Piece { member, ply: 0, convex: topo_geom::solid_convex(s), faces }
     }
 }
 

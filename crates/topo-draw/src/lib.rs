@@ -260,6 +260,7 @@ fn cover_sheets(ctx: &Ctx, others: &[Sheet], extras: Vec<View>) -> Vec<Sheet> {
         let mut v = validate(model, topo);
         v.extend(geom.issues.iter().cloned());
         v.extend(geom.clash_issues());
+        v.extend(geom.solid_clash_issues(model));
         v.extend(geom.bearing_issues(model));
         v
     };

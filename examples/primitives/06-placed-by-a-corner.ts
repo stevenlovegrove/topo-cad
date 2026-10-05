@@ -12,8 +12,8 @@
 // walls go, and its trusses sit on the plates where they now are.
 //
 // A post stands in front of the front wall, its top made one node with the
-// point of the front cap plate 1.2 m along it: that point becomes a node of
-// the plate.
+// point of the front cap plate 1.5 m along it (between two trusses' tails):
+// that point becomes a node of the plate.
 import { Assembly, Building, coincide, DFL, Frame, ft, inch, Perimeter, TrussRoof, TrussShape, Wall } from "topo-cad";
 
 const grade = DFL.No2;
@@ -31,10 +31,11 @@ const mark = Frame.world.point("mark", [5, 3, ft(8)]);
 const roof = TrussRoof.of(TrussShape.fink({ span: ft(12), pitch: 6 / 12, overhang: inch(12) }), { at: corner, spanDir: [0, 1], length: ft(16), grade })
   .bearingOn(walls);
 
-// A post drawn anywhere, free, its top on the plate 1.2 m along.
+// A post drawn anywhere, free, its top on the plate 1.5 m along. (Its axis is on its face toward the wall, so that
+// it stands against the wall's line, in front of it, not astride it.)
 const post = Assembly.named("Post")
   .point("foot", [0, 0, 0]).point("top", [0, 0, ft(8)])
-  .member("post", ["foot", "top"], { size: [4, 4], grade })
+  .member("post", ["foot", "top"], { size: [4, 4], grade, anchor: [0, 0.5] })
   .moved([3, -2, 0])
   .free();
 
@@ -44,5 +45,5 @@ export default Building.named("Placed by a corner").add(
   mark,
   coincide(corner, mark.node("mark")),
   post,
-  coincide(post.node("top"), walls.node("Front/cap_plate", 1.2)),
+  coincide(post.node("top"), walls.node("Front/cap_plate", 1.5)),
 );

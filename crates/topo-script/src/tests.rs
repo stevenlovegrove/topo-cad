@@ -246,7 +246,7 @@ fn the_primitives_examples_show_what_they_say() {
     assert!(m.pos(p.start()).distance(m.pos(p.end()) - topo_core::Vec3::Z * ft(8.0)) < 1e-9, "upright under it");
 
     // Placed by a corner: the free walls go where the datum says, all of them; the roof is set out from the
-    // same corner and sits on the plates where they now are; the post's top is a node of the plate, 1.2 m along.
+    // same corner and sits on the plates where they now are; the post's top is a node of the plate, 1.5 m along.
     let src = include_str!("../../../examples/primitives/06-placed-by-a-corner.ts");
     let m = run(src, "06-placed-by-a-corner.ts").unwrap();
     sound(&m);
@@ -264,10 +264,10 @@ fn the_primitives_examples_show_what_they_say() {
     let heel = m.pos(m.member(t1).start());
     assert!((heel.x - corner.x).abs() < 1e-6 && (heel.y - corner.y).abs() < 1.0, "{heel:?} {corner:?}");
     assert!(m.issues.iter().all(|i| i.code != "truss-not-seated"));
-    // The post's top is a node of the front cap plate, 1.2 m along it.
+    // The post's top is a node of the front cap plate, 1.5 m along it.
     let p = m.members.iter().find(|x| x.role == "post").unwrap();
     assert!(m.member(front).path.contains(&p.end()));
-    assert!(m.pos(p.end()).distance(corner + topo_core::Vec3::X * 1.2) < 1e-9);
+    assert!(m.pos(p.end()).distance(corner + topo_core::Vec3::X * 1.5) < 1e-9);
     // Moving the datum moves it all.
     let m2 = run(&src.replace("Frame.world.point(\"mark\", [5, 3, ft(8)])", "Frame.world.point(\"mark\", [7, 3, ft(8)])"), "moved.ts").unwrap();
     let front2 = m2.find_member("Walls/Front/cap_plate").unwrap();
@@ -452,6 +452,47 @@ fn a_floor_sits_on_the_walls_under_it() {
     assert!(e.contains("does not rest on"), "{e}");
 }
 
+/// What passes through what in a model: members through members, members through solids, and solids through solids
+/// (a curb sits on its slab, touching: that is not through).
+fn through(m: &topo_core::Model) -> Vec<String> {
+    let g = Geometry::build(m, &Topology::build(m));
+    let mut out: Vec<String> = g.clashes().iter().map(|(a, b, d)| format!("{} through {} by {:.1} mm", m.member_path(*a), m.member_path(*b), d * 1e3)).collect();
+    out.extend(g.solid_clashes(m).into_iter().map(|(a, b, d)| format!("{a} through {b} by {:.1} mm", d * 1e3)));
+    out
+}
+
+#[test]
+fn nothing_passes_through_anything_in_any_example() {
+    // Every example that is a model, as the app would open it (its imports from beside it).
+    fn files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                files(&p, out);
+            } else if p.extension().is_some_and(|x| x == "ts") {
+                out.push(p);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut all = vec![];
+    files(&root, &mut all);
+    all.sort();
+    let (mut ran, mut found) = (0, vec![]);
+    for p in &all {
+        let entry = p.display().to_string();
+        let Ok(set) = crate::bundle::collect(&entry, &mut |id| std::fs::read_to_string(id).ok()) else { continue };
+        // (A file that is only parts for others to import is not a model.)
+        let Ok(script) = Script::from_files(&set, &entry) else { continue };
+        let Ok((m, _)) = crate::solve::solve(&script) else { continue };
+        ran += 1;
+        let name = p.strip_prefix(&root).unwrap().display().to_string();
+        found.extend(through(&m).into_iter().map(|t| format!("{name}: {t}")));
+    }
+    assert!(ran >= 20, "only {ran} of {} examples are models that evaluate", all.len());
+    assert!(found.is_empty(), "{} places where one thing passes through another:\n{}", found.len(), found.join("\n"));
+}
+
 #[test]
 fn a_slab_laid_to_fall_and_a_curb_whose_top_is_level() {
     use topo_core::Vec2;
@@ -504,8 +545,10 @@ fn walls_stand_straight_on_a_slab_laid_to_fall() {
     };
     let rise = 0.020 * ft(12.0);
     let near = |got: (f64, f64), want: (f64, f64)| (got.0 - want.0).abs() < 1e-6 && (got.1 - want.1).abs() < 1e-6;
-    // The west wall at zero, the east wall 12 ft of slope higher; each 8 ft tall.
-    assert!(near(z("Walls/West/bottom_plate"), (0.0, 0.0)) && near(z("Walls/East/bottom_plate"), (rise, rise)), "{:?} {:?}", z("Walls/West/bottom_plate"), z("Walls/East/bottom_plate"));
+    // The east wall 12 ft of slope up; each wall 8 ft tall. The slab slopes across the west wall's plate (3.5" of
+    // it): the plate sits on the higher edge of what is under it, not through the slab, so 1.8 mm above zero.
+    let across = 0.020 * topo_core::units::inch(3.5);
+    assert!(near(z("Walls/West/bottom_plate"), (across, across)) && near(z("Walls/East/bottom_plate"), (rise, rise)), "{:?} {:?}", z("Walls/West/bottom_plate"), z("Walls/East/bottom_plate"));
     assert!(near(z("Walls/East/cap_plate"), (ft(8.0) + rise, ft(8.0) + rise)));
     // The north wall runs back down the slope (from the east to the west): its bottom plate slopes with the slab, and its top with it.
     assert!(near(z("Walls/North/bottom_plate"), (rise, 0.0)) && near(z("Walls/North/cap_plate"), (ft(8.0) + rise, ft(8.0))), "{:?}", z("Walls/North/bottom_plate"));

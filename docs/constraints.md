@@ -418,8 +418,9 @@ two slabs.
 A slab may be **laid to fall** (`Slab.sloped([sx, sy], about)`: its top a
 plane, rising so much per metre along x and y; its one number is its
 height at `about`). A wall standing on it, or on a curb of one height on
-it, has its bottom at the slab's top at each of its ends, so its bottom
-plate slopes with the slab (and, its height being above its bottom, its
+it, has its bottom at the slab's top at each of its ends (at the higher
+edge of its plate, where the slab slopes across the wall: it sits on the
+slab, not through it), so its bottom plate slopes with the slab (and, its height being above its bottom, its
 top with it). A curb whose **top is level** (`slab.curbTo(level)`) is what
 gives walls a level seat on such a slab: the wall's bottom is at that
 level, held there whatever the slab does, and the curb is as tall under it
@@ -432,7 +433,10 @@ Slabs and curbs are **solids** of the model (`Model::solids`: a plan
 outline between two surfaces, each level or sloping: `Level`), not members: they have no axis, join
 nothing, and are not analysed; they are drawn, and seen in a scan, as
 members are (the exact-lines 3D view hides what is behind the convex hull
-of a solid's outline). What each bottom plate bears on is said in its support
+of a solid's outline). A member through a solid, or one solid through
+another, is a `clash` like any other (`Geometry::solid_clashes`), and a
+test builds every example and asserts there are none
+(`nothing_passes_through_anything_in_any_example`). What each bottom plate bears on is said in its support
 (`Bottom plate on a curb on Slab`). *Not yet:* a curb's height or level,
 and a slab's slope, are given, not numbers of the solve; a slab's top is a
 plane, not a surface fitted to what was scanned; a free perimeter's curbs do not move
