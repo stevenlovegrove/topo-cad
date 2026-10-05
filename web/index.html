@@ -500,6 +500,7 @@
 import { api, storage } from "./app/router.js";
 import { service } from "./app/service.js";
 import { initModel3d, materialColour } from "./app/model3d.js";
+import * as objects from "./app/objects.js";
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -555,7 +556,8 @@ async function poll() {
       await loadSources(false);
       renderTabs();
       if (shown("3d")) await load3d();
-      if (shown("shaded")) await shaded.load();
+      // (The tree of objects lists the model's parts whether or not a view of them is open.)
+      if (shown("shaded")) await shaded.load(); else await shaded.sync();
       if (!s.error) await loadSheet();
     }
   } catch (e) {
@@ -2080,7 +2082,9 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); 
 
 layoutPanes();
 // The model shaded, in WebGL: with or without a scan.
-const shaded = initModel3d({ registerPane, api, inspect, parked: $("parked"), version: () => (state && !state.error ? state.version : null) });
+// The tree of objects is the page's: the model's parts, and a scan's objects when a scan workspace is served.
+objects.mount({ tabs: $("browserTabs"), panes: $("browser"), showBrowser });
+const shaded = initModel3d({ registerPane, api, inspect, shown, showBrowser, parked: $("parked"), version: () => (state && !state.error ? state.version : null), scan: () => !!globalThis.__topoScan });
 // Storage first (its change handler lists the projects), then keep the view in step.
 await storage.boot();
 // A scan workspace, if this site serves one: its model opens, and the scan's panes,

@@ -1753,7 +1753,7 @@ impl Builder {
                 let steep = (1.0 + f.plane.slope.dot(f.plane.slope)).sqrt();
                 area += polygon_area(&f.outline).abs() * steep;
                 for (of, at, thick) in sheets(&r.layers, r.deck) {
-                    let name = if r.layers.is_empty() { name.clone() } else { format!("{name}: {of}") };
+                    let name = if r.layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
                     self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: f.outline.clone(), bottom: f.plane.raised(at * steep), top: f.plane.raised((at + thick) * steep), seams: f.seams.clone() });
                 }
             }
@@ -1788,7 +1788,7 @@ impl Builder {
                 let group = ids.first().and_then(|&id| self.m.member(id).group);
                 let name = if pieces.len() == 1 { "deck".to_string() } else { format!("deck#{}", k + 1) };
                 for (of, at, thick) in sheets(&deck.layers, deck.thickness) {
-                    let name = if deck.layers.is_empty() { name.clone() } else { format!("{name}: {of}") };
+                    let name = if deck.layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
                     self.m.solids.push(Solid { name, role: "deck".into(), material: of, group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under.raised(at), top: under.raised(at + thick), seams: vec![] });
                 }
             }

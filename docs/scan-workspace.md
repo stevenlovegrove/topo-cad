@@ -383,8 +383,10 @@ Without a scan, `topo serve` and any static host serve the app as before.
 | `crates/topo-scan` | The computation and the workspace. `scan`, `ply`, `axes`: loading a scan. `lib`: prediction, registration, evidence. `fit`, `render`, `cloud`: plane fits, section images, the thinned cloud and slabs. `git`, `issues`: the project as a repository. `workspace`, `tools`, `view`: the workspace, its tools, and what the app draws from. `mcp`: the tools for agents. |
 | `crates/topo-cli/src/work.rs` | The service: `/api/…` and `/mcp` beside the app's files. |
 | `web/app/service.js` | The app's client of the service (absent: the app is as before). |
-| `web/app/glview.js` | A WebGL2 view: an orbit camera over the points, optionally clipped to a box (a slab), with handles to drag. |
-| `web/app/scan.js` | The scan's panes, layers, views, issues, threads, proposals, board, people. |
+| `web/app/glview.js` | A WebGL2 view: an orbit camera over the points, optionally clipped to a box (a slab), with handles to drag; or over the model alone, drawn solid. |
+| `web/app/objects.js` | The tree of objects (the browser's Objects tab), what of it is hidden and folded: the page's, with or without a scan. It lists the model's parts; others add groups of rows to it (`section`), say what a click, a double click or an eye did (`on`), and give a row's menu. |
+| `web/app/model3d.js` | The model shaded ("3D, shaded"): the model's parts from the engine's mesh, in the tree of objects and in a view of their own. No scan and no service. |
+| `web/app/scan.js` | The scan's panes, views, issues, threads, proposals, board, people; the scan and what is made on it (selections, planes, slabs, polylines, issues) as groups of rows in the tree of objects, and what the scan shows of each of the model's parts. |
 | `web/index.html` | The shell: the browser of drawings and files, the panes, the inspector. |
 
 Details that were decided in the building:
@@ -621,3 +623,19 @@ evidence per group of members.
 - **Plane fits** (`fit.rs`): a plane from a seed with stated support, and
   what is needed to judge it (inliers, spread, coverage, offset by
   quadrant, other surfaces across it).
+
+## The scan as an object among others
+
+The tree of objects, visibility and selection are the page's
+(`objects.js`), not the scan's: a model with no scan has an Objects tab,
+its parts in their groups, each with an eye that the shaded view obeys,
+and a click on a part in the view or in the tree chooses it in both. A
+scan workspace adds its own to that tree, and replaces who lists the
+model's parts (it has what the scan shows of each).
+
+*Not yet:* the views are still two kinds: the scan's three (points, slabs,
+tools, handles: `scan.js`) and the model's (`model3d.js`), both on
+`glview.js`. One kind of view, in which the scan is a layer that is there
+when a scan is, is the next step; the scan's views already obey the same
+eyes. The exact-lines view (`3D, exact lines`) does not obey them: it is
+drawn by the engine from the whole model.

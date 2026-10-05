@@ -3,6 +3,7 @@
 // it is drawn from the mesh the engine gives the page (`/api/mesh`).
 
 import { GLView, vec } from "./glview.js";
+import * as objects from "./objects.js";
 
 /** The colour of a material, by its name (a layer of a build-up, a solid's material). */
 export function materialColour(name) {
@@ -62,9 +63,11 @@ function triangles(f, n) {
 }
 
 /**
- * Adds the pane ("3D, shaded"). `app`: { registerPane, api, version (of the model as built),
- * inspect (a member, by its path), parked (where panes not shown are kept) }. Returns
- * { load }: to be called when the model has changed and the pane is shown.
+ * Adds the pane ("3D, shaded"), and lists the model's parts in the tree of objects. `app`:
+ * { registerPane, api, version (of the model as built), inspect (a member, by its path), shown
+ * (whether a pane is), showBrowser, parked (where panes not shown are kept), scan (whether a scan
+ * workspace is here: it then says what a member chosen is) }. Returns { load, sync }: `sync` when
+ * the model has changed (the tree), `load` when the pane is shown too.
  */
 export function initModel3d(app) {
   const pane = document.createElement("div");
@@ -90,6 +93,8 @@ export function initModel3d(app) {
     const pos = [], col = [], lpos = [], lcol = [];
     owner = [];
     mesh.members.forEach((m, mi) => {
+      // (What the tree of objects has hidden is not drawn, nor picked.)
+      if (!objects.memberVisible(m.path)) return;
       const base = rgb(mi === picked ? PICKED : m.material ? materialColour(m.material) : TIMBER);
       const seam = (a, b) => (m.seams || []).some(([p, q]) => (Math.hypot(...vec.sub(p, a)) < 1e-3 && Math.hypot(...vec.sub(q, b)) < 1e-3) || (Math.hypot(...vec.sub(p, b)) < 1e-3 && Math.hypot(...vec.sub(q, a)) < 1e-3));
       for (const f of m.faces) {
@@ -134,37 +139,77 @@ export function initModel3d(app) {
     return at;
   }
 
+  /** Says what is picked, beside the view's controls. */
+  function say() {
+    const m = picked == null ? null : mesh?.members[picked];
+    // (What it is, shortly: the last of its path, and its material without the note of where its weight is from.)
+    what.textContent = m ? `${m.path.split("/").slice(-2).join("/").split(":")[0]}${m.material ? ` · ${m.material.split(" (")[0]}` : ""}` : "";
+    what.title = m ? `${m.path}${m.material ? `\n${m.material}` : ""}` : "";
+  }
+
   function start() {
     view = new GLView(host);
     view.set({ solid: true, paper: true, az: 225, el: 30, layers: { scan: false } }, true);
+    // A part picked in the view is chosen in the tree of objects, as a click on its row is.
     view.onPick = (ray) => {
-      picked = hit(ray);
-      const m = picked == null ? null : mesh.members[picked];
-      // (What it is, shortly: the last of its path, and its material without the note of where its weight is from.)
-      what.textContent = m ? `${m.path.split("/").slice(-2).join("/").split(":")[0]}${m.material ? ` · ${m.material.split(" (")[0]}` : ""}` : "";
-      what.title = m ? `${m.path}${m.material ? `\n${m.material}` : ""}` : "";
-      build();
-      if (m && !m.material) app.inspect(m.path);
+      const at = hit(ray);
+      if (at == null) { picked = null; say(); build(); objects.render(); return; }
+      objects.select("member", mesh.members[at].path);
     };
     bar.querySelector('[data-a="fit"]').onclick = fit;
     bar.querySelector('[data-a="edges"]').onchange = (e) => { edges = e.target.checked; build(); };
     bar.querySelector('[data-a="ortho"]').onchange = (e) => view.set({ ortho: e.target.checked }, true);
   }
 
-  async function load() {
+  /** The mesh of the model as it now is (for the tree of objects, and for the view if it is shown). */
+  async function sync() {
     const v = app.version();
-    if (v == null) return;
-    if (!view) start();
-    if (mesh && v === version) return view.redraw();
+    if (v == null) return false;
+    if (mesh && v === version) return false;
     mesh = await app.api("/api/mesh");
     version = v;
     picked = null;
-    what.textContent = "";
+    objects.render();
+    return true;
+  }
+
+  async function load() {
+    const fresh = await sync();
+    if (!mesh) return;
+    if (!view) start();
+    if (!fresh && tris) return view.redraw();
+    say();
     build();
     // (Another model: looked at whole. The same one, changed: the view is kept.)
     if (mesh.version_name !== name) { name = mesh.version_name; fit(); }
   }
 
-  app.registerPane("shaded", { label: "3D, shaded", el: "shadedPane", shown: () => load() });
-  return { load };
+  // The model's parts, in the tree of objects (a scan workspace lists them itself, with what the scan shows of each).
+  objects.model({
+    parts: () => mesh?.members ?? [],
+    decorate: (m) => ({ title: `${m.path}${m.material ? ` — ${m.material.split(" (")[0]}` : ""}` }),
+    selected: () => (picked == null ? null : mesh?.members[picked]?.path),
+  });
+  objects.on("select", (kind, path) => {
+    if (kind !== "member" || !mesh) return;
+    const at = mesh.members.findIndex((m) => m.path === path);
+    picked = at < 0 ? null : at;
+    say();
+    if (view && tris) build();
+    // (A member's checks; a solid has none.)
+    if (at >= 0 && !mesh.members[at].material && !app.scan?.()) app.inspect(path);
+  });
+  objects.on("goto", (kind, id) => {
+    if (!view || !mesh || !app.shown("shaded") || (kind !== "member" && kind !== "group")) return;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const m of mesh.members) {
+      if (kind === "member" ? m.path !== id : !objects.memberParts(m.path).groups.join("/").startsWith(id)) continue;
+      for (const f of m.faces) for (const q of f) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], q[k]); hi[k] = Math.max(hi[k], q[k]); }
+    }
+    if (lo[0] <= hi[0]) view.frame(vec.scale(vec.add(lo, hi), 0.5), Math.max(0.4, Math.hypot(...vec.sub(hi, lo)) / 2));
+  });
+  objects.on("visibility", () => { if (view && mesh && tris) build(); });
+
+  app.registerPane("shaded", { label: "3D, shaded", el: "shadedPane", shown: () => { load(); app.showBrowser("layers"); } });
+  return { load, sync };
 }

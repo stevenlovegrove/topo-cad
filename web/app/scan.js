@@ -13,6 +13,10 @@
 
 import { service } from "./service.js";
 import { GLView, vec, COLOURS } from "./glview.js";
+// The tree of objects, and what of it is shown, are the page's (objects.js): the scan and what is made on it are
+// groups of rows this module adds to it, and the model's rows are given what the scan shows of each part.
+import * as objects from "./objects.js";
+import { hidden, open, keep, vis, memberParts, memberVisible } from "./objects.js";
 
 let app;                       // hooks into the page (index.html)
 let st = null;                 // the workspace's state
@@ -1290,7 +1294,7 @@ function objectMenu(kind, id) {
     showHide();
     if (kind === "group") add("Go to it", () => gotoMembers(`/${id}/`));
     if (id === "scan") add(`Leave out points near the sensor… (now within ${+(st.scan.min_range ?? 1).toFixed(2)} m)`, askMinRange);
-    if (id === "model") add("Show every member", () => { for (const k of [...hidden]) if (k.startsWith("g:") || k.startsWith("m:")) hidden.delete(k); hidden.delete("model"); applyVisibility(); });
+    if (id === "model") add("Show every member", () => { for (const k of [...hidden]) if (k.startsWith("g:") || k.startsWith("m:")) hidden.delete(k); hidden.delete("model"); objects.changed(); });
   } else if (kind === "issue") {
     const i = st.issues.find((x) => x.id === Number(id));
     add("Open it", () => openIssue(i.id));
@@ -1527,40 +1531,16 @@ async function selectProposal(p, quiet) {
 // ----- the browser: layers and views -------------------------------------------------
 
 // ----- what is shown: visibility, apart from what is selected ---------------------------
-// Every object and every group of the tree has an eye: whether it is drawn.
-// That is separate from selecting it (clicking it), which says what the chip,
-// the Member tab and a new issue refer to. Hidden keys are remembered.
+// Every object and every group of the tree has an eye: whether it is drawn (objects.js keeps
+// which). That is separate from selecting it (clicking it), which says what the chip, the
+// Member tab and a new issue refer to.
 
-const stored = (k, d) => { try { return JSON.parse(localStorage.getItem(k) ?? "null") ?? d; } catch (_) { return d; } };
-const hidden = new Set(stored("topo.scan.hidden", []));
-const open = new Set(stored("topo.scan.open", ["scan", "model", "issues", "selections", "planes"]));
-const keep = () => { try { localStorage.setItem("topo.scan.hidden", JSON.stringify([...hidden])); localStorage.setItem("topo.scan.open", JSON.stringify([...open])); } catch (_) {} };
-// (Groups that came later start open too.)
-if (stored("topo.scan.groups", 1) < 2) { open.add("slabs"); open.add("polylines"); keep(); try { localStorage.setItem("topo.scan.groups", "2"); } catch (_) {} }
-const vis = (...keys) => keys.every((k) => !hidden.has(k));
-
-/** A member's place in the tree: its groups (below the building) and its own name. */
-function memberParts(path) {
-  const parts = path.split("/");
-  return { groups: parts.slice(1, -1), name: parts[parts.length - 1] };
-}
-/** Whether a member is drawn: the model, its groups and itself are all shown. */
-function memberVisible(path) {
-  if (hidden.has("model") || hidden.has(`m:${path}`)) return false;
-  const g = memberParts(path).groups;
-  for (let k = 1; k <= g.length; k++) if (hidden.has(`g:${g.slice(0, k).join("/")}`)) return false;
-  return true;
-}
-
+/** What is shown has changed: the views are drawn again. */
 function applyVisibility() {
-  keep();
   for (const v of Object.values(views)) v.set({ layers: { scan: vis("scan"), model: true, marks: true, issues: true } }, true);
-  rebuildModel(); rebuildMarks(); syncHighlights(); renderTree();
+  rebuildModel(); rebuildMarks(); syncHighlights();
 }
-function toggleVis(key) {
-  hidden.has(key) ? hidden.delete(key) : hidden.add(key);
-  applyVisibility();
-}
+const toggleVis = (key) => objects.toggle(key);
 
 // Selections shown (their eye is on) are drawn as highlighted points; loaded once each.
 const selClouds = new Map(), selRays = new Map();
@@ -1575,9 +1555,6 @@ async function syncHighlights() {
 }
 
 // ----- the tree of objects --------------------------------------------------------------
-
-const EYE = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>`;
-const EYE_OFF = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".45"/><path d="M3 13L13 3" stroke="currentColor" stroke-width="1.3"/></svg>`;
 
 function selectMember(path) {
   choose("member", path);
@@ -1610,87 +1587,42 @@ function gotoIssue(id) {
   views[active].frame(i.place.min.map((x, k) => 0.5 * (x + i.place.max[k])), Math.max(1.2, 0.8 * Math.hypot(...vec.sub(i.place.max, i.place.min))));
 }
 
-function renderTree() {
-  const box = $("layersPane");
-  if (!box || !st) return;
-  const row = (depth, kind, key, name, opts = {}) => {
-    const tw = opts.group ? `<span class="tw" data-tw>${open.has(key) ? "▾" : "▸"}</span>` : `<span class="tw"></span>`;
-    return `<div class="trow${opts.on ? " on" : ""}${vis(key) ? "" : " off"}" data-kind="${kind}" data-key="${esc(key)}" ${opts.id != null ? `data-id="${esc(opts.id)}"` : ""} style="padding-left:${4 + depth * 12}px" title="${esc(opts.title || name)}">${tw}<span class="eye" data-eye title="Show or hide">${vis(key) ? EYE : EYE_OFF}</span>${opts.dot ? `<i class="dot ${opts.dot}"></i>` : ""}<span class="tn">${esc(name)}</span>${opts.note != null ? `<span class="muted">${esc(opts.note)}</span>` : ""}</div>`;
-  };
-  const mil = (n) => `${(n / 1e6).toFixed(1)}M`;
-  let html = row(0, "top", "scan", "Scan", { note: st.scan.loaded && st.cloud ? `${mil(st.cloud)} of ${mil(st.scan.points)} points` : st.loading || "loading", title: `The scan's points (thinned for the 3D view; a view clipped to a slab draws every point in it). ${st.scan.ranged === false ? "" : `Points nearer the sensor than ${+(st.scan.min_range ?? 1).toFixed(2)} m are left out (${((st.scan.points ?? 0) - (st.scan.used ?? 0)).toLocaleString()} of them): right-click to change that.`}` });
-  // The model: its groups, then its members, with their evidence as a dot.
-  const list = members || [];
-  html += row(0, "top", "model", "Model", { group: true, note: st.tally ? `${list.length} · ${st.tally.contradicted} contradicted` : list.length, title: st.tally ? `${st.tally.supported} members supported by the scan, ${st.tally.contradicted} contradicted, ${st.tally.unseen} unseen` : "Model" });
-  if (open.has("model")) {
-    const node = { groups: new Map(), members: [] };
-    for (const m of list) {
-      let n = node;
-      for (const g of memberParts(m.path).groups) { if (!n.groups.has(g)) n.groups.set(g, { groups: new Map(), members: [] }); n = n.groups.get(g); }
-      n.members.push(m);
-    }
-    const count = (n) => n.members.length + [...n.groups.values()].reduce((a, g) => a + count(g), 0);
-    const bad = (n) => n.members.filter((m) => m.evidence.state === "contradicted").length + [...n.groups.values()].reduce((a, g) => a + bad(g), 0);
-    const walk = (n, depth, prefix) => {
-      for (const [name, g] of n.groups) {
-        const path = prefix ? `${prefix}/${name}` : name, key = `g:${path}`, b = bad(g);
-        html += row(depth, "group", key, name, { group: true, id: path, note: count(g), dot: b ? "contradicted" : "", title: `${path}: ${count(g)} members${b ? `, ${b} contradicted by the scan` : ""}` });
-        if (open.has(key)) walk(g, depth + 1, path);
-      }
-      for (const m of n.members) html += row(depth, "member", `m:${m.path}`, memberParts(m.path).name, { id: m.path, dot: m.evidence.state, on: m.path === (sel.pick?.member?.path ?? sel.member), title: `${m.path} — ${m.evidence.state}` });
-    };
-    walk(node, 1, "");
-  }
-  html += row(0, "top", "issues", "Issues", { group: true, note: st.issues.filter((i) => i.status !== "done").length });
-  if (open.has("issues")) for (const i of ordered()) html += row(1, "issue", `issue:${i.id}`, `#${i.id} ${i.title}`, { id: i.id, on: i.id === sel.issue && !chosen(), note: i.place ? "" : "not pinned", dot: i.status === "done" ? "unseen" : i.status === "waiting" ? "contradicted" : "" });
-  html += row(0, "top", "selections", "Selections", { group: true, note: (st.selections || []).length || "shift-drag" });
-  if (open.has("selections")) for (const s of st.selections || []) html += row(1, "sel", `sel:${s.id}`, selName(s), { id: s.id, on: s.id === sel.selection, note: `${s.count.toLocaleString()}${s.ignored ? " · ignored" : ""}`, title: s.ignored ? `${selName(s)}: its points are left out of the scan (shown here in yellow while its eye is on)` : selName(s) });
-  html += row(0, "top", "planes", "Planes", { group: true, note: (st.surfaces || []).length || "right-click: fit" });
-  if (open.has("planes")) for (const s of st.surfaces || []) html += row(1, "plane", `plane:${s.id}`, planeName(s), { id: s.id, on: s.id === sel.plane, note: `${(s.rms * 1000).toFixed(0)} mm` });
-  html += row(0, "top", "slabs", "Slabs", { group: true, note: slabs().length || "right-click: slab", title: "Slabs: boxes a 3D view can be clipped to, to see a section. Double-click one to look through it" });
-  if (open.has("slabs")) for (const s of slabs()) html += row(1, "slab", `slab:${s.id}`, slabName(s), { id: s.id, on: s.id === sel.slab, note: `${(2 * s.half[0]).toFixed(1)} × ${(2 * s.half[1]).toFixed(1)} × ${(2 * s.half[2]).toFixed(2)}${KINDS.some((k) => views[k].slab === s.id && app.shown(k)) ? " · in view" : ""}` });
-  html += row(0, "top", "polylines", "Polylines", { group: true, note: lines().length || "draw in a view" });
-  if (open.has("polylines")) for (const l of lines()) html += row(1, "polyline", `line:${l.id}`, lineName(l), { id: l.id, on: l.id === sel.polyline, note: `${lineLength(l).toFixed(2)} m` });
-  if ((st.rooms || []).length) html += row(0, "top", "rooms", "Rooms", { note: st.rooms.length });
-  const top = box.scrollTop;
-  box.innerHTML = `<div class="tree">${html}</div>`;
-  box.scrollTop = top;
-}
+const renderTree = () => objects.render();
 
-/** What a row of the tree is: { kind, key, id }. */
-const rowOf = (e) => { const r = e.target.closest(".trow"); return r && { el: r, kind: r.dataset.kind, key: r.dataset.key, id: r.dataset.id }; };
-
+/** The scan's rows in the tree of objects, and what the scan says of the model's. */
 function bindTree() {
-  const box = $("layersPane");
-  // (A row is drawn again when it is selected, so a double click is told by its timing, not by the browser.)
-  let last = { key: null, t: 0 };
-  box.addEventListener("click", (e) => {
-    const r = rowOf(e);
-    if (!r) return;
-    if (e.target.closest("[data-eye]")) return toggleVis(r.key);
-    const kind = r.kind === "sel" ? "selection" : r.kind, now = performance.now();
-    const twice = last.key === r.key && now - last.t < 400;
-    last = { key: r.key, t: twice ? 0 : now };
-    // Twice: go to it.
-    if (twice && kind !== "top") return gotoObject(kind, r.id);
-    if (kind === "top" || kind === "group") {
-      // The arrow (or the row, of a group that has no other use) folds it.
-      if (r.el.querySelector("[data-tw]")) { open.has(r.key) ? open.delete(r.key) : open.add(r.key); keep(); renderTree(); }
-      return;
-    }
-    if (kind === "member") selectMember(r.id);
-    else if (kind === "issue") openIssue(Number(r.id));
-    else if (kind === "selection") choose("selection", r.id);
-    else if (kind === "plane") choose("plane", r.id);
-    else if (kind === "slab") choose("slab", r.id);
-    else if (kind === "polyline") choose("polyline", r.id);
+  const row = objects.row, mil = (n) => `${(n / 1e6).toFixed(1)}M`;
+  const group = (key, order, rows) => objects.section({ key, order, rows: () => (st ? rows() : "") });
+  group("scan", 0, () => row(0, "top", "scan", "Scan", { note: st.scan.loaded && st.cloud ? `${mil(st.cloud)} of ${mil(st.scan.points)} points` : st.loading || "loading", title: `The scan's points (thinned for the 3D view; a view clipped to a slab draws every point in it). ${st.scan.ranged === false ? "" : `Points nearer the sensor than ${+(st.scan.min_range ?? 1).toFixed(2)} m are left out (${((st.scan.points ?? 0) - (st.scan.used ?? 0)).toLocaleString()} of them): right-click to change that.`}` }));
+  // The model: its parts as the scan has them, with their evidence as a dot.
+  const bad = (list) => list.filter((m) => m.evidence.state === "contradicted").length;
+  objects.model({
+    parts: () => members || [],
+    header: (list) => ({ note: st?.tally ? `${list.length} · ${st.tally.contradicted} contradicted` : list.length, title: st?.tally ? `${st.tally.supported} members supported by the scan, ${st.tally.contradicted} contradicted, ${st.tally.unseen} unseen` : "Model" }),
+    group: (path, inside) => ({ dot: bad(inside) ? "contradicted" : "", title: `${path}: ${inside.length} members${bad(inside) ? `, ${bad(inside)} contradicted by the scan` : ""}` }),
+    decorate: (m) => ({ dot: m.evidence.state, title: `${m.path} — ${m.evidence.state}` }),
+    selected: () => sel.pick?.member?.path ?? sel.member,
   });
-  box.addEventListener("contextmenu", (e) => {
-    const r = rowOf(e);
-    if (!r) return;
-    e.preventDefault();
-    openMenu(objectMenu(r.kind === "sel" ? "selection" : r.kind, r.kind === "top" ? r.key : r.id), e.clientX, e.clientY);
+  group("issues", 20, () => row(0, "top", "issues", "Issues", { group: true, note: st.issues.filter((i) => i.status !== "done").length })
+    + (open.has("issues") ? ordered().map((i) => row(1, "issue", `issue:${i.id}`, `#${i.id} ${i.title}`, { id: i.id, on: i.id === sel.issue && !chosen(), note: i.place ? "" : "not pinned", dot: i.status === "done" ? "unseen" : i.status === "waiting" ? "contradicted" : "" })).join("") : ""));
+  group("selections", 30, () => row(0, "top", "selections", "Selections", { group: true, note: (st.selections || []).length || "shift-drag" })
+    + (open.has("selections") ? (st.selections || []).map((s) => row(1, "sel", `sel:${s.id}`, selName(s), { id: s.id, on: s.id === sel.selection, note: `${s.count.toLocaleString()}${s.ignored ? " · ignored" : ""}`, title: s.ignored ? `${selName(s)}: its points are left out of the scan (shown here in yellow while its eye is on)` : selName(s) })).join("") : ""));
+  group("planes", 40, () => row(0, "top", "planes", "Planes", { group: true, note: (st.surfaces || []).length || "right-click: fit" })
+    + (open.has("planes") ? (st.surfaces || []).map((s) => row(1, "plane", `plane:${s.id}`, planeName(s), { id: s.id, on: s.id === sel.plane, note: `${(s.rms * 1000).toFixed(0)} mm` })).join("") : ""));
+  group("slabs", 50, () => row(0, "top", "slabs", "Slabs", { group: true, note: slabs().length || "right-click: slab", title: "Slabs: boxes a 3D view can be clipped to, to see a section. Double-click one to look through it" })
+    + (open.has("slabs") ? slabs().map((s) => row(1, "slab", `slab:${s.id}`, slabName(s), { id: s.id, on: s.id === sel.slab, note: `${(2 * s.half[0]).toFixed(1)} × ${(2 * s.half[1]).toFixed(1)} × ${(2 * s.half[2]).toFixed(2)}${KINDS.some((k) => views[k].slab === s.id && app.shown(k)) ? " · in view" : ""}` })).join("") : ""));
+  group("polylines", 60, () => row(0, "top", "polylines", "Polylines", { group: true, note: lines().length || "draw in a view" })
+    + (open.has("polylines") ? lines().map((l) => row(1, "polyline", `line:${l.id}`, lineName(l), { id: l.id, on: l.id === sel.polyline, note: `${lineLength(l).toFixed(2)} m` })).join("") : ""));
+  group("rooms", 70, () => ((st.rooms || []).length ? row(0, "top", "rooms", "Rooms", { note: st.rooms.length }) : ""));
+  // A click chooses, a second goes to it, a right-click asks what can be done with it.
+  objects.on("select", (kind, id) => {
+    if (kind === "member") selectMember(id);
+    else if (kind === "issue") openIssue(Number(id));
+    else if (["selection", "plane", "slab", "polyline"].includes(kind)) choose(kind, id);
   });
+  objects.on("goto", (kind, id) => gotoObject(kind, id));
+  objects.on("visibility", applyVisibility);
+  objects.menu((kind, id, e) => openMenu(objectMenu(kind, id), e.clientX, e.clientY));
 }
 
 // ----- a view's own controls: in the view, not in the browser ----------------------------
@@ -2174,7 +2106,8 @@ export async function initScan(hooks) {
     app.registerPane(k, { label, el: `${k}Pane`, shown: () => { active = k; if (st) { syncSlabs(); rebuildMarks(); } renderLayers(); app.showBrowser("layers"); } });
   app.registerPane("board", { label: "Issue board", el: "boardPane", shown: () => renderBoard() });
   // The browser: layers and views.
-  for (const [k, label] of [["layers", "Objects"], ["views", "Views"]]) {
+  // (The tree of objects is the page's: this adds the views kept.)
+  for (const [k, label] of [["views", "Views"]]) {
     const b = el("button", { "data-b": k }, label);
     b.onclick = () => app.showBrowser(k);
     $("browserTabs").appendChild(b);
