@@ -638,3 +638,13 @@ tools, handles: `scan.js`) and the model's (`model3d.js`), both on
 `glview.js`. One kind of view, in which the scan is a layer that is there
 when a scan is, is the next step; the scan's views already obey the same
 eyes, and so does the exact-lines view (the engine is told what is hidden).
+
+## Sheets against the scan
+
+A roof's deck and a floor's are parts like any other, and the scan is read
+against them. Two things are particular to a sheet. Its box is its own (a
+part's third axis is square to its top, where that slopes): a sloped sheet
+judged in an upright box would have every ray under the roof pass
+"through" it. And a layer of boards laid with gaps, drawn as a sheet, is
+partly not there (`Solid.open`): the rays through it are counted against it
+only beyond the share that is gaps.

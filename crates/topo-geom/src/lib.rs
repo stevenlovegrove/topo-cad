@@ -208,10 +208,12 @@ pub struct Part {
     /// Its faces: each an outline, anticlockwise seen from outside, and its outward normal.
     pub faces: Vec<(Vec<Vec3>, Vec3)>,
     /// Its own directions (unit, square to each other): for a member, along it and its section's
-    /// two; for a solid, along its longest edge on plan, across that, and up.
+    /// two; for a solid, along its longest edge, across that, and square to its top.
     pub axes: [Vec3; 3],
     /// Its two ends along the first of those (a member's first and last nodes).
     pub ends: [Vec3; 2],
+    /// How much of it is gaps, as a share (a solid's: boards laid apart, drawn as a sheet).
+    pub open: f64,
 }
 
 impl Geometry {
@@ -226,13 +228,17 @@ impl Geometry {
                 faces: g.faces().into_iter().map(|f| (f.outer, f.normal)).collect(),
                 axes: [g.place.x, g.place.u, g.place.v],
                 ends: [model.pos(m.start()), model.pos(m.end())],
+                open: 0.0,
             }
         });
         let solids = model.solids.iter().enumerate().map(|(k, s)| {
             let n = s.outline.len();
             let long = (0..n).map(|k| s.outline[(k + 1) % n] - s.outline[k]).max_by(|a, b| a.norm().total_cmp(&b.norm())).filter(|d| d.norm() > 1e-9).map_or(Vec3::X, |d| Vec3::new(d.x, d.y, 0.0) / d.norm());
             let faces: Vec<(Vec<Vec3>, Vec3)> = s.faces().into_iter().map(|f| (f.outer, f.normal)).collect();
-            let axes = [long, Vec3::Z.cross(long), Vec3::Z];
+            // (Square to its top, where that slopes: a sheet on a roof is thin its own way, not plumb.)
+            let up = s.top.normal();
+            let long = (long - up * long.dot(up)).try_normalized().unwrap_or(long);
+            let axes = [long, up.cross(long), up];
             // (Its ends: the middle of its box, half its length either way.)
             let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
             for p in faces.iter().flat_map(|f| &f.0) {
@@ -243,7 +249,7 @@ impl Geometry {
             }
             let mid = |a: usize| 0.5 * (lo[a] + hi[a]);
             let at = |t: f64| axes[0] * t + axes[1] * mid(1) + axes[2] * mid(2);
-            Part { kind: PartKind::Solid(k), path: model.solid_path(s), role: s.role.clone(), faces, axes, ends: [at(lo[0]), at(hi[0])] }
+            Part { kind: PartKind::Solid(k), path: model.solid_path(s), role: s.role.clone(), faces, axes, ends: [at(lo[0]), at(hi[0])], open: s.open }
         });
         members.chain(solids).collect()
     }

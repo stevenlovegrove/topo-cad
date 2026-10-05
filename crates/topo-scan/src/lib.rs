@@ -95,6 +95,8 @@ pub struct PredMember {
     pub obb: Obb,
     /// Its first and last nodes.
     pub ends: [V3; 2],
+    /// How much of it is gaps, as a share (boards laid apart, drawn as a sheet).
+    pub open: f32,
 }
 
 /// A model evaluated: its members' predicted solids.
@@ -157,7 +159,7 @@ pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -
             let c: [f32; 3] = std::array::from_fn(|a| 0.5 * (lo[a] + hi[a]));
             let centre = add(add(scale(axes[0], c[0]), scale(axes[1], c[1])), scale(axes[2], c[2]));
             let obb = Obb { centre, axes, length: hi[0] - lo[0], width: hi[1] - lo[1], depth: hi[2] - lo[2] };
-            PredMember { id: k, path: part.path, role: part.role, faces, obb, ends: part.ends.map(v) }
+            PredMember { id: k, path: part.path, role: part.role, faces, obb, ends: part.ends.map(v), open: part.open as f32 }
         })
         .collect();
     // The scan's frame, if the model has one: model → scan is its placement, turned back.
@@ -521,8 +523,14 @@ pub fn evidence(pred: &Prediction, samples: &FaceSamples, pl: &Placement, xyz: &
     if let Some(sensor) = sensor {
         let boxes: Vec<Obb> = pred.members.iter().map(|m| pl.obb(&m.obb)).collect();
         let stats = ray_stats(&boxes, xyz, sensor, used, ray_stride, 0.01);
-        for (e, s) in out.iter_mut().zip(stats) {
+        for ((e, s), m) in out.iter_mut().zip(stats).zip(&pred.members) {
             e.rays = s;
+            // (What is partly gaps is seen through by that much: only rays beyond that share count against it.)
+            if m.open > 0.0 {
+                let expected = (m.open * (s.pierced + s.ended) as f32) as u32;
+                let through = s.pierced.saturating_sub(expected);
+                e.rays = RayStats { pierced: through, ended: s.ended + (s.pierced - through) };
+            }
         }
     }
     out

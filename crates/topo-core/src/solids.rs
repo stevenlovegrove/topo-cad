@@ -56,6 +56,10 @@ pub struct Solid {
     /// and no face.
     #[serde(default)]
     pub seams: Vec<usize>,
+    /// How much of it is not there, as a share: a layer of boards laid with gaps, drawn as a
+    /// sheet, is that much gaps (what looks at it sees through that much of it).
+    #[serde(default)]
+    pub open: f64,
 }
 
 /// A face of a solid: its outline (anticlockwise seen from outside) and outward normal.
@@ -110,7 +114,7 @@ mod tests {
 
     #[test]
     fn a_solids_faces_face_outward() {
-        let s = Solid { name: "Slab".into(), role: "slab".into(), material: "concrete".into(), group: None, outline: vec![Vec2::new(0.0, 0.0), Vec2::new(0.0, 2.0), Vec2::new(3.0, 2.0), Vec2::new(3.0, 0.0)], bottom: Level::flat(-0.1), top: Level { z: 0.0, at: Vec2::new(0.0, 0.0), slope: Vec2::new(0.01, 0.0) }, seams: vec![] };
+        let s = Solid { name: "Slab".into(), role: "slab".into(), material: "concrete".into(), group: None, outline: vec![Vec2::new(0.0, 0.0), Vec2::new(0.0, 2.0), Vec2::new(3.0, 2.0), Vec2::new(3.0, 0.0)], bottom: Level::flat(-0.1), top: Level { z: 0.0, at: Vec2::new(0.0, 0.0), slope: Vec2::new(0.01, 0.0) }, seams: vec![], open: 0.0 };
         let faces = s.faces();
         assert_eq!(faces.len(), 6);
         // (Its top is laid to a slope: 30 mm higher along x at its far side, and its top face faces square to it.)

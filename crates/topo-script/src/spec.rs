@@ -517,14 +517,16 @@ pub struct RoofSpec {
 }
 
 /// The sheets of a build-up, from the underside up: what each is of, how far its underside is
-/// above the build-up's, and how thick it is. (No layers given: one sheet, of plywood.)
-fn sheets(layers: &[Layer], thickness: f64) -> Vec<(String, f64, f64)> {
+/// above the build-up's, how thick it is, and how much of it is gaps (boards laid apart). (No
+/// layers given: one sheet, of plywood.)
+fn sheets(layers: &[Layer], thickness: f64) -> Vec<(String, f64, f64, f64)> {
     if layers.is_empty() {
-        return vec![("plywood".into(), 0.0, thickness)];
+        return vec![("plywood".into(), 0.0, thickness, 0.0)];
     }
     let (mut at, mut out) = (0.0, vec![]);
     for l in layers.iter().rev().filter(|l| l.thickness > 0.0) {
-        out.push((l.name.clone(), at, l.sheet()));
+        let open = l.strips.as_ref().filter(|s| !s.sheet && s.spacing > s.width).map_or(0.0, |s| 1.0 - s.width / s.spacing);
+        out.push((l.name.clone(), at, l.sheet(), open));
         at += l.sheet();
     }
     out
@@ -1808,9 +1810,9 @@ impl Builder {
                     // (A sheet's thickness is square to the slope: so much more, plumb.)
                     let steep = (1.0 + plane.slope.dot(plane.slope)).sqrt();
                     area += polygon_area(&outline).abs() * steep;
-                    for (of, at, thick) in sheets(layers, r.deck) {
+                    for (of, at, thick, open) in sheets(layers, r.deck) {
                         let name = if layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
-                        self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: outline.clone(), bottom: plane.raised(at * steep), top: plane.raised((at + thick) * steep), seams: seams.clone() });
+                        self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: outline.clone(), bottom: plane.raised(at * steep), top: plane.raised((at + thick) * steep), seams: seams.clone(), open });
                     }
                 }
             }
@@ -1924,9 +1926,9 @@ impl Builder {
                 if let (Some(g), 0, false) = (group, k, deck.layers.is_empty()) {
                     self.m.buildups.push(Buildup { name: format!("{}: deck", a.name), group: g, layers: deck.layers.clone() });
                 }
-                for (of, at, thick) in sheets(&deck.layers, deck.thickness) {
+                for (of, at, thick, open) in sheets(&deck.layers, deck.thickness) {
                     let name = if deck.layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
-                    self.m.solids.push(Solid { name, role: "deck".into(), material: of, group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under.raised(at), top: under.raised(at + thick), seams: vec![] });
+                    self.m.solids.push(Solid { name, role: "deck".into(), material: of, group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under.raised(at), top: under.raised(at + thick), seams: vec![], open });
                 }
             }
         }
@@ -2235,7 +2237,7 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         b.slabs.insert(s.name.clone(), (body, n, level));
         slab_tops.push(n);
         let g = b.m.add_group(&s.name, "slab", Frame::WORLD, Some(b.root));
-        b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: level.raised(-s.thickness), top: level, seams: vec![] });
+        b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: level.raised(-s.thickness), top: level, seams: vec![], open: 0.0 });
     }
     // (Where partitions tee into walls is known before the walls are built: their cap plates are broken there.)
     for item in &spec.items {
