@@ -862,6 +862,38 @@ export function intersect(a1: Point, a2: Point, b1: Point, b2: Point): Point {
   const t = ((b1[0] - a1[0]) * dy2 - (b1[1] - a1[1]) * dx2) / den;
   return [a1[0] + dx1 * t, a1[1] + dy1 * t];
 }
+/** A convex outline with each edge moved outward by so much (edge k from point k to the next). */
+function grown(outline: readonly Point[], by: readonly Length[]): Point[] {
+  const n = outline.length;
+  const area = outline.reduce((t, p, k) => t + p[0] * outline[(k + 1) % n][1] - outline[(k + 1) % n][0] * p[1], 0);
+  const line = (k: number): [Point, Point] => {
+    const [p, q] = [outline[k], outline[(k + 1) % n]];
+    const l = Math.hypot(q[0] - p[0], q[1] - p[1]) * Math.sign(area);
+    const out: Point = [((q[1] - p[1]) / l) * by[k], (-(q[0] - p[0]) / l) * by[k]];
+    return [[p[0] + out[0], p[1] + out[1]], [q[0] + out[0], q[1] + out[1]]];
+  };
+  return outline.map((_, k) => intersect(...line((k + n - 1) % n), ...line(k)));
+}
+/** What of a convex outline is inside another. */
+function clipped(subject: readonly Point[], by: readonly Point[]): Point[] {
+  const n = by.length;
+  const turn = Math.sign(by.reduce((t, p, k) => t + p[0] * by[(k + 1) % n][1] - by[(k + 1) % n][0] * p[1], 0));
+  let out = subject.slice();
+  for (let k = 0; k < n && out.length; k++) {
+    const [p, q] = [by[k], by[(k + 1) % n]];
+    const f = (r: Point) => turn * ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+    const next: Point[] = [];
+    out.forEach((r, i) => {
+      const t = out[(i + 1) % out.length];
+      const [fr, ft] = [f(r), f(t)];
+      if (fr >= 0) next.push(r);
+      if ((fr > 0 && ft < 0) || (fr < 0 && ft > 0)) next.push(lerp(r, t, fr / (fr - ft)));
+    });
+    out = next;
+  }
+  return out;
+}
+
 /** Pitch as rise per unit run: `pitch(6, 12)` = 6:12. */
 export const pitch = (rise: number, run: number = 12): number => rise / run;
 
@@ -1099,6 +1131,7 @@ export class TrussRoof {
     readonly loads: readonly AreaLoad[];
     readonly overrides?: readonly { readonly trusses: readonly number[]; readonly shape: TrussShape }[];
     readonly shifts?: readonly { readonly trusses: readonly number[]; readonly along: Length }[];
+    readonly start?: Length;
   }) {}
 
   /**
@@ -1108,10 +1141,12 @@ export class TrussRoof {
    * (`scan.node("heel line")`), or a datum (`Frame.world.point(...)`).
    * `spanDir`: the direction the trusses span; `length`: along the ridge.
    * Their height is not given: they sit on what they bear on (`bearingOn`).
+   * `start`: how far along the ridge from `at` the first truss is (a roof
+   * over part of what it is set out on).
    */
   static of(
     shape: TrussShape,
-    o: { name?: string; at: NodeHandle; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal },
+    o: { name?: string; at?: NodeHandle; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal; start?: Length },
   ): TrussRoof {
     if (!(o.at instanceof NodeHandle)) {
       throw new Error("a truss roof is set out at a node: give `at` (a corner of the walls, a point of a scan's frame, or a datum: `Frame.world.point(name, { x, y })`)");
@@ -1128,6 +1163,7 @@ export class TrussRoof {
       grade: o.grade,
       bears_on: [],
       loads: [],
+      start: o.start,
     });
   }
   /**
@@ -1268,8 +1304,15 @@ interface AssemblyMemberSpec {
   readonly depth?: Point3;
   readonly anchor?: readonly [number, number];
   readonly priority: number;
-  readonly cut?: readonly [("level" | "plumb" | "square" | null), ("level" | "plumb" | "square" | null)];
+  readonly cut?: readonly [Cut | null, Cut | null];
 }
+/**
+ * How an end of a member is cut, where that is not as its joint has it: on a
+ * `"level"` plane through its node, a `"plumb"` one (upright, square to its
+ * run on plan), `"square"` to itself; or on the plane through its node that is
+ * square to a direction given (in the assembly's frame).
+ */
+export type Cut = "level" | "plumb" | "square" | Point3;
 
 /**
  * Any custom piece of topology: named points and members in a local frame.
@@ -1397,7 +1440,7 @@ export class Assembly {
       anchor?: readonly [number, number];
       priority?: number;
       /** How its start and its end are cut, where not as their joints have them: `level` (a stringer's foot on a floor) or `plumb` (its head against a header). */
-      cut?: readonly [("level" | "plumb" | "square" | null), ("level" | "plumb" | "square" | null)];
+      cut?: readonly [Cut | null, Cut | null];
     },
   ): Assembly {
     for (const n of path) if (!this.points.some((p) => p.name === n)) throw new Error(`assembly ${this.name}: unknown point ${n}`);
@@ -1736,7 +1779,7 @@ export class Floor {
 // ----- rafter roofs ------------------------------------------------------------
 
 /**
- * A gable roof of rafters: pairs of rafters from the walls' plates up to the
+ * A roof of rafters: pairs of rafters from the walls' plates up to the
  * ridge, where each pair meets, at a spacing, with a ceiling tie across each
  * pair at the plates. Like a floor it is given on plan (a corner, the way its ridge runs,
  * how long), with its span and pitch, and not its height: it sits on the
@@ -1753,22 +1796,39 @@ export class Floor {
  * plumb, against its pair's. The ties lie on the plates beside the rafters.
  * It is one rigid thing, as a floor is.
  *
+ * `farPitch`: the pitch of the far side (the side away from `corner`), where
+ * it is not the near side's: the ridge is then where the two meet, not in the
+ * middle (a saltbox). The steeper rafter is deeper, measured plumb, so it is
+ * let down at its foot (a deeper level cut) for the two tops to meet at the
+ * ridge.
+ *
+ * `ends`: what each end is (where it starts, where it stops): a `"gable"`
+ * (the default: a pair at the end) or a `"hip"`. At a hip the roof slopes
+ * down to the end wall too, at the same pitch: the ridge stops half a span
+ * short; a hip rafter runs up from each corner to the ridge's end, where the
+ * two are cut on the plane they meet in and the last pair stands against
+ * their points; and jack rafters run from the plates to the hips, each cut
+ * against its hip's side. The end wall is framed by jacks alone.
+ *
  * *Not yet:* a ridge board (nothing would carry it in the load path as it
  * is worked out); a birdsmouth, and a tail past the seat (a member cannot be
  * notched); the ties are not fastened to the rafters, so their thrust is
- * not taken; hips and valleys.
+ * not taken; a hip is not backed (its top is square, a little under the
+ * planes); valleys.
  */
 export class RafterRoof {
   private constructor(
     readonly name: string,
-    readonly o: { readonly span: Length; readonly pitch: number; readonly rafters: Nominal; readonly grade: Grade; readonly spacing: Length; readonly ties: Nominal; readonly seat: Length },
+    readonly o: { readonly span: Length; readonly pitch: number; readonly farPitch: number; readonly rafters: Nominal; readonly grade: Grade; readonly spacing: Length; readonly ties: Nominal; readonly seat: Length; readonly ends: readonly ["gable" | "hip", "gable" | "hip"] },
     readonly rect: { readonly corner: Point; readonly along: Point; readonly length: Length } | undefined,
     readonly bearsOn: readonly (Perimeter | Partition | Assembly)[],
     readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
   ) {}
-  static of(o: { span: Length; pitch: number; rafters: Nominal; grade: Grade; spacing?: Length; ties?: Nominal; seat?: Length }): RafterRoof {
+  static of(o: { span: Length; pitch: number; farPitch?: number; rafters: Nominal; grade: Grade; spacing?: Length; ties?: Nominal; seat?: Length; ends?: readonly ["gable" | "hip", "gable" | "hip"] }): RafterRoof {
     if (!(o.span > 0) || !(o.pitch > 0)) throw new Error("rafter roof: give a span and a pitch");
-    return new RafterRoof("Roof", { span: o.span, pitch: o.pitch, rafters: o.rafters, grade: o.grade, spacing: o.spacing ?? inch(24), ties: o.ties ?? [2, 6], seat: o.seat ?? inch(1.75) }, undefined, [], []);
+    const ends = o.ends ?? ["gable", "gable"];
+    if (ends.includes("hip") && (o.farPitch ?? o.pitch) !== o.pitch) throw new Error("rafter roof: a roof with a hip has one pitch (its two sides and its hip ends alike)");
+    return new RafterRoof("Roof", { span: o.span, pitch: o.pitch, farPitch: o.farPitch ?? o.pitch, rafters: o.rafters, grade: o.grade, spacing: o.spacing ?? inch(24), ties: o.ties ?? [2, 6], seat: o.seat ?? inch(1.75), ends }, undefined, [], []);
   }
   named(name: string): RafterRoof {
     return new RafterRoof(name, this.o, this.rect, this.bearsOn, this.loads);
@@ -1786,40 +1846,98 @@ export class RafterRoof {
   load(kind: LoadKind, pressure: number): RafterRoof {
     return new RafterRoof(this.name, this.o, this.rect, this.bearsOn, [...this.loads, { kind, pressure }]);
   }
-  /** How high the underside of the rafters is at the ridge, above the plates. */
+  /**
+   * Where each side's rafters have their feet (how far in from that side's wall line), and how far their lumber
+   * is let down from the line between foot and ridge. Both `seat` and nothing, where the sides are of one pitch.
+   * Where they are not, the steeper rafter is deeper, measured plumb, than the other: so that the two tops meet
+   * at the ridge it is let down by the difference (a deeper level cut at its foot), and its foot is set out so
+   * that it still bears in the middle of the plate.
+   */
+  private get sides(): { readonly near: { readonly foot: Length; readonly down: Length }; readonly far: { readonly foot: Length; readonly down: Length } } {
+    const { pitch, farPitch, seat, rafters } = this.o;
+    const plumb = (q: number) => dressed(rafters[1]) * Math.hypot(1, q);
+    const side = (q: number, other: number) => (q > other ? { foot: seat - (plumb(q) - plumb(other)) / q, down: plumb(q) - plumb(other) } : { foot: seat, down: 0 });
+    return { near: side(pitch, farPitch), far: side(farPitch, pitch) };
+  }
+  /** How far across the span the ridge is, from the near side (the middle, if both sides are of one pitch). */
+  get ridgeAt(): Length {
+    const { span, pitch, farPitch } = this.o;
+    const { near, far } = this.sides;
+    return (farPitch * (span - far.foot) + pitch * near.foot) / (pitch + farPitch);
+  }
+  /** How high the rafters' line is at the ridge, above the plates (their undersides, where the sides are of one pitch). */
   get rise(): Length {
-    return (this.o.span / 2 - this.o.seat) * this.o.pitch;
+    return (this.ridgeAt - this.sides.near.foot) * this.o.pitch;
   }
   /** What it is made of: a free assembly, sat on what it bears on. */
   assembly(): Assembly {
     const r = this.rect;
     if (!r) throw new Error(`roof ${this.name}: give where it is with from(corner, { along, length })`);
-    const { span, pitch, rafters, grade, spacing, ties, seat } = this.o;
+    const { span, pitch, farPitch, rafters, grade, spacing, ties, seat, ends } = this.o;
     const n = Math.hypot(r.along[0], r.along[1]);
     const x: Point = [r.along[0] / n, r.along[1] / n];
     const y: Point = [-x[1], x[0]];
     const at = (a: Length, c: Length, z: Length): Point3 => [r.corner[0] + x[0] * a + y[0] * c, r.corner[1] + x[1] * a + y[1] * c, z];
     const b = dressed(rafters[0]);
-    // Along the ridge: a pair at each end (half a thickness in), and pairs between at the spacing.
-    const as: Length[] = [b / 2];
-    for (let k = 1; k * spacing < r.length - 1.5 * b; k++) as.push(k * spacing);
-    as.push(r.length - b / 2);
-    const h = this.rise;
+    const [mid, h, { near, far }] = [this.ridgeAt, this.rise, this.sides];
+    // (How far a side's lumber is let down, as where its line is in its depth: at its underside if not at all.)
+    const set = (q: number, down: Length) => -0.5 + down / (dressed(rafters[1]) * Math.hypot(1, q));
+    // Along the ridge: a pair at each end of it (at a gable, half a thickness in from the end; at a hip, half a
+    // span in, where the ridge stops), and pairs between at the spacing.
+    const [first, last] = [ends[0] === "hip" ? span / 2 : b / 2, ends[1] === "hip" ? r.length - span / 2 : r.length - b / 2];
+    if (last - first < (ends.includes("hip") ? 4 * b : 0)) throw new Error(`roof ${this.name}: too short for its hips: it has to be longer than its span, for a ridge between them`);
+    const base = ends[0] === "hip" ? first : 0;
+    const as: Length[] = [first];
+    for (let k = 1; base + k * spacing < last - b; k++) as.push(base + k * spacing);
+    as.push(last);
+    // The pair at a hip stands wholly on the ridge's side of where the ridge stops (its face there, not its
+    // middle): so that none of it is above the plane of the hip end. Which way a pair is set over: +1 along the ridge.
+    // (And clear of the hips' heads, which run that far past it: a hip's half thickness, on the skew.)
+    const over = 0.5 + Math.SQRT1_2;
+    const lean = (k: number): number => (k === 0 && ends[0] === "hip" ? over : k === as.length - 1 && ends[1] === "hip" ? -over : 0);
     let a = Assembly.named(this.name);
     as.forEach((s, k) => {
-      a = a.point(`left foot ${k + 1}`, at(s, seat, 0)).point(`right foot ${k + 1}`, at(s, span - seat, 0)).point(`ridge ${k + 1}`, at(s, span / 2, h));
+      a = a.point(`left foot ${k + 1}`, at(s, near.foot, 0)).point(`right foot ${k + 1}`, at(s, span - far.foot, 0)).point(`ridge ${k + 1}`, at(s, mid, h));
       // (The tie lies on the plates beside the pair: toward the roof's middle from it.)
-      const beside = s + (s < r.length / 2 ? b : -b);
+      const beside = s + (s < r.length / 2 ? 1 : -1) * (b + (lean(k) ? Math.abs(lean(k)) + 0.5 : 0) * b);
       a = a.point(`left tie ${k + 1}`, at(beside, seat, 0)).point(`right tie ${k + 1}`, at(beside, span - seat, 0));
     });
+    const rafter = { size: rafters, grade, anchor: [0, -0.5] as [number, number] };
     as.forEach((_, k) => {
-      for (const side of ["left", "right"]) a = a.member("rafter", [`${side} foot ${k + 1}`, `ridge ${k + 1}`], { size: rafters, grade, anchor: [0, -0.5], priority: 10, cut: ["level", "plumb"] });
+      // (A rafter's own left is against the ridge's way for the left of a pair, and with it for the right.)
+      for (const [side, turn, depth] of [["left", 1, set(pitch, near.down)], ["right", -1, set(farPitch, far.down)]] as const) a = a.member("rafter", [`${side} foot ${k + 1}`, `ridge ${k + 1}`], { ...rafter, anchor: [turn * lean(k), depth], priority: 10, cut: ["level", "plumb"] });
       a = a.member("ceiling_tie", [`left tie ${k + 1}`, `right tie ${k + 1}`], { size: ties, grade, anchor: [0, -0.5], cut: ["square", "square"] });
     });
-    // (Per length of rafter: what falls on its strip of the plan.)
-    const cos = 1 / Math.hypot(1, pitch);
-    for (const l of this.loads) a = a.lineLoad(l.kind, "rafter", l.pressure * spacing * cos);
-    return a.bearingWith("rafter", "ceiling_tie").sitting().bearingOn(...this.bearsOn);
+    // A hip end: a hip from each corner, and the jacks either side of each hip. (The two hips are cut on the
+    // plane they meet in, under the ridge's line; a jack where it meets its hip's side. No rafter up the middle
+    // of the end: its top would stand above the roof's sides where it met the ridge, with no ridge board for
+    // it to stop against.)
+    const hip = (tag: string, ridge: string, A: (u: Length) => Length) => {
+      // (Jacks half a spacing either side of the middle of the end and of the last pair, then at the spacing.)
+      const us: Length[] = [];
+      for (let j = 1; span / 2 - (j - 0.5) * spacing > seat + 4 * b; j++) us.unshift(span / 2 - (j - 0.5) * spacing);
+      for (const [side, C] of [["left", (u: Length) => u], ["right", (u: Length) => span - u]] as const) {
+        const name = `${tag} ${side}`;
+        a = a.point(`${name} hip foot`, at(A(seat), C(seat), 0));
+        us.forEach((u, j) => {
+          a = a.point(`${name} hip ${j + 1}`, at(A(u), C(u), pitch * (u - seat))).point(`${name} side jack ${j + 1}`, at(A(u), C(seat), 0)).point(`${name} end jack ${j + 1}`, at(A(seat), C(u), 0));
+        });
+        a = a.member("hip_rafter", [`${name} hip foot`, ...us.map((_, j) => `${name} hip ${j + 1}`), ridge], { ...rafter, priority: 8, cut: ["level", [y[0], y[1], 0]] });
+        us.forEach((_, j) => {
+          for (const jack of ["side", "end"]) a = a.member("rafter", [`${name} ${jack} jack ${j + 1}`, `${name} hip ${j + 1}`], { ...rafter, cut: ["level", null] });
+        });
+      }
+    };
+    if (ends[0] === "hip") hip("start", "ridge 1", (u) => u);
+    if (ends[1] === "hip") hip("far", `ridge ${as.length}`, (u) => r.length - u);
+    // (Per length of rafter: what falls on its strip of the plan. Each side by its own pitch, where they differ:
+    // the pairs' rafters are its first members, left then right.)
+    const per = (q: number) => spacing / Math.hypot(1, q);
+    for (const l of this.loads) {
+      if (farPitch === pitch) a = a.lineLoad(l.kind, "rafter", l.pressure * per(pitch));
+      else as.forEach((_, k) => (a = a.lineLoad(l.kind, `rafter#${2 * k + 1}`, l.pressure * per(pitch)).lineLoad(l.kind, `rafter#${2 * k + 2}`, l.pressure * per(farPitch))));
+    }
+    return a.bearingWith("rafter", "hip_rafter", "ceiling_tie").sitting().bearingOn(...this.bearsOn);
   }
   toJSON() {
     return this.assembly().toJSON();
@@ -1849,16 +1967,23 @@ export interface RoofPartOptions {
   readonly heel?: Length;
   /** How high its eaves are, where nothing under them says (a dormer's). */
   readonly height?: Length;
+  /**
+   * Edges moved outward by so much: `{ 4: ft(8) }`. A wing over its own walls
+   * is run on into the roof it meets, as far as that roof's ridge, so that the
+   * two overlap (and meet in valleys).
+   */
+  readonly reach?: Readonly<Record<string | number, Length>>;
   /** Framed with rafters: pairs at a spacing, a tie across each (see `RafterRoof`). */
   readonly rafters?: { readonly size: Nominal; readonly grade: Grade; readonly spacing?: Length; readonly ties?: Nominal; readonly seat?: Length };
   /**
    * Framed with trusses (see `TrussRoof`): `shape` is the kind (`TrussShape.fink`,
-   * the default; `TrussShape.kingPost`, ...), made to the part's span, pitch and
-   * overhang. A part not given `over` walls says `at` what node its first heel is.
+   * the default; `TrussShape.kingPost`, ...; for a part with one eave,
+   * `TrussShape.mono`), made to the part's span, pitch and overhang. A part
+   * not given `over` walls says `at` what node its first heel is.
    */
   readonly trusses?: {
     readonly grade: Grade;
-    readonly shape?: (o: { span: Length; pitch: number; overhang: Length }) => TrussShape;
+    readonly shape?: (o: { span: Length; pitch: number; overhang: Length; panels: number }) => TrussShape;
     readonly spacing?: Length;
     readonly chord?: Nominal;
     readonly web?: Nominal;
@@ -1902,19 +2027,29 @@ interface RoofPart {
  * the cap plate of the wall under its eave (and `heel` above that); an eave
  * with nothing under it is as high as the part's others.
  *
- * A part with two eaves, opposite each other, is framed by saying with what:
- * `rafters: { size: [2, 8], grade }` or `trusses: { grade }`. The framing is
- * a `RafterRoof` or a `TrussRoof`, set out from the part (its span, its
- * pitch, its overhang, where it is), bearing on what the part is on; add the
- * roof to a building and its framing is added with it. `load` puts a load on
- * the framing.
+ * A part that is a rectangle is framed by saying with what: `rafters:
+ * { size: [2, 8], grade }` or `trusses: { grade }`. The framing is a
+ * `RafterRoof` or a `TrussRoof`, set out from the part (its span, its
+ * pitches, its overhang, where it is, what its ends are), bearing on what the
+ * part is on; add the roof to a building and its framing is added with it.
+ * `load` puts a load on the framing. What can be framed:
+ *
+ * - two eaves, opposite: rafters or trusses (a gable roof); rafters where the
+ *   two are of different pitches (a saltbox);
+ * - one eave: trusses, each a mono truss (a shed);
+ * - three eaves, or four: rafters, with a hip at each end that is an eave.
+ *
+ * A part that runs into an earlier one (a wing) is framed only as far as that
+ * one reaches: where they overlap, the earlier is framed through.
  *
  * The surfaces are written as a deck (sheets on the planes), and the roof is
  * told how much it has of each kind of edge (ridge, hip, valley, eave, rake)
  * and its area.
  *
- * *Not yet:* framing for hips and valleys (a hip roof is its surfaces only);
- * the framing of a wing is not stopped where it meets the main roof.
+ * *Not yet:* a wing's framing over the roof it runs into (its valley
+ * rafters, or a set of valley trusses on the main roof): that stretch is its
+ * surfaces only; trusses at a hip; rafters for a shed (a taller wall under
+ * their heads).
  */
 export class Roof {
   private constructor(
@@ -1954,40 +2089,71 @@ export class Roof {
     for (const g of o.gables ?? []) said[edge(g)] = "gable";
     for (const [key, e] of Object.entries(o.edges ?? {})) said[edge(key)] = e;
     const edges = said.map((e, k) => (e === "gable" ? null : { name: names[k], pitch: e?.pitch ?? o.pitch, overhang: e?.overhang ?? o.overhang ?? 0, height: e?.height ?? o.height }));
-    const base: RoofPart = { name, outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0 };
-    return new Roof(this.name, [...this.parts, { ...base, framing: this.frame(base, o, walls) }], this.deck_, this.layers_);
+    const reach = outline.map(() => 0);
+    for (const [key, d] of Object.entries(o.reach ?? {})) reach[edge(key)] = d;
+    const base: RoofPart = { name, outline: reach.some((d) => d) ? grown(outline, reach) : outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0 };
+    return new Roof(this.name, [...this.parts, { ...base, framing: this.frame(base, o, walls, outline) }], this.deck_, this.layers_);
   }
-  /** A part's framing, set out from the part. */
-  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined): TrussRoof | RafterRoof | undefined {
+  /** A part's framing, set out from the part (`drawn`: its outline before any of its edges were moved). */
+  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined, drawn: readonly Point[]): TrussRoof | RafterRoof | undefined {
     if (!o.rafters && !o.trusses) return undefined;
     const what = `roof ${this.name}: part ${p.name}`;
     if (o.rafters && o.trusses) throw new Error(`${what} is framed with rafters or with trusses, not both`);
-    const eaves = p.edges.flatMap((e, k) => (e ? [k] : []));
-    const pt = (k: number): Point => p.outline[k % 4];
+    const pt = (k: number): Point => p.outline[((k % 4) + 4) % 4];
     const side = (k: number): Point => [pt(k + 1)[0] - pt(k)[0], pt(k + 1)[1] - pt(k)[1]];
+    const eave = (k: number) => p.edges[((k % 4) + 4) % 4];
     const square = p.outline.length === 4 && [0, 1, 2, 3].every((k) => Math.abs(side(k)[0] * side(k + 1)[0] + side(k)[1] * side(k + 1)[1]) < 1e-6 * Math.hypot(...side(k)) * Math.hypot(...side(k + 1)));
-    if (!square || eaves.length !== 2 || eaves[1] - eaves[0] !== 2 || p.edges[eaves[0]]!.pitch !== p.edges[eaves[1]]!.pitch) {
-      throw new Error(`${what}: only a rectangle with two eaves, opposite each other and of one pitch, is framed yet (a hip roof, or one of two pitches, is its surfaces only)`);
-    }
-    // Set out from an end of its first eave, so that it spans to the left of the way its ridge runs.
-    const k = eaves[0];
+    if (!square) throw new Error(`${what}: only a part that is a rectangle is framed yet`);
+    // The eave its framing is set out along: one whose opposite is an eave too (of the longer two, where all four
+    // are); or its one eave.
+    const eaves = [0, 1, 2, 3].filter((k) => eave(k));
+    const paired = [0, 1].filter((k) => eave(k) && eave(k + 2));
+    const k = paired.length === 2 ? (Math.hypot(...side(0)) >= Math.hypot(...side(1)) ? 0 : 1) : (paired[0] ?? (eaves.length === 1 ? eaves[0] : -1));
+    if (k < 0) throw new Error(`${what}: two eaves that meet at a corner are not framed yet (its surfaces only)`);
+    // Set out from an end of that eave, so that it spans to the left of the way its ridge runs.
     const [d, across] = [side(k), side(k + 1)];
-    const [length, span] = [Math.hypot(...d), Math.hypot(...across)];
+    const [whole, span] = [Math.hypot(...d), Math.hypot(...across)];
     const inside = -d[1] * across[0] + d[0] * across[1] > 0;
     const corner = inside ? k : k + 1;
-    const along: Point = inside ? [d[0] / length, d[1] / length] : [-d[0] / length, -d[1] / length];
-    const { pitch, overhang } = p.edges[k]!;
+    const along: Point = inside ? [d[0] / whole, d[1] / whole] : [-d[0] / whole, -d[1] / whole];
+    const { pitch, overhang } = eave(k)!;
+    const far = eave(k + 2);
+    // What its two ends are (where it starts, where it stops): an eave there is a hip.
+    const ends = (inside ? [k - 1, k + 1] : [k + 1, k - 1]).map((e) => (eave(e) ? "hip" : "gable")) as ["gable" | "hip", "gable" | "hip"];
+    if (ends.includes("hip") && [k - 1, k + 1, k + 2].some((e) => eave(e) && eave(e)!.pitch !== pitch)) throw new Error(`${what}: a roof with a hip is framed where its eaves are all of one pitch`);
+    // Framed as far as the parts before it reach: where it runs into one of them, that one is framed through.
+    let [t0, t1] = [0, whole];
+    for (const q of this.parts) {
+      const over = clipped(p.outline, grown(q.outline, q.edges.map((e) => (e ? e.overhang : q.rake))));
+      if (over.length < 3) continue;
+      const ts = over.map((r) => (r[0] - pt(corner)[0]) * along[0] + (r[1] - pt(corner)[1]) * along[1]);
+      const [lo, hi] = [Math.max(t0, Math.min(...ts)), Math.min(t1, Math.max(...ts))];
+      if (hi - lo < 1e-6) continue;
+      // (The longer of what is left, before it or beyond it.)
+      [t0, t1] = lo - t0 >= t1 - hi ? [t0, lo] : [hi, t1];
+    }
+    if ((t0 > 0 && ends[0] === "hip") || (t1 < whole && ends[1] === "hip")) throw new Error(`${what}: the end of it that runs into another part is a gable, not a hip`);
+    const length = t1 - t0;
+    if (!(length > span / 4)) throw new Error(`${what}: too little of it is clear of the parts before it to frame`);
+    const from: Point = [pt(corner)[0] + along[0] * t0, pt(corner)[1] + along[1] * t0];
     if (o.rafters) {
       const r = o.rafters;
-      return RafterRoof.of({ span, pitch, rafters: r.size, grade: r.grade, spacing: r.spacing, ties: r.ties, seat: r.seat })
+      if (!far) throw new Error(`${what}: a roof with one eave is framed with trusses (rafters would need a taller wall under their heads: not yet)`);
+      return RafterRoof.of({ span, pitch, farPitch: far.pitch, rafters: r.size, grade: r.grade, spacing: r.spacing, ties: r.ties, seat: r.seat, ends })
         .named(`${p.name} rafters`)
-        .from(pt(corner), { along, length })
+        .from(from, { along, length })
         .bearingOn(...p.on);
     }
     const t = o.trusses!;
-    const at = t.at ?? walls?.corner((corner % 4) + 1);
+    if (ends.includes("hip")) throw new Error(`${what}: a hip is framed with rafters (trusses at a hip: not yet)`);
+    if (far && far.pitch !== pitch) throw new Error(`${what}: two pitches are framed with rafters (trusses of two pitches: not yet)`);
+    // (Set out from the walls' corner there, as the walls are drawn: so far along from it.)
+    const c = ((corner % 4) + 4) % 4;
+    const at = t.at ?? walls?.corner(c + 1);
     if (!at) throw new Error(`${what}: say at what node its first truss's heel is (\`trusses: { at }\`), or give the part \`over\` walls`);
-    return TrussRoof.of((t.shape ?? TrussShape.fink)({ span, pitch, overhang }), { name: `${p.name} trusses`, at, spanDir: [-along[1], along[0]], length, spacing: t.spacing, grade: t.grade, chord: t.chord, web: t.web }).bearingOn(...p.on);
+    const start = t.at ? t0 : (from[0] - drawn[c][0]) * along[0] + (from[1] - drawn[c][1]) * along[1];
+    const shape: (o: { span: Length; pitch: number; overhang: Length; panels: number }) => TrussShape = t.shape ?? (far ? TrussShape.fink : TrussShape.mono);
+    return TrussRoof.of(shape({ span, pitch, overhang, panels: 3 }), { name: `${p.name} trusses`, at, spanDir: [-along[1], along[0]], length, spacing: t.spacing, grade: t.grade, chord: t.chord, web: t.web, start: Math.abs(start) > 1e-9 ? start : undefined }).bearingOn(...p.on);
   }
   /** How thick its deck is (half an inch, if not said). */
   deck(thickness: Length): Roof {

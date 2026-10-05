@@ -536,14 +536,44 @@ pieces of one plane abut is a seam (`Solid.seams`), which is not drawn and
 is not a face. The roof's group says its area and how much it has of each
 kind of edge (`ridge`, `hip`, `valley`, `eave`, `rake`).
 
-A part that is a rectangle with two eaves, opposite each other, says what
-frames it (`rafters: { size, grade }`, `trusses: { grade, shape }`), and
-that is a `RafterRoof` or a `TrussRoof` set out from the part: its span,
-pitch and overhang, where its first heel is, which way it spans, what it
-bears on. The same generators and the same solve; the part only says where.
-*Not yet:* framing for hips and valleys, and stopping a wing's framing where
-it meets the main roof; ridge, hip and valley lines as things of the model
-(they are lengths only). (`16-from-the-slab-up.ts`, `23` to `26`.)
+A part that is a rectangle says what frames it (`rafters: { size, grade }`,
+`trusses: { grade, shape }`), and that is a `RafterRoof` or a `TrussRoof`
+set out from the part: its span, pitches and overhang, where its first heel
+is, which way it spans, what its ends are, what it bears on. The same
+generators and the same solve; the part only says where.
+
+- Two eaves, opposite: rafters or trusses. Of two pitches (a saltbox):
+  rafters; the steeper rafter is deeper, measured plumb, so its lumber is
+  let down from its line (a deeper level cut at its foot) for the two tops
+  to meet at the ridge.
+- One eave (a shed): trusses, each a mono truss.
+- Three eaves or four: rafters, with a **hip** at each end that is an eave
+  (`RafterRoof` `ends`). The ridge stops half a span short; a hip rafter
+  runs from each corner to its end; jacks run from the plates to the hips,
+  the side wall's and the end wall's meeting at one node of the hip. A jack
+  is cut where it meets its hip's side (the joint as it is resolved: it
+  ends on a member that runs through). The two hips are cut on the plane
+  they meet in (`Cut`: an end cut square to a direction given). The last
+  pair stands wholly beyond the ridge's end, against the hips' points (its
+  rafters' lumber set over from their line), so that none of it is above
+  the hip end's plane. There is no rafter up the middle of the end: with no
+  ridge board to stop against, its top would stand above the roof's sides.
+- A part that runs into an earlier one (a wing: `reach` moves an edge of a
+  part given over its own walls on into the other) is framed only as far as
+  the earlier one reaches (its outline and its overhangs); the earlier is
+  framed through. A truss roof may start part way along from the node it is
+  set out from (`TrussRoof` `start`).
+
+*Not yet:* what frames a wing over the roof it runs into (valley rafters,
+or a set of valley trusses on the main roof); trusses at a hip, or of two
+pitches; rafters for a shed; a ridge board, and so an end rafter at a hip;
+a hip backed to the planes; ridge, hip and valley lines as things of the
+model (they are lengths only). (`16-from-the-slab-up.ts`, `23` to `29`.)
+
+Where one member rests on another, where along each they touch is first
+looked for where they cross on plan (not where they are nearest as drawn: a
+rafter drawn below its plates is nearest them part way up it, and a solve
+started there went astray).
 
 What a roof is covered with, and what a floor's deck is made of, are given
 as layers, top first, by the names of materials (`layers(...)`, from the
@@ -654,12 +684,14 @@ is narrower than they are wide: no backing is framed for them yet.
 23. **A rafter roof**: a roof given over its walls, framed with rafter
     pairs and ties sat on the plates; feet cut level, heads plumb.
 24. **A hip roof**: every edge an eave; the ridge and hips are where the
-    planes meet.
+    planes meet; framed with rafters, hips and jacks.
 25. **A roof that turns a corner**: two parts that overlap, and the valleys
-    where they cross.
+    where they cross; the wing's trusses stop at the main roof.
 26. **A dormer**: a small part on a slope, its eaves at a height given.
 27. **What a floor and a roof are made of**: a deck and a covering given
     as layers of materials; each a sheet, and their weight a dead load.
+28. **A shed roof**: one eave; mono trusses.
+29. **A saltbox**: two pitches; rafters whose tops meet off centre.
 
 **3D, shaded** (a pane beside "3D, exact lines") draws the model in WebGL:
 every part, members and solids alike, in the colour of what it is of,

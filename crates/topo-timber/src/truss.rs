@@ -576,6 +576,9 @@ pub struct TrussRoof {
     /// Trusses as built off the layout (1-based numbers): further along the
     /// ridge by this much than their place at the spacing (a reading).
     pub shifts: Vec<(Vec<usize>, f64)>,
+    /// How far along the ridge from where it is set out its first truss is (a roof over part of
+    /// what it is set out on).
+    pub start: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -633,7 +636,7 @@ impl TrussRoof {
     pub fn new(name: &str, origin: Vec3, span_dir: Vec3, shape: TrussShape, length: f64, spacing: f64, material: MaterialId) -> TrussRoof {
         let span_dir = span_dir.normalized();
         let run_dir = v3(span_dir.y, -span_dir.x, 0.0);
-        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material, overrides: vec![], shifts: vec![] }
+        TrussRoof { name: name.into(), origin, span_dir, run_dir, shape, length, spacing, chord: (2, 4), web: (2, 4), material, overrides: vec![], shifts: vec![], start: 0.0 }
     }
 
     /// Where the layout puts each truss along the ridge from the origin, and which side of its
@@ -731,6 +734,7 @@ impl TrussRoof {
             bb.width().min(bb.height())
         };
         for (i, (r, face)) in self.stations().into_iter().enumerate() {
+            let r = r + self.start;
             let name = format!("{}/T{}", self.name, i + 1);
             let read = self.read(i);
             let heel = origin + run * (r + read);

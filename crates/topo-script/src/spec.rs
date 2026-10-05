@@ -263,9 +263,18 @@ pub struct AssemblyMember {
     pub priority: i32,
     /// How its start and its end are cut, where that is not as its joint has it: `level` (on a
     /// level plane through the node: a stringer's foot on a floor) or `plumb` (on an upright one,
-    /// square to its run on plan: a stringer's head against a header).
+    /// square to its run on plan: a stringer's head against a header); or on the plane through
+    /// the node that is square to a direction given (in the assembly's frame): a hip's head, on
+    /// the plane it meets the other hip in.
     #[serde(default)]
-    pub cut: Option<(Option<String>, Option<String>)>,
+    pub cut: Option<(Option<CutSpec>, Option<CutSpec>)>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum CutSpec {
+    How(String),
+    Square([f64; 3]),
 }
 
 fn one() -> u32 {
@@ -756,6 +765,9 @@ pub struct TrussRoofSpec {
     /// Trusses as built off the layout: further along the ridge by `along`.
     #[serde(default)]
     pub shifts: Vec<TrussShiftSpec>,
+    /// How far along the ridge from `at` its first truss is.
+    #[serde(default)]
+    pub start: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1417,6 +1429,7 @@ impl Builder {
         for s in &r.shifts {
             roof.shifts.push((s.trusses.clone(), s.along));
         }
+        roof.start = r.start;
         let placed = roof.place(&mut self.m, sc, set_out, &bearings)?;
         self.m.group_mut(placed.parts.group).parent = Some(self.root);
         Ok(placed)
@@ -1784,12 +1797,19 @@ impl Builder {
         for (k, mm) in a.members.iter().enumerate() {
             let Some((start, end)) = &mm.cut else { continue };
             for (how, node) in [(start, self.m.member(ids[k]).start()), (end, self.m.member(ids[k]).end())] {
-                match how.as_deref() {
+                match how {
                     None => {}
-                    Some("level") => self.m.add_rule(node, JointRule::Plane { member: ids[k], normal: Vec3::Z }),
-                    Some("plumb") => self.m.add_rule(node, JointRule::Plumb { member: ids[k] }),
-                    Some("square") => self.m.add_rule(node, JointRule::Square { member: ids[k] }),
-                    Some(o) => return Err(format!("assembly {}: a member's end is cut level, plumb or square, not {o}", a.name)),
+                    Some(CutSpec::Square(n)) => {
+                        let f = d.frame;
+                        let normal = (f.x * n[0] + f.y * n[1] + f.z * n[2]).try_normalized().ok_or_else(|| format!("assembly {}: a member's end is cut square to a direction, and none is given", a.name))?;
+                        self.m.add_rule(node, JointRule::Plane { member: ids[k], normal });
+                    }
+                    Some(CutSpec::How(how)) => match how.as_str() {
+                        "level" => self.m.add_rule(node, JointRule::Plane { member: ids[k], normal: Vec3::Z }),
+                        "plumb" => self.m.add_rule(node, JointRule::Plumb { member: ids[k] }),
+                        "square" => self.m.add_rule(node, JointRule::Square { member: ids[k] }),
+                        o => return Err(format!("assembly {}: a member's end is cut level, plumb or square, not {o}", a.name)),
+                    },
                 }
             }
         }

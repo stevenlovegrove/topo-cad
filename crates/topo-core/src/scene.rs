@@ -555,7 +555,14 @@ impl Scene {
         let (su, sl) = (&self.body_of(upper.0).1, &self.body_of(lower.0).1);
         let (ou, au, ol, al) = (su.to_world(pu.origin), su.dir_to_world(pu.along), sl.to_world(pl.origin), sl.dir_to_world(pl.along));
         let (w, b) = (ou - ol, au.dot(al));
-        let (tu, tl) = if 1.0 - b * b < 1e-9 {
+        // (Where they cross on plan, if they do: one rests on another under it, however far above or below it
+        // was put, and a rafter drawn below its plates is not nearest them at its foot.)
+        let flat = |v: Vec3| Vec3::new(v.x, v.y, 0.0);
+        let (a2, l2, w2) = (flat(au), flat(al), flat(w));
+        let det = a2.dot(a2) * l2.dot(l2) - a2.dot(l2) * a2.dot(l2);
+        let (tu, tl) = if det > 1e-6 {
+            ((a2.dot(l2) * l2.dot(w2) - a2.dot(w2) * l2.dot(l2)) / det, (a2.dot(a2) * l2.dot(w2) - a2.dot(l2) * a2.dot(w2)) / det)
+        } else if 1.0 - b * b < 1e-9 {
             (pu.length / 2.0, (ou + au * (pu.length / 2.0) - ol).dot(al))
         } else {
             let (d, e) = (au.dot(w), al.dot(w));
