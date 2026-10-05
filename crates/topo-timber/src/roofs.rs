@@ -262,11 +262,53 @@ pub fn faces_of(pieces: &[Piece]) -> Result<Vec<Face>, String> {
                 }
                 pieces = left;
             }
-            out.extend(pieces.into_iter().filter(|p| area(p) > 1e-8).map(|outline| Face { part: a, edge: *edge, outline, plane: *plane, seams: vec![] }));
+            out.extend(merged(pieces.into_iter().filter(|p| area(p) > 1e-8).collect()).into_iter().map(|outline| Face { part: a, edge: *edge, outline, plane: *plane, seams: vec![] }));
         }
     }
     seam(&mut out);
     Ok(out)
+}
+
+/// Pieces of one plane put back together, wherever two that share a side make one convex piece
+/// (taking away what covers a plane leaves it in more pieces than it need be).
+fn merged(mut pieces: Vec<Vec<Vec2>>) -> Vec<Vec<Vec2>> {
+    let join = |a: &[Vec2], b: &[Vec2]| -> Option<Vec<Vec2>> {
+        let (n, m) = (a.len(), b.len());
+        for i in 0..n {
+            for j in 0..m {
+                // (A side of the one, the other way along the other.)
+                if a[i].distance(b[(j + 1) % m]) > 1e-9 || a[(i + 1) % n].distance(b[j]) > 1e-9 {
+                    continue;
+                }
+                let mut u: Vec<Vec2> = (1..=n).map(|k| a[(i + k) % n]).collect();
+                u.extend((2..m).map(|k| b[(j + k) % m]));
+                // (Without the points left in the middle of a straight side; and only if it is convex.)
+                let mut clean: Vec<Vec2> = vec![];
+                for k in 0..u.len() {
+                    let (p, q, r) = (u[(k + u.len() - 1) % u.len()], u[k], u[(k + 1) % u.len()]);
+                    let turn = (q - p).cross(r - q);
+                    if turn < -1e-9 {
+                        return None;
+                    }
+                    if turn > 1e-9 {
+                        clean.push(q);
+                    }
+                }
+                return (clean.len() >= 3).then_some(clean);
+            }
+        }
+        None
+    };
+    loop {
+        let found = (0..pieces.len()).flat_map(|i| (i + 1..pieces.len()).map(move |j| (i, j))).find_map(|(i, j)| join(&pieces[i], &pieces[j]).map(|u| (i, j, u)));
+        match found {
+            Some((i, j, u)) => {
+                pieces[i] = u;
+                pieces.remove(j);
+            }
+            None => return pieces,
+        }
+    }
 }
 
 fn same_plane(a: &Face, b: &Face) -> bool {

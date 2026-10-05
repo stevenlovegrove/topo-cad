@@ -1941,9 +1941,9 @@ fn a_flat_part_and_a_sloped_one_are_on_trusses_made_apart_each_with_its_covering
     // Each part is covered with its own: the canopy with a membrane on plywood, the slope with steel on an
     // underlayment on plywood; and that is what a schedule lists.
     let of = |name: &str| -> Vec<&str> { let mut v: Vec<&topo_core::Solid> = deck.iter().copied().filter(|s| s.name.starts_with(name)).collect(); v.sort_by(|a, b| a.bottom.z.total_cmp(&b.bottom.z)); let mut m: Vec<&str> = v.iter().map(|s| s.material.split(' ').next().unwrap()).collect(); m.dedup(); m };
-    // (The canopy's sheet is in two pieces of one plane, either side of where the slope's part starts: a seam.)
     assert_eq!(of("Canopy"), ["Plywood", "TPO"]);
-    assert!(deck.iter().filter(|s| s.name.starts_with("Canopy")).all(|s| !s.seams.is_empty()));
+    // (In one piece: what the slope covers is taken off its end.)
+    assert_eq!(deck.iter().filter(|s| s.name.starts_with("Canopy")).count(), 2);
     assert_eq!(of("Slope eave 1"), ["Plywood", "Polyglass", "Standing-seam"]);
     let built: Vec<(&str, usize)> = m.buildups.iter().map(|b| (b.name.as_str(), b.layers.len())).collect();
     assert_eq!(built, [("Roof: Slope", 3), ("Roof: Canopy", 2)]);

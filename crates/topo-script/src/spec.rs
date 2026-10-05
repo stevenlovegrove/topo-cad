@@ -1744,6 +1744,8 @@ impl Builder {
             let mut strips: Vec<Strip> = vec![];
             // (Where each carrier's top is, across its part's run: which line it is of.)
             let mut line_of: HashMap<(usize, MemberId), f64> = HashMap::new();
+            // (The lines of each thing that frames: parts on one framing are in strips at the same lines.)
+            let mut known: HashMap<&str, Vec<(Vec2, f64)>> = HashMap::new();
             for (pi, part) in parts.iter().enumerate() {
                 let whole = part.piece()?;
                 // (Its carriers' own directions on plan: the way they run, and across them.)
@@ -1751,13 +1753,23 @@ impl Builder {
                     let d = self.m.pos(self.m.member(id).end()) - self.m.pos(self.m.member(id).start());
                     (Vec2::new(d.x, d.y).norm() > 1e-9).then(|| Vec2::new(d.x, d.y).normalized())
                 });
+                // (Whichever way a carrier is written: one way along it, for every part.)
+                let run = run.map(|d| if d.x < -1e-9 || (d.x.abs() <= 1e-9 && d.y < 0.0) { d * -1.0 } else { d });
                 let across = run.map_or(Vec2::new(1.0, 0.0), |d| Vec2::new(-d.y, d.x));
+                let lines_known = known.entry(r.parts[pi].framing.as_deref().unwrap_or("")).or_default();
+                let mut snap = |t: f64| match lines_known.iter().find(|(a, x)| (a.dot(across) - 1.0).abs() < 1e-6 && (x - t).abs() < 0.01) {
+                    Some(&(_, x)) => x,
+                    None => {
+                        lines_known.push((across, t));
+                        t
+                    }
+                };
                 // Each carrier's top: which eave's plane it is in, where it is across the run, and its points.
                 let tops: Vec<(usize, f64, Vec<Vec3>)> = carriers[pi]
                     .iter()
                     .filter_map(|&(k, id)| {
                         let (face, _) = top(id)?;
-                        let t = face.iter().map(|q| across.dot(Vec2::new(q.x, q.y))).sum::<f64>() / face.len() as f64;
+                        let t = snap(face.iter().map(|q| across.dot(Vec2::new(q.x, q.y))).sum::<f64>() / face.len() as f64);
                         line_of.insert((pi, id), t);
                         Some((k, t, face))
                     })
