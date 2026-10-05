@@ -694,6 +694,39 @@ fn joists_that_sit_for_themselves_lie_on_walls_no_plane_lies_on() {
 }
 
 #[test]
+fn a_rafter_roof_sits_on_the_plates() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let m = run(include_str!("../../../examples/primitives/23-a-rafter-roof.ts"), "23-a-rafter-roof.ts").unwrap();
+    all_clean(&m);
+    let roof = m.groups.iter().find(|g| g.name == "Roof").unwrap();
+    let of = |role: &str| -> Vec<&topo_core::Member> { roof.members.iter().map(|&id| m.member(id)).filter(|x| x.role == role).collect() };
+    // Nine pairs along 16 ft at 24", and a tie to each.
+    assert_eq!((of("rafter").len(), of("ceiling_tie").len()), (18, 9));
+    // Drawn at zero and free: each rafter's foot is on the plate (8 ft), 1 3/4" in from the wall's line, and its head
+    // at the ridge, half the span less that at 6 in 12 above.
+    let rise = (ft(6.0) - inch(1.75)) * 0.5;
+    for r in of("rafter") {
+        let (foot, head) = (m.pos(r.start()), m.pos(r.end()));
+        assert!((foot.z - ft(8.0)).abs() < 1e-6 && (head.z - ft(8.0) - rise).abs() < 1e-6 && (head.x - ft(6.0)).abs() < 1e-6, "{foot:?} {head:?}");
+        assert!((foot.x - inch(1.75)).abs() < 1e-6 || (foot.x - ft(12.0) + inch(1.75)).abs() < 1e-6, "{foot:?}");
+    }
+    // Its foot is cut level: nothing of a rafter is below the plate's top; and its head plumb, at the ridge: nothing
+    // of it is past the middle.
+    let g = Geometry::build(&m, &Topology::build(&m));
+    for r in of("rafter") {
+        let bb = g.member(r.id).bbox();
+        assert!(bb.min.z > ft(8.0) - 1e-6 && (bb.max.x < ft(6.0) + 1e-6 || bb.min.x > ft(6.0) - 1e-6), "{bb:?}");
+    }
+    // Each rafter bears on its plate at its foot (the bearing point is its foot: one node), and each tie on both plates.
+    let bears = |role: &str| m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.name.starts_with(&format!("Roof/{role}#")) && c.name.ends_with(": on both")).count();
+    assert_eq!((bears("rafter"), bears("ceiling_tie")), (18, 18));
+    // Its loads are on the rafters, per length of them: what falls on a 24" strip of plan.
+    let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
+    let w = m.loads.iter().find_map(|l| match l { topo_core::Load::MemberUniform { case, w, .. } if *case == snow => Some(-w.z), _ => None }).unwrap();
+    assert!((w - 25.0 * 47.880259 * inch(24.0) / 1.25f64.sqrt()).abs() < 1e-6, "{w}");
+}
+
+#[test]
 fn a_slab_laid_to_fall_and_a_curb_whose_top_is_level() {
     use topo_core::Vec2;
     let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);

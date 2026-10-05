@@ -681,6 +681,21 @@ impl Scene {
             }
             return Err(said.join(". "));
         }
+        // A bearing point that is where a node of one of its own members already is (a rafter's foot,
+        // which is where the rafter bears): it is that node, not another beside it.
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].faces.is_empty() {
+                continue;
+            }
+            let at = vec(self.sys.node_at(self.nodes[i].of[0]));
+            let own: Vec<usize> = self.nodes[i].faces.iter().filter(|(m, _)| self.members[*m].model.is_none()).flat_map(|(m, _)| self.members[*m].path.clone()).collect();
+            if let Some(j) = own.into_iter().find(|&j| vec(self.sys.node_at(self.nodes[j].of[0])).distance(at) <= crate::LEN_TOL) {
+                let (ra, rb) = (self.root(i), self.root(j));
+                if ra != rb {
+                    self.same[ra.max(rb)] = ra.min(rb);
+                }
+            }
+        }
         // What generators wrote for bodies is moved to where the solve put them; other bodies get their groups.
         let mut groups = vec![];
         for b in &self.bodies {

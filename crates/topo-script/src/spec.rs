@@ -307,6 +307,10 @@ pub struct AssemblySpec {
     /// trimmers, about an opening): joined there by a hanger, not by nails.
     #[serde(default)]
     pub hung_from: Vec<String>,
+    /// Roles of its members that bear on what it is said to bear on (none given: all of them):
+    /// a roof's rafters and ties, not its ridge.
+    #[serde(default)]
+    pub bearing_roles: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1481,6 +1485,9 @@ impl Builder {
                         continue;
                     }
                     for (i, mm) in a.members.iter().enumerate() {
+                        if !a.bearing_roles.is_empty() && !a.bearing_roles.contains(&mm.role) {
+                            continue;
+                        }
                         let (ma, mb) = (at(a, &f, &mm.path[0]), at(a, &f, mm.path.last().unwrap()));
                         // (As wide as the beam is: its section's larger side.)
                         let sec = if lower.plies > 1 { built_up(lower.plies, lower.size.0, lower.size.1, 0.0) } else { sawn(lower.size.0, lower.size.1) };
@@ -1497,6 +1504,9 @@ impl Builder {
             for plate in parts.cap_plates() {
                 let (pa, pb) = (self.m.pos(self.m.member(plate).start()), self.m.pos(self.m.member(plate).end()));
                 for (i, mm) in a.members.iter().enumerate() {
+                    if !a.bearing_roles.is_empty() && !a.bearing_roles.contains(&mm.role) {
+                        continue;
+                    }
                     let at = |n: &String| a.points.iter().find(|p| p.name == *n).map(|p| f.to_world(v3(p.at[0], p.at[1], p.at[2]))).unwrap();
                     let (ma, mb) = (at(&mm.path[0]), at(mm.path.last().unwrap()));
                     let sec = &self.m.section(self.m.member(plate).section).props;
@@ -1541,7 +1551,8 @@ impl Builder {
                     None => {}
                     Some("level") => self.m.add_rule(node, JointRule::Plane { member: ids[k], normal: Vec3::Z }),
                     Some("plumb") => self.m.add_rule(node, JointRule::Plumb { member: ids[k] }),
-                    Some(o) => return Err(format!("assembly {}: a member's end is cut level or plumb, not {o}", a.name)),
+                    Some("square") => self.m.add_rule(node, JointRule::Square { member: ids[k] }),
+                    Some(o) => return Err(format!("assembly {}: a member's end is cut level, plumb or square, not {o}", a.name)),
                 }
             }
         }

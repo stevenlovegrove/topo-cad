@@ -1259,7 +1259,7 @@ interface AssemblyMemberSpec {
   readonly depth?: Point3;
   readonly anchor?: readonly [number, number];
   readonly priority: number;
-  readonly cut?: readonly [("level" | "plumb" | null), ("level" | "plumb" | null)];
+  readonly cut?: readonly [("level" | "plumb" | "square" | null), ("level" | "plumb" | "square" | null)];
 }
 
 /**
@@ -1281,7 +1281,7 @@ export class Assembly {
     readonly bonds: readonly (readonly [string, string])[],
     readonly rests: readonly (readonly [string, string])[] = [],
     readonly free_: boolean = false,
-    readonly extra: { readonly onPlan?: boolean; readonly hungFrom?: readonly string[] } = {},
+    readonly extra: { readonly onPlan?: boolean; readonly hungFrom?: readonly string[]; readonly bearing?: readonly string[] } = {},
   ) {}
 
   static named(name: string): Assembly {
@@ -1328,6 +1328,10 @@ export class Assembly {
    */
   hungFrom(...roles: string[]): Assembly {
     return this.copy({ extra: { ...this.extra, hungFrom: [...(this.extra.hungFrom ?? []), ...roles] } });
+  }
+  /** Only its members of these roles bear on what it bears on (`bearingOn`): a roof's rafters and ties, not its ridge. */
+  bearingWith(...roles: string[]): Assembly {
+    return this.copy({ extra: { ...this.extra, bearing: [...(this.extra.bearing ?? []), ...roles] } });
   }
   /** One of its points, as a node others can be related to: `assembly.node("top")`. */
   node(point: string): NodeHandle {
@@ -1384,7 +1388,7 @@ export class Assembly {
       anchor?: readonly [number, number];
       priority?: number;
       /** How its start and its end are cut, where not as their joints have them: `level` (a stringer's foot on a floor) or `plumb` (its head against a header). */
-      cut?: readonly [("level" | "plumb" | null), ("level" | "plumb" | null)];
+      cut?: readonly [("level" | "plumb" | "square" | null), ("level" | "plumb" | "square" | null)];
     },
   ): Assembly {
     for (const n of path) if (!this.points.some((p) => p.name === n)) throw new Error(`assembly ${this.name}: unknown point ${n}`);
@@ -1430,6 +1434,7 @@ export class Assembly {
       free: this.free_,
       on_plan: this.extra.onPlan,
       hung_from: this.extra.hungFrom,
+      bearing_roles: this.extra.bearing,
     };
   }
 }
@@ -1706,6 +1711,99 @@ export class Floor {
     const o = this.opening_;
     const pieces = o ? [["deck 1", "deck a", "deck d", "deck 4"], ["deck b", "deck 2", "deck 3", "deck c"], ["deck a", "deck b", "deck f", "deck e"], ["deck h", "deck g", "deck c", "deck d"]] : [];
     return { ...this.assembly().toJSON(), deck: this.deck_ > 0 ? { thickness: this.deck_, above: dressed(this.framing.joists[1]), pieces } : undefined };
+  }
+}
+
+// ----- rafter roofs ------------------------------------------------------------
+
+/**
+ * A gable roof of rafters: pairs of rafters from the walls' plates up to the
+ * ridge, where each pair meets, at a spacing, with a ceiling tie across each
+ * pair at the plates. Like a floor it is given on plan (a corner, the way its ridge runs,
+ * how long), with its span and pitch, and not its height: it sits on the
+ * plates it bears on.
+ *
+ *   const roof = RafterRoof.of({ span: ft(12), pitch: 6 / 12, rafters: [2, 8], grade: DFL.No2 }).named("Roof")
+ *     .from([ft(12), 0], { along: [0, 1], length: ft(16) })
+ *     .bearingOn(walls)
+ *     .load("snow", psf(25));
+ *
+ * The span is between the walls' outside lines, to the left of `along`; each
+ * rafter's foot is `seat` in from that line (1 3/4" by default: the middle of
+ * a 2x4 plate), cut level, so that it sits flat on the plate. Its head is cut
+ * plumb, against its pair's. The ties lie on the plates beside the rafters.
+ * It is one rigid thing, as a floor is.
+ *
+ * *Not yet:* a ridge board (nothing would carry it in the load path as it
+ * is worked out); a birdsmouth, and a tail past the seat (a member cannot be
+ * notched); the ties are not fastened to the rafters, so their thrust is
+ * not taken; hips and valleys.
+ */
+export class RafterRoof {
+  private constructor(
+    readonly name: string,
+    readonly o: { readonly span: Length; readonly pitch: number; readonly rafters: Nominal; readonly grade: Grade; readonly spacing: Length; readonly ties: Nominal; readonly seat: Length },
+    readonly rect: { readonly corner: Point; readonly along: Point; readonly length: Length } | undefined,
+    readonly bearsOn: readonly (Perimeter | Partition | Assembly)[],
+    readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
+  ) {}
+  static of(o: { span: Length; pitch: number; rafters: Nominal; grade: Grade; spacing?: Length; ties?: Nominal; seat?: Length }): RafterRoof {
+    if (!(o.span > 0) || !(o.pitch > 0)) throw new Error("rafter roof: give a span and a pitch");
+    return new RafterRoof("Roof", { span: o.span, pitch: o.pitch, rafters: o.rafters, grade: o.grade, spacing: o.spacing ?? inch(24), ties: o.ties ?? [2, 6], seat: o.seat ?? inch(1.75) }, undefined, [], []);
+  }
+  named(name: string): RafterRoof {
+    return new RafterRoof(name, this.o, this.rect, this.bearsOn, this.loads);
+  }
+  /** Where it is on plan: from `corner`, its ridge runs `along` for `length`; its span is to the left of that. */
+  from(corner: Point, o: { along: Point; length: Length }): RafterRoof {
+    if (!(o.length > 0) || !(Math.hypot(o.along[0], o.along[1]) > 0)) throw new Error(`roof ${this.name}: give the way its ridge runs and how long it is`);
+    return new RafterRoof(this.name, this.o, { corner, along: o.along, length: o.length }, this.bearsOn, this.loads);
+  }
+  /** What it sits on: its ties and rafters rest on each cap plate of these that they cross or stop over. */
+  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): RafterRoof {
+    return new RafterRoof(this.name, this.o, this.rect, [...this.bearsOn, ...ps], this.loads);
+  }
+  /** A load over its plan area (N/m², use `psf`), carried by the rafters. */
+  load(kind: LoadKind, pressure: number): RafterRoof {
+    return new RafterRoof(this.name, this.o, this.rect, this.bearsOn, [...this.loads, { kind, pressure }]);
+  }
+  /** How high the underside of the rafters is at the ridge, above the plates. */
+  get rise(): Length {
+    return (this.o.span / 2 - this.o.seat) * this.o.pitch;
+  }
+  /** What it is made of: a free assembly, sat on what it bears on. */
+  assembly(): Assembly {
+    const r = this.rect;
+    if (!r) throw new Error(`roof ${this.name}: give where it is with from(corner, { along, length })`);
+    const { span, pitch, rafters, grade, spacing, ties, seat } = this.o;
+    const n = Math.hypot(r.along[0], r.along[1]);
+    const x: Point = [r.along[0] / n, r.along[1] / n];
+    const y: Point = [-x[1], x[0]];
+    const at = (a: Length, c: Length, z: Length): Point3 => [r.corner[0] + x[0] * a + y[0] * c, r.corner[1] + x[1] * a + y[1] * c, z];
+    const b = dressed(rafters[0]);
+    // Along the ridge: a pair at each end (half a thickness in), and pairs between at the spacing.
+    const as: Length[] = [b / 2];
+    for (let k = 1; k * spacing < r.length - 1.5 * b; k++) as.push(k * spacing);
+    as.push(r.length - b / 2);
+    const h = this.rise;
+    let a = Assembly.named(this.name);
+    as.forEach((s, k) => {
+      a = a.point(`left foot ${k + 1}`, at(s, seat, 0)).point(`right foot ${k + 1}`, at(s, span - seat, 0)).point(`ridge ${k + 1}`, at(s, span / 2, h));
+      // (The tie lies on the plates beside the pair: toward the roof's middle from it.)
+      const beside = s + (s < r.length / 2 ? b : -b);
+      a = a.point(`left tie ${k + 1}`, at(beside, seat, 0)).point(`right tie ${k + 1}`, at(beside, span - seat, 0));
+    });
+    as.forEach((_, k) => {
+      for (const side of ["left", "right"]) a = a.member("rafter", [`${side} foot ${k + 1}`, `ridge ${k + 1}`], { size: rafters, grade, anchor: [0, -0.5], priority: 10, cut: ["level", "plumb"] });
+      a = a.member("ceiling_tie", [`left tie ${k + 1}`, `right tie ${k + 1}`], { size: ties, grade, anchor: [0, -0.5], cut: ["square", "square"] });
+    });
+    // (Per length of rafter: what falls on its strip of the plan.)
+    const cos = 1 / Math.hypot(1, pitch);
+    for (const l of this.loads) a = a.lineLoad(l.kind, "rafter", l.pressure * spacing * cos);
+    return a.bearingWith("rafter", "ceiling_tie").sitting().bearingOn(...this.bearsOn);
+  }
+  toJSON() {
+    return this.assembly().toJSON();
   }
 }
 
@@ -2188,7 +2286,7 @@ export class Frame {
   }
 }
 
-export type Item = Perimeter | Partition | Slab | Floor | Stairs | TrussRoof | Assembly | Frame | Relation;
+export type Item = Perimeter | Partition | Slab | Floor | Stairs | RafterRoof | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of

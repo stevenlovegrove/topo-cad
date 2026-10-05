@@ -501,6 +501,17 @@ floor. *Known limitation:* the upper walls' bottom plates are still
 supports of their own (`Bottom plate on Floor`): what they carry is not
 yet taken down through the floor. (`20-a-second-storey.ts`.)
 
+A **rafter roof** (`RafterRoof`) is, like a floor, given on plan and sat
+by the solve: pairs of rafters from the plates to the ridge, where each
+pair meets, and a ceiling tie on the plates beside each pair. Only its
+rafters and ties bear (`Assembly.bearingWith`). A rafter's axis is along
+its underside; its foot, a node at the plate's top, is cut level and is
+where it bears (a bearing point that is where a node of its own member
+already is, is that node: `Scene::write`), and its head is cut plumb.
+*Not yet:* a ridge board, a birdsmouth or a tail (a member cannot be
+notched), ties fastened to the rafters, hips and valleys.
+(`23-a-rafter-roof.ts`.)
+
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
 posts (from a corner of the wall, in the corners' numbers; or from the face
@@ -594,6 +605,8 @@ is narrower than they are wide: no backing is framed for them yet.
     up through it.
 22. **A floor on walls as built**: joists that each sit for themselves, on
     walls whose tops are a twist.
+23. **A rafter roof**: rafter pairs and ties given on plan, sat on the
+    plates; feet cut level, heads plumb.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:
