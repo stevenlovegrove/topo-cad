@@ -1355,11 +1355,12 @@ export class Assembly {
   }
   /**
    * A utility: each of its members that crosses a cap plate of these
-   * perimeters (on plan) rests on it, at a node on both (as `resting`).
-   * They have to touch: it joins them where they do, and says so where they
-   * do not.
+   * perimeters (on plan), or a level member of these assemblies (a beam;
+   * the assembly added to the building before this one), rests on it, at a
+   * node on both (as `resting`). They have to touch: it joins them where
+   * they do, and says so where they do not.
    */
-  bearingOn(...ps: Perimeter[]): Assembly {
+  bearingOn(...ps: (Perimeter | Assembly)[]): Assembly {
     return this.copy({ bearsOn: [...this.bearsOn, ...ps.map((p) => p.name)] });
   }
   placed(p: Placement): Assembly {
@@ -1414,7 +1415,7 @@ export class Floor {
     readonly name: string,
     readonly framing: { readonly joists: Nominal; readonly spacing: Length; readonly grade: Grade },
     readonly rect: { readonly corner: Point; readonly along: Point; readonly length: Length; readonly width: Length; readonly z: Length } | undefined,
-    readonly bearsOn: readonly Perimeter[],
+    readonly bearsOn: readonly (Perimeter | Assembly)[],
     readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
   ) {}
   static of(o: { joists: Nominal; grade: Grade; spacing?: Length }): Floor {
@@ -1434,8 +1435,13 @@ export class Floor {
     if (!(o.length > 0) || o.width === 0 || !(Math.hypot(o.along[0], o.along[1]) > 0)) throw new Error(`floor ${this.name}: give a direction, a length and a width`);
     return new Floor(this.name, this.framing, { corner, along: o.along, length: o.length, width: o.width, z: o.z ?? 0 }, this.bearsOn, this.loads);
   }
-  /** What it sits on: each joist rests on each cap plate of these perimeters that it crosses on plan. */
-  bearingOn(...ps: Perimeter[]): Floor {
+  /**
+   * What it sits on: each of its members rests on each cap plate of these
+   * perimeters that it crosses on plan, and on each level member (a beam) of
+   * these assemblies that it crosses (an assembly has to be added to the
+   * building before the floor).
+   */
+  bearingOn(...ps: (Perimeter | Assembly)[]): Floor {
     return new Floor(this.name, this.framing, this.rect, [...this.bearsOn, ...ps], this.loads);
   }
   /** A load over its area (N/m², use `psf`), carried by the joists: each takes what is nearest it. */

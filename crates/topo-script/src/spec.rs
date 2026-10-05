@@ -1248,7 +1248,7 @@ impl Builder {
 impl Builder {
     /// An assembly, into the scene: a body (fixed at its placement, or free), a node for each
     /// point, its members between them, and a node for each member resting on another.
-    fn declare(&mut self, sc: &mut scene::Scene, a: &AssemblySpec) -> Result<Declared, String> {
+    fn declare(&mut self, sc: &mut scene::Scene, a: &AssemblySpec, earlier: &[(&AssemblySpec, Declared)]) -> Result<Declared, String> {
         let f = a.placement.frame();
         let body = sc.body(&a.name, "assembly", f, a.free, Some(self.root));
         let mut points = HashMap::new();
@@ -1305,7 +1305,27 @@ impl Builder {
         // these perimeters (on plan) rests on it: a node on both, as for `resting`. They have to touch.
         let f = a.placement.frame();
         for name in &a.bears_on {
-            let (parts, _) = self.perimeters.get(name).ok_or_else(|| format!("assembly {}: no perimeter named {name}", a.name))?;
+            // (Or on an assembly added before it: on each of its level members, a beam, that one of these crosses.)
+            if let Some((e, ed)) = earlier.iter().find(|(e, _)| e.name == *name) {
+                let ef = e.placement.frame();
+                let at = |s: &AssemblySpec, f: &Frame, n: &String| s.points.iter().find(|p| p.name == *n).map(|p| f.to_world(v3(p.at[0], p.at[1], p.at[2]))).unwrap();
+                for (k, lower) in e.members.iter().enumerate() {
+                    let (pa, pb) = (at(e, &ef, &lower.path[0]), at(e, &ef, lower.path.last().unwrap()));
+                    if (pa.z - pb.z).abs() > 1e-6 {
+                        continue;
+                    }
+                    for (i, mm) in a.members.iter().enumerate() {
+                        let (ma, mb) = (at(a, &f, &mm.path[0]), at(a, &f, mm.path.last().unwrap()));
+                        if crosses_on_plan((ma, mb), (pa, pb)) {
+                            let label = |s: &AssemblySpec, k: usize| format!("{}/{}#{}", s.name, s.members[k].role, s.members[..k].iter().filter(|o| o.role == s.members[k].role).count() + 1);
+                            let n = sc.rest(&format!("{} on {}", label(a, i), label(e, k)), members[i], ed.members[k], &self.m)?;
+                            rests.push((n, members[i], ed.members[k]));
+                        }
+                    }
+                }
+                continue;
+            }
+            let (parts, _) = self.perimeters.get(name).ok_or_else(|| format!("assembly {}: nothing named {name} to bear on (a perimeter, or an assembly added before it)", a.name))?;
             for plate in parts.cap_plates() {
                 let (pa, pb) = (self.m.pos(self.m.member(plate).start()), self.m.pos(self.m.member(plate).end()));
                 for (i, mm) in a.members.iter().enumerate() {
@@ -1626,7 +1646,8 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     let mut declared = vec![];
     for item in &spec.items {
         if let ItemSpec::Assembly(a) = item {
-            declared.push((a, b.declare(&mut sc, a)?));
+            let d = b.declare(&mut sc, a, &declared)?;
+            declared.push((a, d));
         }
     }
     // A node by name: one of the scene's; or a point of a member a generator wrote, brought

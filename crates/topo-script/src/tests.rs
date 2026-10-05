@@ -494,6 +494,84 @@ fn nothing_passes_through_anything_in_any_example() {
 }
 
 #[test]
+fn a_floor_at_two_heights_has_walls_on_each_slab_and_one_top() {
+    let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);
+    let m = run(include_str!("../../../examples/primitives/14-a-floor-at-two-heights.ts"), "14-a-floor-at-two-heights.ts").unwrap();
+    all_clean(&m);
+    let z = |path: &str| {
+        let id = m.find_member(path).unwrap();
+        (m.pos(m.member(id).start()).z, m.pos(m.member(id).end()).z)
+    };
+    let is = |got: (f64, f64), want: f64| (got.0 - want).abs() < 1e-6 && (got.1 - want).abs() < 1e-6;
+    // The walls on the lower slab start 50 mm down, those on the upper at zero; every wall's top is at 8 ft.
+    for (wall, base) in [("Front", -mm(50.0)), ("Right (front)", -mm(50.0)), ("Left (front)", -mm(50.0)), ("Right (back)", 0.0), ("Back", 0.0), ("Left (back)", 0.0)] {
+        assert!(is(z(&format!("Walls/{wall}/bottom_plate")), base), "{wall} {:?}", z(&format!("Walls/{wall}/bottom_plate")));
+        assert!(is(z(&format!("Walls/{wall}/cap_plate")), ft(8.0)), "{wall} {:?}", z(&format!("Walls/{wall}/cap_plate")));
+    }
+    // Two slabs, meeting at the step; and where two walls are in one line, their plates meet end to end (said by nothing).
+    assert_eq!(m.solids.iter().filter(|s| s.role == "slab").count(), 2);
+    assert!(m.issues.is_empty(), "{:#?}", m.issues);
+}
+
+#[test]
+fn a_slab_goes_where_a_scan_has_the_floor() {
+    let mm = |v: f64| v / 1000.0;
+    let m = run(include_str!("../../../examples/primitives/15-a-slab-read-from-a-scan.ts"), "15-a-slab-read-from-a-scan.ts").unwrap();
+    all_clean(&m);
+    // Three readings, 11, 12 and 13 mm below where it is drawn: the slab between them, the walls on it.
+    let slab = m.solids.iter().find(|s| s.role == "slab").unwrap();
+    assert!((slab.top.z + mm(12.0)).abs() < 2e-4, "{}", slab.top.z);
+    let id = m.find_member("Walls/Front/bottom_plate").unwrap();
+    assert!((m.pos(m.member(id).start()).z - slab.top.z).abs() < 1e-9);
+    // Each reading is left a millimetre off, or none: measured, and said.
+    let read: Vec<f64> = m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.tier == "measured").map(|c| c.gap.abs()).collect();
+    assert!(read.len() == 3 && read.iter().all(|g| *g < 1.2e-3) && read.iter().filter(|g| **g > 0.8e-3).count() == 2, "{read:?}");
+}
+
+#[test]
+fn a_building_from_the_slab_up_and_a_roof_over_part() {
+    let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);
+    let m = run(include_str!("../../../examples/primitives/16-from-the-slab-up.ts"), "16-from-the-slab-up.ts").unwrap();
+    all_clean(&m);
+    // The trusses sit on walls that stand on the curb's level top: their bottom chords at 8 ft above 20 mm.
+    let chords: Vec<&topo_core::Member> = m.members.iter().filter(|x| x.role == "bottom_chord").collect();
+    assert_eq!(chords.len(), 9);
+    assert!(chords.iter().all(|c| c.path.iter().all(|n| (m.pos(*n).z - ft(8.0) - mm(20.0)).abs() < 1e-6)));
+    assert_eq!(m.solids.iter().filter(|s| s.role == "curb").count(), 5);
+
+    let m = run(include_str!("../../../examples/primitives/17-a-roof-over-part.ts"), "17-a-roof-over-part.ts").unwrap();
+    all_clean(&m);
+    // Nine trusses, from 4 ft to 20 ft along a 24 ft building; the three in the middle of another shape (more webs).
+    let trusses: Vec<&topo_core::Group> = m.groups.iter().filter(|g| g.kind == "truss").collect();
+    assert_eq!(trusses.len(), 9);
+    let xs: Vec<f64> = trusses.iter().map(|g| m.pos(m.member(g.members[0]).start()).x).collect();
+    assert!((xs.iter().copied().fold(f64::MAX, f64::min) - ft(4.0)).abs() < 1e-6 && (xs.iter().copied().fold(f64::MIN, f64::max) - ft(20.0)).abs() < 1e-6, "{xs:?}");
+    let webs = |k: usize| trusses[k].members.iter().filter(|&&id| m.member(id).role == "web").count();
+    assert!(webs(3) == webs(4) && webs(4) == webs(5) && webs(3) > webs(0) && webs(0) == webs(8), "{:?}", (0..9).map(webs).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_loft_sits_on_a_wall_and_a_beam() {
+    let ft = topo_core::units::ft;
+    let src = include_str!("../../../examples/primitives/18-a-loft-on-a-beam.ts");
+    let m = run(src, "18-a-loft-on-a-beam.ts").unwrap();
+    all_clean(&m);
+    let loft = m.groups.iter().find(|g| g.name == "Loft").unwrap();
+    let joists: Vec<&topo_core::Member> = loft.members.iter().map(|&id| m.member(id)).filter(|x| x.role == "joist").collect();
+    // Drawn at zero and free: it sits with the underside of its joists at the walls' top, which is the beam's.
+    assert!(joists.len() == 8 && joists.iter().all(|j| j.path.iter().all(|n| (m.pos(*n).z - ft(8.0)).abs() < 1e-6)));
+    // Each joist bears on the beam and on the back wall.
+    let on = |what: &str| m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.name.starts_with("Loft/joist#") && c.name.contains(what) && c.name.ends_with(": on both")).count();
+    assert_eq!((on("on Beam/beam#1"), on("Walls/Back/cap_plate")), (8, 8));
+    // A beam an inch too low: the loft cannot sit on it and the walls both, and that is said.
+    let low = run(&src.replace("const under = ft(8) - inch(9.25);", "const under = ft(8) - inch(10.25);"), "low.ts").unwrap_err().to_string();
+    assert!(low.contains("does not rest on"), "{low}");
+    // What it bears on has to be there before it.
+    let e = run(&src.replace(".add(walls, beam, loft)", ".add(walls, loft, beam)"), "order.ts").unwrap_err().to_string();
+    assert!(e.contains("nothing named Beam to bear on"), "{e}");
+}
+
+#[test]
 fn a_slab_laid_to_fall_and_a_curb_whose_top_is_level() {
     use topo_core::Vec2;
     let (ft, mm) = (topo_core::units::ft, |v: f64| v / 1000.0);

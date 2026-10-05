@@ -369,7 +369,9 @@ A **perimeter is built from numbers of the one solve**:
 - its **corners** (`walls.corner(1)` is its start, then each corner in
   turn): three numbers each, in the perimeter's body, at the bottom of the
   walls there; where a corner is drawn (`Perimeter.base(corner, z)` for
-  one not at the perimeter's `z`) is a hint;
+  one not at the perimeter's `z`) is a hint. Two walls in one line (a wall
+  that changes what it stands on, or its height, part way) meet end to
+  end, their plates cut square;
 - each wall's **height at its start and its end** (`Wall.heights(start,
   end)`: its top slopes between them; heights are above the wall's
   bottom); as drawn a hint. Where two walls meet at one height as drawn
@@ -450,7 +452,8 @@ framing; its height is not given. It is a free assembly (rims across the
 joists' ends, a band joist along each side, commons between at the
 spacing: `Floor.assembly()`), and `bearingOn(walls)` rests each of its
 members on each cap plate it crosses on plan (one that ends within an inch
-of a plate's line it runs toward bears on it), so the solve sits it on the
+of a plate's line it runs toward bears on it), and on each level member (a
+beam) of an assembly it is said to bear on (one added before it), so the solve sits it on the
 walls as they are, tilted if they are. On plan it stays where it is drawn,
 as a fallback (`Scene::stays_on_plan`, on its first corner; its turn is
 the hint any free body has), so a relation to one of its corners moves it.
@@ -537,6 +540,16 @@ is narrower than they are wide: no backing is framed for them yet.
     the slab and the curb, not the walls.
 13. **Walls on a slab laid to fall**: without a level curb, their bottoms
     follow the slab.
+14. **A floor at two heights**: two slabs with a step, walls on each, one
+    top; walls in one line meet end to end.
+15. **A slab read from a scan**: readings in a scan's frame put the slab
+    where the scan has the floor, and the walls with it.
+16. **From the slab up**: a slab laid to fall, a level curb, walls, and
+    trusses, each on the one under it.
+17. **A roof over part**: set out from a node part way along a plate, for
+    a length; some trusses of another shape.
+18. **A loft on a beam**: a floor over part of a room, on the back wall and
+    a beam on posts.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:

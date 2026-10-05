@@ -229,6 +229,21 @@ impl Perimeter {
             // A wall whose top or bottom slopes: its plates meet the other's at an angle, and are
             // not interleaved (that is said).
             let corner = self.points[b % self.points.len()];
+            // Two walls in one line (a wall that changes what it stands on, or its height, part way): their
+            // plates meet end to end, each cut square; where they end at one node they are joined there.
+            let ((a0, a1), (b0, b1)) = (self.seg(a), self.seg(b));
+            if (a1 - a0).normalized().cross((b1 - b0).normalized()).abs() < 1e-9 {
+                let plates = |w: &WallParts| w.plates();
+                for p2 in plates(ps) {
+                    for p1 in plates(pf) {
+                        let e2 = [m.member(p2).start(), m.member(p2).end()];
+                        if let Some(n) = [m.member(p1).start(), m.member(p1).end()].into_iter().find(|n| e2.contains(n)) {
+                            m.connect(n, p2, Some(p1), c);
+                        }
+                    }
+                }
+                continue;
+            }
             // (How far the second wall's framing keeps clear of the first at this corner: at its start, where
             // it leaves the corner; at its end, where it arrives.)
             let inset = if second == b { insets[second].0 } else { insets[second].1 };
