@@ -216,6 +216,28 @@ leans), and the tool says so by showing both, not by choosing. It changes
 nothing. *Not yet:* points are not weighted by confidence here, and a
 wall's finish is only caught where it is within the gate of the framing.
 
+### Without the model
+
+`scan_axes` asks the same of the scan alone (`manhattan.rs`), to check the
+above against. Every cube of the scan (25 cm by default) whose points are
+a surface gives a normal, weighted by what its own points say: the inverse
+of the variance of its direction the way it is least sure, N σ₂² / σ₃²
+(capped). A building's normals gather in six lobes, square to each other
+(a Manhattan frame; on the sphere of normals each lobe is roughly a von
+Mises-Fisher distribution, as in Straub et al., "A Mixture of Manhattan
+Frames"); one rotation is fitted to all six, each normal within a gate
+that narrows from 10° to 2° pulling its axis toward itself. Then each lobe
+is looked at for itself, with the scan's up as it is: how the floors and
+the undersides rise, and how the upright surfaces facing each way are
+turned and lean; with plumb as the upright surfaces alone have it, and a
+picture of the six lobes. What is not flat, and noise, is spread and does
+not gather. The model is used only to name which fitted axis is east.
+What it cannot say: a building racked one way and a scan tilted the other
+both lean every wall the same way; which of floor and walls is true wants
+something else (what the roof bears on, a door's jambs, gravity).
+Smaller cubes give noisier normals (at 10 cm, tens of mm per metre each),
+larger ones fewer surfaces.
+
 ## Faces placed by hand
 
 Where something is plainer to see than to describe (a stud's side face among

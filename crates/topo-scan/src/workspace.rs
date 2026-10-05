@@ -558,6 +558,7 @@ impl Workspace {
             "probe" => self.probe(args),
             "walls" => self.walls(args),
             "orientation" => self.orientation(args),
+            "scan_axes" => self.scan_axes(args),
             "studs" => self.studs(args),
             "fit_surface" => self.fit_surface(who, args),
             "surfaces" => self.surfaces(who, args),

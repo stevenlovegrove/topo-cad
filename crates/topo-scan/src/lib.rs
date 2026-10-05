@@ -22,6 +22,7 @@ pub mod confidence;
 pub mod fit;
 pub mod git;
 pub mod issues;
+pub mod manhattan;
 pub mod mcp;
 pub mod offer;
 pub mod orient;

@@ -961,3 +961,119 @@ impl Workspace {
         Ok(vec![json!({"type": "text", "text": s})])
     }
 }
+
+impl Workspace {
+    /// The scan's own axes, from its normals alone (`manhattan`), each lobe looked at for itself.
+    pub(crate) fn scan_axes(&mut self, args: &Value) -> Result<Vec<Value>> {
+        use crate::manhattan::{fit, lobes, plumb, surfels, upright, Lobe};
+        let cell = args.get("cell").and_then(|v| v.as_f64()).unwrap_or(0.25).clamp(0.05, 1.0) as f32;
+        self.scan()?;
+        let scan = self.scan.clone().unwrap();
+        let ns = surfels(&scan, cell);
+        if ns.len() < 100 {
+            bail!("the scan has too few flat places to say ({} cubes of {cell} m are surfaces)", ns.len());
+        }
+        let f64s = |v: V3| v.map(f64::from);
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let unit = |a: [f64; 3]| {
+            let l = dot(a, a).sqrt();
+            a.map(|x| x / l)
+        };
+        // From the scan's wall direction and its up as it is.
+        let up = [0.0, 0.0, 1.0];
+        let w = f64s(scan.wall_axis);
+        let hx0 = unit([w[0], w[1], 0.0]);
+        let f = fit(&ns, [hx0, cross(up, hx0), up]);
+        // Named by the model's axes, if there is a model placed (x east, y north): only names.
+        let (east, named) = match self.placement() {
+            Ok(pl) => (f64s(pl.rotate([1.0, 0.0, 0.0])), true),
+            Err(_) => (hx0, false),
+        };
+        let mut rows: Vec<[f64; 3]> = f.to_vec();
+        rows.sort_by(|a, b| a[2].abs().total_cmp(&b[2].abs()));
+        let fz = if rows[2][2] < 0.0 { rows[2].map(|x| -x) } else { rows[2] };
+        let fx = {
+            let (a, b) = (rows[0], rows[1]);
+            let pick = if dot(a, east).abs() >= dot(b, east).abs() { a } else { b };
+            if dot(pick, east) < 0.0 { pick.map(|x| -x) } else { pick }
+        };
+        // The frame the lobes are looked at in: the scan's up as it is, the fitted frame's level axes.
+        let hx = unit(cross(cross(up, fx), up));
+        let frame = [hx, cross(up, hx), up];
+        let (gate, bin) = (0.035, 0.00025);
+        let ls = lobes(&ns, &frame, gate, bin);
+        // The floor alone: what faces up within a quarter of a metre of the floor's height.
+        let floor: Vec<_> = ns.iter().copied().filter(|s| s.at[2] < scan.floor_z + 0.25).collect();
+        let floor = lobes(&floor, &frame, gate, bin).into_iter().find(|l| l.0.axis == 2 && l.0.positive).map(|l| l.0);
+        let mm = |x: f64| x * 1e3;
+        let rise = |u: [f64; 3]| [-dot(frame[0], u) / dot(frame[2], u), -dot(frame[1], u) / dot(frame[2], u)];
+        let (xn, yn) = if named { ("x (east)", "y (north)") } else { ("its first axis", "its second") };
+        let mut s = format!(
+            "The scan's own axes, from the scan alone: {} surfaces (cubes of {:.0} mm whose points are flat), each a normal weighted by how well its own points say it. \
+             The model is not used{}.\nSmall numbers are mm per metre (1 mm/m = 0.057°). \"Up\" is the scan's as it is now (as levelled).\n\n",
+            ns.len(), cell * 1e3, if named { ", except to name the axes: x is the fitted axis nearest the model's east" } else { "" });
+        let r = rise(fz);
+        s += &format!("One frame fitted to all six lobes together: against the scan's up it rises [{:+.2}, {:+.2}] along {xn}, {yn} (were the scan levelled by that, its up would be this frame's).\n", mm(r[0]), mm(r[1]));
+        let p = rise(plumb(&upright(&ns, &frame, gate), up));
+        s += &format!("Plumb, as the upright surfaces alone have it (the direction they are all most nearly square to): rises [{:+.2}, {:+.2}].\n", mm(p[0]), mm(p[1]));
+        if named {
+            let yaw = (dot(cross(east, hx), up)).atan2(dot(east, hx));
+            s += &format!("(Beside the model, as it is placed: the scan's axes are turned {:+.2} mm/m anticlockwise from the model's.)\n", mm(yaw));
+        }
+        s += "\nEach lobe for itself (where it gathers: the weighted median, then the mean of what is within 6 mm/m of that; spread: of those, rms; in it: their share of the lobe, and how many surfaces):\n";
+        s += &format!("  {:<34} {:>6}  {:<52} {:>7} {:>12}\n", "surfaces facing", "share", "", "spread", "in it");
+        let line = |name: &str, l: &Lobe| {
+            let what = if l.axis == 2 {
+                format!("rises [{:+.2}, {:+.2}] along x, y", mm(l.a), mm(l.b))
+            } else {
+                format!("turned {:+.2} anticlockwise; top leans {:+.2} toward +{}", mm(l.a), mm(l.b), ["x", "y"][l.axis])
+            };
+            format!("  {:<34} {:>5.1}%  {:<52} {:>7.2} {:>5.0}% {:>5}\n", name, 100.0 * l.share, what, mm(l.spread), 100.0 * l.core, l.count)
+        };
+        let names = ["+x (seen from the east: west walls)", "-x (seen from the west: east walls)", "+y (seen from the north)", "-y (seen from the south)", "up (floors, tops)", "down (undersides)"];
+        for (k, (l, _, _)) in ls.iter().enumerate() {
+            s += &line(names[k], l);
+        }
+        if let Some(l) = &floor {
+            s += &line("up, at the floor's height only", l);
+        }
+        s += "\nHow to read it: a scan out of level by [a, b] has its floors rising [a, b] and the tops of its walls leaning -a (those facing ±x) and -b (those facing ±y). \
+              Floors and walls that do not agree so are the building's: one of them is not square to the other.\n";
+        // The picture: the six lobes, each a square of ±35 mm/m.
+        let side = ls[0].2;
+        let (pad, top) = (26usize, 26usize);
+        let mut c = crate::render::Canvas::new(3 * (side + pad) + pad, 2 * (side + top) + top, [252, 252, 250]);
+        for (k, (l, h, _)) in ls.iter().enumerate() {
+            let (ox, oy) = (pad + (k / 2) * (side + pad), top + (k % 2) * (side + top));
+            let max = h.iter().copied().fold(0.0, f64::max).max(1e-12);
+            for j in 0..side {
+                for i in 0..side {
+                    let v = (1.0 + 400.0 * h[j * side + i] / max).ln() / 401f64.ln();
+                    let g = (250.0 - 235.0 * v) as u8;
+                    c.set((ox + i) as i32, (oy + side - 1 - j) as i32, [g, g, (g as f64 + (255.0 - g as f64) * 0.15) as u8]);
+                }
+            }
+            // A grid every 10 mm/m, the axis itself heavier; a red mark where the lobe gathers.
+            for t in -3i32..=3 {
+                let q = ((t as f64 * 0.010 + gate) / bin) as f32;
+                let col = if t == 0 { [60, 90, 200] } else { [200, 206, 224] };
+                for k in (0..side).step_by(if t == 0 { 1 } else { 3 }) {
+                    c.set(ox as i32 + q as i32, (oy + k) as i32, col);
+                    c.set((ox + k) as i32, (oy + side - 1) as i32 - q as i32, col);
+                }
+                if t != 0 {
+                    c.text(ox as i32 + q as i32 - 6, (oy + side + 4) as i32, 2, &format!("{}", t * 10), [90, 90, 90]);
+                }
+            }
+            let (px, py) = (ox as f32 + ((l.a + gate) / bin) as f32, (oy + side - 1) as f32 - ((l.b + gate) / bin) as f32);
+            c.line((px - 7.0, py), (px + 7.0, py), 1, [220, 30, 30]);
+            c.line((px, py - 7.0), (px, py + 7.0), 1, [220, 30, 30]);
+        }
+        s += "\nThe picture: six squares, each the weighted distribution of normals about one axis, ±35 mm/m, a grid every 10 (blue: the axis). \
+              Columns: facing ±x, facing ±y, facing up or down; top row the positive way (+x, +y, up), bottom row the other. \
+              In the first two columns, right is turned anticlockwise and up is the top leaning the axis's positive way; in the third, right is rising along x and up is rising along y. \
+              The red cross is where the lobe gathers (the table's numbers). Darker is more; the scale is logarithmic.\n";
+        Ok(vec![json!({"type": "text", "text": s}), json!({"type": "image", "mimeType": "image/png", "data": base64(&c.png())})])
+    }
+}
