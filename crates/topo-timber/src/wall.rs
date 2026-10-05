@@ -120,6 +120,10 @@ pub struct Wall {
     /// A curb under it (concrete, as wide as its plates), under each stretch of its bottom plate:
     /// from the surface it stands on (a slab's top) up to its own top (where the wall's bottom is).
     pub curb: Option<(Level, Level)>,
+    /// How much what it stands on rises across it, per metre toward its inside (a slab laid to
+    /// fall across the wall): its bottom plate lies on that, turned about its own length, and
+    /// its studs, plumb, are cut to it.
+    pub base_cross: f64,
 }
 
 /// Why a common stud is where it is.
@@ -226,6 +230,7 @@ impl Wall {
             corner_inside: [None, None],
             studs_solved: None,
             curb: None,
+            base_cross: 0.0,
         }
     }
     /// A wall with no position yet, to be placed by a `Perimeter` (or `between`).
@@ -820,7 +825,7 @@ impl Framing {
         let plate_ax = m.axes_between(w.start, w.end, Some(inward));
         let bottom = MemberSpec::new("bottom_plate", stud_sec, mat)
             .priority(10)
-            .depth_dir(inward)
+            .depth_dir((inward + Vec3::Z * w.base_cross).normalized())
             .anchor(Anchor::body_toward(&plate_ax, Some(Vec3::Z), v_side))
             .group(g);
         let top = MemberSpec::new("top_plate", stud_sec, mat)

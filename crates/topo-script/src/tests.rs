@@ -545,10 +545,14 @@ fn walls_stand_straight_on_a_slab_laid_to_fall() {
     };
     let rise = 0.020 * ft(12.0);
     let near = |got: (f64, f64), want: (f64, f64)| (got.0 - want.0).abs() < 1e-6 && (got.1 - want.1).abs() < 1e-6;
-    // The east wall 12 ft of slope up; each wall 8 ft tall. The slab slopes across the west wall's plate (3.5" of
-    // it): the plate sits on the higher edge of what is under it, not through the slab, so 1.8 mm above zero.
-    let across = 0.020 * topo_core::units::inch(3.5);
-    assert!(near(z("Walls/West/bottom_plate"), (across, across)) && near(z("Walls/East/bottom_plate"), (rise, rise)), "{:?} {:?}", z("Walls/West/bottom_plate"), z("Walls/East/bottom_plate"));
+    // The west wall at zero, the east wall 12 ft of slope higher; each 8 ft tall. The slab slopes across those two
+    // walls' plates: each lies on it, turned about its own length by the slope (its inner edge 1.8 mm higher, or
+    // lower, than its outer), and the studs on it stand plumb.
+    let turned = |path: &str| m.member(m.find_member(path).unwrap()).depth_dir.unwrap().z;
+    assert!((turned("Walls/West/bottom_plate") - 0.02).abs() < 1e-4 && (turned("Walls/East/bottom_plate") + 0.02).abs() < 1e-4 && turned("Walls/North/bottom_plate").abs() < 1e-9);
+    let stud = m.member(m.find_member("Walls/West/stud#3").unwrap());
+    assert!((m.pos(stud.start()).x - m.pos(stud.end()).x).abs() < 1e-9);
+    assert!(near(z("Walls/West/bottom_plate"), (0.0, 0.0)) && near(z("Walls/East/bottom_plate"), (rise, rise)), "{:?} {:?}", z("Walls/West/bottom_plate"), z("Walls/East/bottom_plate"));
     assert!(near(z("Walls/East/cap_plate"), (ft(8.0) + rise, ft(8.0) + rise)));
     // The north wall runs back down the slope (from the east to the west): its bottom plate slopes with the slab, and its top with it.
     assert!(near(z("Walls/North/bottom_plate"), (rise, 0.0)) && near(z("Walls/North/cap_plate"), (ft(8.0) + rise, ft(8.0))), "{:?}", z("Walls/North/bottom_plate"));

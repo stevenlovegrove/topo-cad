@@ -418,9 +418,10 @@ two slabs.
 A slab may be **laid to fall** (`Slab.sloped([sx, sy], about)`: its top a
 plane, rising so much per metre along x and y; its one number is its
 height at `about`). A wall standing on it, or on a curb of one height on
-it, has its bottom at the slab's top at each of its ends (at the higher
-edge of its plate, where the slab slopes across the wall: it sits on the
-slab, not through it), so its bottom plate slopes with the slab (and, its height being above its bottom, its
+it, has its bottom at the slab's top at each of its ends, so its bottom
+plate slopes with the slab along the wall, and where the slab slopes
+across the wall the plate is turned about its own length to lie on it
+(`Wall::base_cross`; the studs stand plumb, cut to it) (and, its height being above its bottom, its
 top with it). A curb whose **top is level** (`slab.curbTo(level)`) is what
 gives walls a level seat on such a slab: the wall's bottom is at that
 level, held there whatever the slab does, and the curb is as tall under it

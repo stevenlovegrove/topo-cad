@@ -382,11 +382,14 @@ pub struct StandsOn {
 }
 
 impl StandsOn {
-    /// Where the wall's bottom is at a place on its line, the slab's top being `slab`, and the
-    /// wall's plate reaching `across` (from its line to each of its two edges): on a slab that
-    /// slopes across the wall, the plate sits on the higher of the two, not through it.
-    fn base(&self, slab: &Level, p: Vec2, across: [Vec2; 2]) -> f64 {
-        self.level.unwrap_or(across.iter().map(|&o| slab.over(p + o)).fold(f64::MIN, f64::max) + self.curb)
+    /// Where the wall's bottom is at a place on its line, the slab's top being `slab`.
+    fn base(&self, slab: &Level, p: Vec2) -> f64 {
+        self.level.unwrap_or(slab.over(p) + self.curb)
+    }
+    /// How much what the wall stands on rises across it, per metre along `inward` (a unit
+    /// direction on plan): the slab's slope that way, unless it is on a curb whose top is level.
+    fn cross(&self, slab: &Level, inward: Vec2) -> f64 {
+        if self.level.is_some() { 0.0 } else { slab.slope.x * inward.x + slab.slope.y * inward.y }
     }
     /// The curb, if there is one: from the slab's top to its own.
     fn curb(&self, slab: &Level) -> Option<(Level, Level)> {
@@ -476,19 +479,13 @@ impl PerimeterParams {
             let (x, y) = if k % n == 0 { p.start } else { p.segments[k % n - 1].to };
             Vec2::new(x, y)
         };
-        // (Which side of its line a wall's plate is on: the interior's, to the left of a path drawn anticlockwise.)
-        let left = !p.closed || topo_core::polygon_area(&(0..n).map(plan).collect::<Vec<_>>()) > 0.0;
         for i in 0..ns {
-            bases.push(match (p.stands_on(i), &p.segments[i].side) {
-                (Some(on), Some(w)) => {
+            bases.push(match p.stands_on(i) {
+                Some(on) => {
                     let slab = slabs.get(&on.slab).ok_or_else(|| format!("{}: nothing named {} to stand on (a slab)", p.name, on.slab))?;
-                    let d = (plan(i + 1) - plan(i)).normalized();
-                    let inward = if left { Vec2::new(-d.y, d.x) } else { Vec2::new(d.y, -d.x) };
-                    let t = topo_core::units::inch(topo_timber::lumber::dressed_in(w.studs.1));
-                    let across = if w.justify == "center" { [inward * (-t / 2.0), inward * (t / 2.0)] } else { [inward * 0.0, inward * t] };
-                    Some((on.base(slab, plan(i), across), on.base(slab, plan(i + 1), across)))
+                    Some((on.base(slab, plan(i)), on.base(slab, plan(i + 1))))
                 }
-                _ => None,
+                None => None,
             });
         }
         let corners = (0..n)
@@ -754,6 +751,16 @@ impl Builder {
         per.heights = at.heights.clone();
         per.wall_bases = at.bases.clone();
         let mut walls = per.walls();
+        // What each wall stands on, across it: a slab that slopes across a wall turns its bottom plate to lie on it.
+        for (i, w) in walls.iter_mut().enumerate() {
+            if let (Some(w), Some(on)) = (w.as_mut(), p.stands_on(i)) {
+                if let Some(&(_, _, slab)) = self.slabs.get(&on.slab) {
+                    let dir = v3(w.end.x - w.start.x, w.end.y - w.start.y, 0.0).normalized();
+                    let inward = if w.interior_left { Vec3::Z.cross(dir) } else { dir.cross(Vec3::Z) };
+                    w.base_cross = on.cross(&slab, Vec2::new(inward.x, inward.y));
+                }
+            }
+        }
         for (w, studs) in walls.iter_mut().zip(&at.studs) {
             if let (Some(w), Some(studs)) = (w.as_mut(), studs) {
                 match &w.survey {
@@ -864,13 +871,7 @@ impl Builder {
                     // (The curb's top is level, where it is said to be: the slab under it does not move the wall.)
                     Some(z) => scene::Num::from(z - origin.z),
                     // (So far above the slab's top there: which rises and falls with the slab's one number.)
-                    None => {
-                        let dir = v3(w.end.x - w.start.x, w.end.y - w.start.y, 0.0).normalized();
-                        let inward = if w.interior_left { Vec3::Z.cross(dir) } else { dir.cross(Vec3::Z) };
-                        let (inward, t) = (Vec2::new(inward.x, inward.y), w.thickness());
-                        let across = if w.justify == Justify::Center { [inward * (-t / 2.0), inward * (t / 2.0)] } else { [inward * 0.0, inward * t] };
-                        scene::Num::from(on.base(&slab, Vec2::new(at.x, at.y), across) - slab.z - origin.z).plus(top, 1.0)
-                    }
+                    None => scene::Num::from(on.base(&slab, Vec2::new(at.x, at.y)) - slab.z - origin.z).plus(top, 1.0),
                 };
                 sc.equal(&format!("{name} stands on {what} at its {end}"), s.into(), held, scene::Tier::Hard);
             }
