@@ -144,6 +144,8 @@ pub struct WallParts {
     pub cap_plates: Vec<MemberId>,
     pub studs: Vec<MemberId>,
     pub headers: Vec<MemberId>,
+    /// Whether it stands on a curb.
+    pub curbed: bool,
 }
 
 impl WallParts {
@@ -850,9 +852,13 @@ impl Framing {
                     let p = frame.to_world(v3(x, y, 0.0));
                     Vec2::new(p.x, p.y)
                 };
+                // (Clear of a wall this one butts into at an end, as its studs are: that wall, or the curb under
+                // it, has the corner.)
+                let (a, bx) = (a.max(w.start_inset), bx.min(len - w.end_inset));
                 let outline = vec![corner(a, y0), corner(bx, y0), corner(bx, y1), corner(a, y1)];
+                f.parts.curbed = true;
                 // (Where the slab comes up to the curb's top there is none: only where it has some height.)
-                if outline.iter().any(|&p| over.over(p) - under.over(p) > 1e-4) {
+                if bx - a > 1e-6 && outline.iter().any(|&p| over.over(p) - under.over(p) > 1e-4) {
                     let name = if segs.len() == 1 { "curb".to_string() } else { format!("curb#{}", k + 1) };
                     m.solids.push(Solid { name, role: "curb".into(), material: "concrete".into(), group: Some(g), outline, bottom: under, top: over });
                 }

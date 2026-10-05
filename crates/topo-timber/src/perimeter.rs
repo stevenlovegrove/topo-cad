@@ -210,6 +210,7 @@ impl Perimeter {
         let g = m.add_group(&self.name, "perimeter", Frame::WORLD, None);
         let wall_corners = self.wall_corners();
         let sloped: Vec<bool> = planned.iter().map(|w| w.as_ref().is_some_and(|w| w.height_end.is_some_and(|h| (h - w.height).abs() > 1e-9) || (w.start.z - w.end.z).abs() > 1e-9)).collect();
+        let insets: Vec<(f64, f64)> = planned.iter().map(|w| w.as_ref().map_or((0.0, 0.0), |w| (w.start_inset, w.end_inset))).collect();
         let mut walls = vec![];
         for w in planned {
             let Some(mut w) = w else {
@@ -228,14 +229,17 @@ impl Perimeter {
             // A wall whose top or bottom slopes: its plates meet the other's at an angle, and are
             // not interleaved (that is said).
             let corner = self.points[b % self.points.len()];
+            // (How far the second wall's framing keeps clear of the first at this corner: at its start, where
+            // it leaves the corner; at its end, where it arrives.)
+            let inset = if second == b { insets[second].0 } else { insets[second].1 };
             if sloped[a] || sloped[b] {
-                butt_plates(m, pf, ps, corner, c);
+                butt_plates(m, pf, ps, corner, inset, c);
                 m.issues.push(Issue::new(Severity::Info, "corner-sloped", format!("{}: a wall at the corner of sides {} and {} slopes: its plates butt the other's there, not lapped", self.name, a + 1, b + 1)));
                 continue;
             }
             // Walls of different heights there: a step. Their plates do not lap; that is said.
             if !lap_corner(m, pf, ps, c) {
-                butt_plates(m, pf, ps, corner, c);
+                butt_plates(m, pf, ps, corner, inset, c);
                 m.issues.push(Issue::new(Severity::Info, "corner-step", format!("{}: the walls of sides {} and {} meet at different heights: their top plates do not lap there", self.name, a + 1, b + 1)));
                 continue;
             }
@@ -263,7 +267,7 @@ impl Perimeter {
 /// `corner` butts against a top ply of `through` ending at the same node; or, where none does
 /// (the plies at different heights there), it is cut back to end on the first face of `through`
 /// it runs into (a plate, or the end stud of a taller wall), at a node on that face.
-fn butt_plates(m: &mut Model, through: &WallParts, butting: &WallParts, corner: Vec2, c: ConnectionId) {
+fn butt_plates(m: &mut Model, through: &WallParts, butting: &WallParts, corner: Vec2, inset: f64, c: ConnectionId) {
     let near = |m: &Model, id: MemberId| {
         let mm = m.member(id);
         [mm.start(), mm.end()].into_iter().find(|&n| {
@@ -283,7 +287,18 @@ fn butt_plates(m: &mut Model, through: &WallParts, butting: &WallParts, corner: 
         // (The walls' bottoms at different heights there: it ends on the other wall, as a top ply does.)
         if !met {
             if let Some(n) = near(m, p2) {
-                cut_back(m, through, p2, n, c);
+                // (Lower than all of the other wall's framing, it meets none of it: then it is the curb under
+                // that wall that has the corner, and it ends on that, as far back as its own studs keep.)
+                if !cut_back(m, through, p2, n, c) && through.curbed && inset > 1e-9 {
+                    let far = ends(m, p2).into_iter().find(|&e| e != n).unwrap();
+                    let e = m.node_at(m.pos(n) + (m.pos(far) - m.pos(n)).normalized() * inset);
+                    let path = &mut m.member_mut(p2).path;
+                    if path[0] == n {
+                        path[0] = e;
+                    } else {
+                        *path.last_mut().unwrap() = e;
+                    }
+                }
             }
         }
     }
@@ -311,7 +326,7 @@ fn butt_plates(m: &mut Model, through: &WallParts, butting: &WallParts, corner: 
 
 /// Cuts a plate of one wall back from the corner node `n` to end on the first face of the
 /// `through` wall it runs into (a plate, or its end stud), at a node on that face.
-fn cut_back(m: &mut Model, through: &WallParts, p: MemberId, n: NodeId, c: ConnectionId) {
+fn cut_back(m: &mut Model, through: &WallParts, p: MemberId, n: NodeId, c: ConnectionId) -> bool {
     let ends = |m: &Model, id: MemberId| [m.member(id).start(), m.member(id).end()];
     // From its far end toward the corner: the first face of the other wall that any of it enters
     // (lines along it through its axis, its middle, and near each edge of its section: its axis
@@ -350,7 +365,7 @@ fn cut_back(m: &mut Model, through: &WallParts, p: MemberId, n: NodeId, c: Conne
         }
     }
     // The first of them; of those as near, one its axis meets (its end is a node on that face).
-    let Some(first) = hits.iter().map(|h| h.0).min_by(f64::total_cmp) else { return };
+    let Some(first) = hits.iter().map(|h| h.0).min_by(f64::total_cmp) else { return false };
     hits.retain(|h| h.0 < first + 1e-6);
     hits.sort_by_key(|h| !h.1);
     let Some((e, q)) = hits.iter().find_map(|&(_, _, q, face)| {
@@ -358,7 +373,7 @@ fn cut_back(m: &mut Model, through: &WallParts, p: MemberId, n: NodeId, c: Conne
         let e = m.node_at(o + d * ((f.origin - o).dot(f.normal) / d.dot(f.normal)));
         (e != far && m.attach(e, q, face).is_ok()).then_some((e, q))
     }) else {
-        return;
+        return false;
     };
     let path = &mut m.member_mut(p).path;
     if path[0] == n {
@@ -368,6 +383,7 @@ fn cut_back(m: &mut Model, through: &WallParts, p: MemberId, n: NodeId, c: Conne
     }
     m.add_rule(e, JointRule::Butt { member: p, against: q });
     m.connect(e, p, Some(q), c);
+    true
 }
 
 #[cfg(test)]

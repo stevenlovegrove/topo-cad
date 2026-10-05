@@ -555,6 +555,29 @@ fn walls_stand_on_a_slab_and_a_curb() {
     // And it is built clean: nothing through anything else.
     let g = topo_geom::Geometry::build(&m, &Topology::build(&m));
     assert!(g.clashes().is_empty(), "{:?}", g.clashes());
+    // Nor through a curb, nor one curb through another: at a corner, the wall that runs through has it (its curb, or
+    // its plate where it stands lower), and the other wall's curb and bottom plate stop at its inside face.
+    let span = |s: &topo_core::Solid| {
+        let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+        for p in s.faces().iter().flat_map(|f| f.outer.clone()) {
+            for (a, v) in [p.x, p.y, p.z].into_iter().enumerate() {
+                lo[a] = lo[a].min(v);
+                hi[a] = hi[a].max(v);
+            }
+        }
+        (lo, hi)
+    };
+    let through = |a: &([f64; 3], [f64; 3]), b: &([f64; 3], [f64; 3])| (0..3).all(|k| a.1[k].min(b.1[k]) - a.0[k].max(b.0[k]) > 1e-4);
+    for (i, c) in curbs.iter().enumerate() {
+        for mg in &g.members {
+            let bb = mg.bbox();
+            let of = ([bb.min.x, bb.min.y, bb.min.z], [bb.max.x, bb.max.y, bb.max.z]);
+            assert!(!through(&span(c), &of), "{} is through {}", m.member_path(mg.member), m.solid_path(c));
+        }
+        for d in &curbs[i + 1..] {
+            assert!(!through(&span(c), &span(d)), "{} is through {}", m.solid_path(c), m.solid_path(d));
+        }
+    }
     // Without the reading, the slab is where it is drawn.
     let drawn = run(&src.replace("  survey(slab.at([ft(6), ft(4)]), { z: -mm(45) }),\n", ""), "drawn.ts").unwrap();
     assert!((drawn.solids.iter().find(|s| s.role == "slab").unwrap().top.z + mm(40.0)).abs() < 1e-9);
