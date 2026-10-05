@@ -156,7 +156,11 @@ Each step leaves everything working and removes one row above.
    states each contact (`rest_on_lines`), and the bearing points are those
    nodes. The solve goes through the structure of a part (the trusses are
    blocks, isolated from each other, eliminated against what they share),
-   so this costs little more than solving them apart.
+   so this costs little more than solving them apart. *And a roof's
+   shape:* a roof is its surfaces (`Roof`: parts, each an outline whose
+   edges are eaves or gables; ridges, hips and valleys where the planes
+   meet), made on what the solve placed, and its framing is set out from
+   a part. *Not yet:* hip and valley framing; planes fitted to a scan.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them.

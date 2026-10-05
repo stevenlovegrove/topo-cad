@@ -865,7 +865,7 @@ impl Framing {
                 // (Where the slab comes up to the curb's top there is none: only where it has some height.)
                 if bx - a > 1e-6 && outline.iter().any(|&p| over.over(p) - under.over(p) > 1e-4) {
                     let name = if segs.len() == 1 { "curb".to_string() } else { format!("curb#{}", k + 1) };
-                    m.solids.push(Solid { name, role: "curb".into(), material: "concrete".into(), group: Some(g), outline, bottom: under, top: over });
+                    m.solids.push(Solid { name, role: "curb".into(), material: "concrete".into(), group: Some(g), outline, bottom: under, top: over, seams: vec![] });
                 }
             }
         }

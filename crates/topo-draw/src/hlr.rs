@@ -53,18 +53,23 @@ pub struct Piece {
     pub ply: usize,
     pub convex: ConvexSolid,
     pub faces: Vec<topo_geom::Face>,
+    /// Edges of its faces that are not edges of the thing (a solid's seams): not drawn.
+    pub seams: Vec<(Vec3, Vec3)>,
 }
 
 impl Piece {
     /// The plies of members.
     pub fn of_members(members: &[&MemberGeom]) -> Vec<Piece> {
-        members.iter().flat_map(|g| (0..g.place.plies.len()).map(move |k| Piece { member: g.member, ply: k, convex: g.ply_convex(k), faces: g.ply_faces(k) })).collect()
+        members.iter().flat_map(|g| (0..g.place.plies.len()).map(move |k| Piece { member: g.member, ply: k, convex: g.ply_convex(k), faces: g.ply_faces(k), seams: vec![] })).collect()
     }
     /// A solid, marked as `member`. (It hides what is behind the convex hull of its outline: a
     /// slab with a notch in it hides a little more than it should, seen from below.)
     pub fn of_solid(s: &topo_core::Solid, member: MemberId) -> Piece {
         let faces: Vec<topo_geom::Face> = s.faces().into_iter().map(|f| topo_geom::Face { outer: f.outer, holes: vec![], normal: f.normal }).collect();
-        Piece { member, ply: 0, convex: topo_geom::solid_convex(s), faces }
+        // A seam: along it on the top and on the underside, and up its two ends.
+        let at = |p: Vec2, l: &topo_core::Level| Vec3::new(p.x, p.y, l.over(p));
+        let seams = s.seam_lines().into_iter().flat_map(|(a, b)| [(at(a, &s.top), at(b, &s.top)), (at(a, &s.bottom), at(b, &s.bottom)), (at(a, &s.bottom), at(a, &s.top)), (at(b, &s.bottom), at(b, &s.top))]).collect();
+        Piece { member, ply: 0, convex: topo_geom::solid_convex(s), faces, seams }
     }
 }
 
@@ -216,6 +221,9 @@ pub fn hidden_lines_of(pieces: &[Piece], proj: &Projector) -> Vec<Seg> {
                     let (a3, b3) = (ring[k], ring[(k + 1) % n]);
                     let (a, b) = (proj.p(a3), proj.p(b3));
                     if a.distance(b) < 1e-9 {
+                        continue;
+                    }
+                    if it.piece.seams.iter().any(|&(p, q)| (p.distance(a3) < 1e-9 && q.distance(b3) < 1e-9) || (p.distance(b3) < 1e-9 && q.distance(a3) < 1e-9)) {
                         continue;
                     }
                     let (ka, kb) = (key(a), key(b));

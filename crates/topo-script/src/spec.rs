@@ -161,6 +161,8 @@ pub enum ItemSpec {
     /// A wall between two places on other walls (or from one to a point): an interior wall.
     Partition(PartitionSpec),
     TrussRoof(TrussRoofSpec),
+    /// A roof as its surfaces (see `RoofSpec`).
+    Roof(RoofSpec),
     Assembly(AssemblySpec),
     /// A frame with points in it, as nodes (`Frame/point`): a body (a scan's, placed where it is
     /// registered, or free), or the world (its points are datums).
@@ -481,6 +483,53 @@ impl SlabSpec {
         let at = self.about.or(self.outline.first().copied()).unwrap_or((0.0, 0.0));
         Level { z: top, at: Vec2::new(at.0, at.1), slope: Vec2::new(self.slope.0, self.slope.1) }
     }
+}
+
+/// A roof as its surfaces: parts, each a convex outline whose edges are eaves (a plane rises
+/// inward from each) or not; ridges, hips and valleys are where the planes meet
+/// (`topo_timber::roofs`). It is made once everything else is placed: each plane is where the
+/// part's framing has its tops (its rafters, its trusses' top chords), or, where it has none
+/// that way, rises at its pitch from the plates of the walls under its eave. Its deck is written
+/// as solids, and how much there is of each kind of edge is said of its group.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoofSpec {
+    pub name: String,
+    pub parts: Vec<RoofPartSpec>,
+    /// Its deck: a sheet this thick on its planes.
+    pub deck: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoofPartSpec {
+    pub name: String,
+    pub outline: Vec<(f64, f64)>,
+    /// What each edge is (edge k from point k to the next): an eave, or not (a gable).
+    pub edges: Vec<Option<EaveSpec>>,
+    /// How far it runs out past an edge that is not an eave.
+    #[serde(default)]
+    pub rake: f64,
+    /// What frames it, by name (an assembly of rafters, a roof of trusses): its planes are on that.
+    #[serde(default)]
+    pub framing: Option<String>,
+    /// What its eaves are over, by name (perimeters, partitions): an eave is as high as the cap
+    /// plate under it, and `heel` above that.
+    #[serde(default)]
+    pub on: Vec<String>,
+    #[serde(default)]
+    pub heel: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EaveSpec {
+    /// What it is called (the wall it is over).
+    #[serde(default)]
+    pub name: Option<String>,
+    pub pitch: f64,
+    #[serde(default)]
+    pub overhang: f64,
+    /// How high the plane is over the edge, where it is given (not found).
+    #[serde(default)]
+    pub height: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1521,6 +1570,165 @@ impl Builder {
         Ok(Declared { body, frame: a.placement.frame(), points, members, rests })
     }
 
+    /// Roofs' surfaces, on what is placed: each part's planes found (on its framing, else over its
+    /// walls), where they meet worked out, and its deck written.
+    fn surfaces(&mut self, roofs: &[&RoofSpec]) -> Result<(), String> {
+        use topo_timber::roofs::{self, Eave, EdgeKind, RoofPart};
+        if roofs.is_empty() {
+            return Ok(());
+        }
+        let geom = topo_geom::Geometry::build(&self.m, &Topology::build(&self.m));
+        let all = geom.parts(&self.m);
+        // (A member's top: the face of it that faces up most.)
+        let top = |id: MemberId| all[id.idx()].faces.iter().filter(|f| f.1.z > 0.2).max_by(|a, b| a.1.z.total_cmp(&b.1.z)).cloned();
+        let root = self.root;
+        let named = |m: &Model, name: &str| m.groups.iter().filter(|g| g.name == name).min_by_key(|g| g.parent != Some(root)).map(|g| g.id);
+        // The line (or, with `s`, the plane) that fits best: z = c0 + c1 s + c2 t.
+        let fit = |pts: &[(f64, f64, f64)]| -> (f64, f64, f64) {
+            let n = pts.len() as f64;
+            let (ms, mt, mz) = pts.iter().fold((0.0, 0.0, 0.0), |m, p| (m.0 + p.0 / n, m.1 + p.1 / n, m.2 + p.2 / n));
+            let (mut ss, mut st, mut tt, mut sz, mut tz) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for &(s, t, z) in pts {
+                let (s, t, z) = (s - ms, t - mt, z - mz);
+                ss += s * s;
+                st += s * t;
+                tt += t * t;
+                sz += s * z;
+                tz += t * z;
+            }
+            // (Too little along it, or across it, to say how it tilts that way: level that way.)
+            let (wide, long) = (ss > 0.01 * n, tt > 0.06 * n);
+            let (c1, c2) = match (wide, long) {
+                (true, true) => {
+                    let det = ss * tt - st * st;
+                    ((sz * tt - tz * st) / det, (tz * ss - sz * st) / det)
+                }
+                (true, false) => (sz / ss, 0.0),
+                (false, true) => (0.0, tz / tt),
+                (false, false) => (0.0, 0.0),
+            };
+            (mz - c1 * ms - c2 * mt, c1, c2)
+        };
+        for r in roofs {
+            let group = self.m.add_group(&r.name, "roof_surface", Frame::WORLD, Some(self.root));
+            let mut parts = vec![];
+            for p in &r.parts {
+                let outline: Vec<Vec2> = p.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
+                let n = outline.len();
+                if n < 3 || p.edges.len() != n {
+                    return Err(format!("roof {}: part {} needs an outline of three points or more, and what each edge is", r.name, p.name));
+                }
+                let mid = outline.iter().fold(Vec2::new(0.0, 0.0), |m, q| m + *q) / n as f64;
+                let mut eaves: Vec<Option<Eave>> = vec![None; n];
+                let mut unset = vec![];
+                for k in 0..n {
+                    let Some(e) = &p.edges[k] else { continue };
+                    let (a, b) = (outline[k], outline[(k + 1) % n]);
+                    let len = a.distance(b);
+                    let dir = (b - a) / len;
+                    let inward = if Vec2::new(-dir.y, dir.x).dot(mid - a) < 0.0 { Vec2::new(dir.y, -dir.x) } else { Vec2::new(-dir.y, dir.x) };
+                    if let Some(h) = e.height {
+                        eaves[k] = Some(Eave { height: (h, h), pitch: e.pitch, overhang: e.overhang });
+                        continue;
+                    }
+                    // On its framing: the tops of what slopes up from this eave.
+                    if let Some(f) = &p.framing {
+                        let g = named(&self.m, f).ok_or_else(|| format!("roof {}: part {} is framed by {f}, and there is nothing of that name", r.name, p.name))?;
+                        let mut pts = vec![];
+                        for id in self.m.members_in_tree(g) {
+                            let role = self.m.member(id).role.as_str();
+                            if role != "rafter" && role != "top_chord" {
+                                continue;
+                            }
+                            let Some((face, normal)) = top(id) else { continue };
+                            let lean = Vec2::new(normal.x, normal.y);
+                            if lean.norm() < 1e-6 || lean.normalized().dot(inward) > -0.9 {
+                                continue;
+                            }
+                            pts.extend(face.iter().map(|q| {
+                                let d = Vec2::new(q.x, q.y) - a;
+                                (d.dot(inward), d.dot(dir), q.z)
+                            }));
+                        }
+                        if pts.len() >= 3 {
+                            let (c0, c1, c2) = fit(&pts);
+                            eaves[k] = Some(Eave { height: (c0, c0 + c2 * len), pitch: c1, overhang: e.overhang });
+                            continue;
+                        }
+                    }
+                    // Over walls: the cap plates under this edge.
+                    let mut pts = vec![];
+                    for name in &p.on {
+                        let g = named(&self.m, name).ok_or_else(|| format!("roof {}: part {} is over {name}, and there is nothing of that name", r.name, p.name))?;
+                        for id in self.m.members_in_tree(g) {
+                            if self.m.member(id).role != "cap_plate" {
+                                continue;
+                            }
+                            let axis = Vec2::new(all[id.idx()].axes[0].x, all[id.idx()].axes[0].y);
+                            if axis.norm() < 0.5 || axis.normalized().cross(dir).abs() > 0.05 {
+                                continue;
+                            }
+                            let Some((face, _)) = top(id) else { continue };
+                            let at: Vec<(f64, f64, f64)> = face.iter().map(|q| ((Vec2::new(q.x, q.y) - a).dot(inward), (Vec2::new(q.x, q.y) - a).dot(dir), q.z)).collect();
+                            if at.iter().all(|q| q.0.abs() < 0.25) {
+                                pts.extend(at.into_iter().filter(|q| q.1 > -0.3 && q.1 < len + 0.3).map(|q| (0.0, q.1, q.2)));
+                            }
+                        }
+                    }
+                    if pts.len() >= 2 {
+                        let (c0, _, c2) = fit(&pts);
+                        eaves[k] = Some(Eave { height: (c0 + p.heel, c0 + c2 * len + p.heel), pitch: e.pitch, overhang: e.overhang });
+                    } else {
+                        unset.push(k);
+                    }
+                }
+                // An eave nothing is under (where a wing runs into the rest of the roof): as high as the part's others.
+                let found: Vec<f64> = eaves.iter().flatten().flat_map(|e| [e.height.0, e.height.1]).collect();
+                if !unset.is_empty() && found.is_empty() {
+                    return Err(format!("roof {}: nothing says how high part {}'s eaves are: walls under them (`on`), what frames it, or a height", r.name, p.name));
+                }
+                let h = found.iter().sum::<f64>() / found.len().max(1) as f64;
+                for k in unset {
+                    let e = p.edges[k].as_ref().unwrap();
+                    eaves[k] = Some(Eave { height: (h, h), pitch: e.pitch, overhang: e.overhang });
+                }
+                parts.push(RoofPart { name: format!("{}: part {}", r.name, p.name), outline, edges: eaves, rake: p.rake });
+            }
+            let faces = roofs::faces(&parts)?;
+            // Its deck: each face a sheet on its plane. (Named by its part and its eave; in pieces, numbered.)
+            let mut count: HashMap<String, usize> = HashMap::new();
+            let label = |f: &roofs::Face| {
+                let p = &r.parts[f.part];
+                // (A part drawn clockwise is turned about to be worked out: its edges with it.)
+                let n = p.outline.len();
+                let clockwise = polygon_area(&p.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect::<Vec<_>>()) < 0.0;
+                let k = if clockwise { (2 * n - 2 - f.edge) % n } else { f.edge };
+                format!("{} {}", p.name, p.edges[k].as_ref().and_then(|e| e.name.clone()).unwrap_or_else(|| format!("eave {}", k + 1)))
+            };
+            for f in &faces {
+                *count.entry(label(f)).or_insert(0) += 1;
+            }
+            let mut nth: HashMap<String, usize> = HashMap::new();
+            let mut area = 0.0;
+            for f in &faces {
+                let base = label(f);
+                let k = nth.entry(base.clone()).or_insert(0);
+                *k += 1;
+                let name = if count[&base] == 1 { base } else { format!("{base}#{k}") };
+                area += polygon_area(&f.outline).abs() * (1.0 + f.plane.slope.dot(f.plane.slope)).sqrt();
+                self.m.solids.push(Solid { name, role: "roof_deck".into(), material: "plywood".into(), group: Some(group), outline: f.outline.clone(), bottom: f.plane, top: f.plane.raised(r.deck), seams: f.seams.clone() });
+            }
+            // How much of each kind of edge there is: what is bought by the length (ridge cap, valley flashing, gutter).
+            let lengths = roofs::lengths(&roofs::edges(&faces));
+            let props = &mut self.m.group_mut(group).props;
+            props.insert("area".into(), format!("{area:.3}"));
+            for (kind, key) in [(EdgeKind::Ridge, "ridge"), (EdgeKind::Hip, "hip"), (EdgeKind::Valley, "valley"), (EdgeKind::Eave, "eave"), (EdgeKind::Rake, "rake")] {
+                props.insert(key.into(), format!("{:.3}", lengths.get(&kind).copied().unwrap_or(0.0)));
+            }
+        }
+        Ok(())
+    }
+
     /// An assembly, once the scene is written: its fastenings, supports and loads, by its model ids.
     fn finish(&mut self, a: &AssemblySpec, d: &Declared, w: &scene::Written) -> Result<(), String> {
         let ids: Vec<MemberId> = d.members.iter().map(|m| w.members[m.0]).collect();
@@ -1540,7 +1748,7 @@ impl Builder {
                 let under = Level { z: c[0].z + deck.above, at: Vec2::new(c[0].x, c[0].y), slope };
                 let group = ids.first().and_then(|&id| self.m.member(id).group);
                 let name = if pieces.len() == 1 { "deck".to_string() } else { format!("deck#{}", k + 1) };
-                self.m.solids.push(Solid { name, role: "deck".into(), material: "plywood".into(), group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under, top: under.raised(deck.thickness) });
+                self.m.solids.push(Solid { name, role: "deck".into(), material: "plywood".into(), group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under, top: under.raised(deck.thickness), seams: vec![] });
             }
         }
         // Ends cut level or plumb, where a member says so.
@@ -1779,6 +1987,8 @@ struct Pass<'a> {
     written: scene::Written,
     declared: Vec<(&'a AssemblySpec, Declared)>,
     roofs: Vec<(&'a TrussRoofSpec, topo_timber::truss::PlacedRoof)>,
+    /// Roofs given as surfaces: made last, on what is placed.
+    surfaces: Vec<&'a RoofSpec>,
     /// The perimeters' numbers as solved.
     solved: Vec<PerimeterParams>,
     /// The slabs' tops as solved.
@@ -1789,7 +1999,7 @@ struct Pass<'a> {
 
 /// Its assemblies and roofs, on what the solve placed; and a fit's unknowns as solved.
 fn finish(pass: Pass) -> Result<(Model, Option<Vec<f64>>), String> {
-    let Pass { mut b, written, declared, roofs, fit, .. } = pass;
+    let Pass { mut b, written, declared, roofs, surfaces, fit, .. } = pass;
     let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
     let fitted = fit.map(|ss| ss.iter().map(|s| values[s]).collect());
     for open in &written.open {
@@ -1805,6 +2015,7 @@ fn finish(pass: Pass) -> Result<(Model, Option<Vec<f64>>), String> {
         b.finish_roof(r, placed, &written)?;
     }
     b.m.compact_nodes();
+    b.surfaces(&surfaces)?;
     Ok((b.m, fitted))
 }
 
@@ -1838,7 +2049,7 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         b.slabs.insert(s.name.clone(), (body, n, level));
         slab_tops.push(n);
         let g = b.m.add_group(&s.name, "slab", Frame::WORLD, Some(b.root));
-        b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: level.raised(-s.thickness), top: level });
+        b.m.solids.push(Solid { name: "slab".into(), role: "slab".into(), material: "concrete".into(), group: Some(g), outline: s.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect(), bottom: level.raised(-s.thickness), top: level, seams: vec![] });
     }
     // (Where partitions tee into walls is known before the walls are built: their cap plates are broken there.)
     for item in &spec.items {
@@ -1987,5 +2198,6 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
     let solved = numbers.iter().zip(drawn).map(|(n, d)| PerimeterParams::solved(n, &values, d.corners[0])).collect();
     let slabs = slab_tops.iter().map(|n| values[n]).collect();
-    Ok(Pass { b, written, declared, roofs, solved, slabs, fit })
+    let surfaces = spec.items.iter().filter_map(|i| if let ItemSpec::Roof(r) = i { Some(r) } else { None }).collect();
+    Ok(Pass { b, written, declared, roofs, surfaces, solved, slabs, fit })
 }

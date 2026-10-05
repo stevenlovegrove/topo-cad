@@ -51,6 +51,11 @@ pub struct Solid {
     /// Its underside and its top.
     pub bottom: Level,
     pub top: Level,
+    /// Edges of its outline (edge k from point k to the next) where it only abuts another piece
+    /// of the same sheet (a roof's deck, cut into convex pieces): no edge of the thing is there,
+    /// and no face.
+    #[serde(default)]
+    pub seams: Vec<usize>,
 }
 
 /// A face of a solid: its outline (anticlockwise seen from outside) and outward normal.
@@ -61,8 +66,15 @@ pub struct SolidFace {
 }
 
 impl Solid {
-    /// Its faces: top, underside, and a side for each edge of its outline.
+    /// Its seams: the two ends of each, on plan.
+    pub fn seam_lines(&self) -> Vec<(Vec2, Vec2)> {
+        let n = self.outline.len();
+        self.seams.iter().filter(|&&k| k < n).map(|&k| (self.outline[k], self.outline[(k + 1) % n])).collect()
+    }
+
+    /// Its faces: top, underside, and a side for each edge of its outline (but a seam).
     pub fn faces(&self) -> Vec<SolidFace> {
+        let seams = self.seam_lines();
         let mut o = self.outline.clone();
         if polygon_area(&o) < 0.0 {
             o.reverse();
@@ -75,6 +87,9 @@ impl Solid {
         for (k, &a) in o.iter().enumerate() {
             let b = o[(k + 1) % o.len()];
             let d = b - a;
+            if seams.iter().any(|&(p, q)| (p == a && q == b) || (p == b && q == a)) {
+                continue;
+            }
             let Some(n) = Vec3::new(d.y, -d.x, 0.0).try_normalized() else { continue };
             faces.push(SolidFace { outer: vec![at(a, &self.bottom), at(b, &self.bottom), at(b, &self.top), at(a, &self.top)], normal: n });
         }
@@ -88,7 +103,7 @@ mod tests {
 
     #[test]
     fn a_solids_faces_face_outward() {
-        let s = Solid { name: "Slab".into(), role: "slab".into(), material: "concrete".into(), group: None, outline: vec![Vec2::new(0.0, 0.0), Vec2::new(0.0, 2.0), Vec2::new(3.0, 2.0), Vec2::new(3.0, 0.0)], bottom: Level::flat(-0.1), top: Level { z: 0.0, at: Vec2::new(0.0, 0.0), slope: Vec2::new(0.01, 0.0) } };
+        let s = Solid { name: "Slab".into(), role: "slab".into(), material: "concrete".into(), group: None, outline: vec![Vec2::new(0.0, 0.0), Vec2::new(0.0, 2.0), Vec2::new(3.0, 2.0), Vec2::new(3.0, 0.0)], bottom: Level::flat(-0.1), top: Level { z: 0.0, at: Vec2::new(0.0, 0.0), slope: Vec2::new(0.01, 0.0) }, seams: vec![] };
         let faces = s.faces();
         assert_eq!(faces.len(), 6);
         // (Its top is laid to a slope: 30 mm higher along x at its far side, and its top face faces square to it.)

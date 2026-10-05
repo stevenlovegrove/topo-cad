@@ -512,6 +512,41 @@ already is, is that node: `Scene::write`), and its head is cut plumb.
 notched), ties fastened to the rafters, hips and valleys.
 (`23-a-rafter-roof.ts`.)
 
+A **roof** (`Roof`) is given as its surfaces, and framing is something a
+part of it has. A roof is one or more parts; a part is a convex outline on
+plan, each edge of which is an eave (a plane rises inward from it, at a
+pitch) or a gable. Within a part the roof is the lowest of its planes;
+where parts overlap, the higher is the roof. So a gable, a hip, a shed and
+a saltbox are one part with two, four, one eaves, or two of different
+pitches; a wing is another part run into the first, a dormer a small part
+on a slope; and the ridges, hips and valleys are not given: they are where
+the planes meet (`topo_timber::roofs`: `faces`, `edges`). `Roof.over(walls,
+...)` takes a part's outline from a perimeter and names its edges by the
+walls.
+
+The surfaces are made last, on what the solve has placed (`Builder::surfaces`).
+How high a plane is, is not given: it is fitted to the tops of the part's
+framing that slopes that way (its rafters, its trusses' top chords: so a
+roof on trusses that sit tilted is tilted with them), else it rises at its
+pitch from the cap plate of the wall under its eave; an eave with nothing
+under it (where a wing crosses the main roof's) is as high as the part's
+others; a dormer's is given. The deck is written as solids on the planes
+(`roof_deck`), each plane in convex pieces where another part cuts it; where
+pieces of one plane abut is a seam (`Solid.seams`), which is not drawn and
+is not a face. The roof's group says its area and how much it has of each
+kind of edge (`ridge`, `hip`, `valley`, `eave`, `rake`).
+
+A part that is a rectangle with two eaves, opposite each other, says what
+frames it (`rafters: { size, grade }`, `trusses: { grade, shape }`), and
+that is a `RafterRoof` or a `TrussRoof` set out from the part: its span,
+pitch and overhang, where its first heel is, which way it spans, what it
+bears on. The same generators and the same solve; the part only says where.
+*Not yet:* framing for hips and valleys, and stopping a wing's framing where
+it meets the main roof; ridge, hip and valley lines as things of the model
+(they are lengths only); `Model.surfaces` (a truss roof's layers, for its
+dead load) is still apart from these surfaces. (`16-from-the-slab-up.ts`,
+`23` to `26`.)
+
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
 posts (from a corner of the wall, in the corners' numbers; or from the face
@@ -605,8 +640,13 @@ is narrower than they are wide: no backing is framed for them yet.
     up through it.
 22. **A floor on walls as built**: joists that each sit for themselves, on
     walls whose tops are a twist.
-23. **A rafter roof**: rafter pairs and ties given on plan, sat on the
-    plates; feet cut level, heads plumb.
+23. **A rafter roof**: a roof given over its walls, framed with rafter
+    pairs and ties sat on the plates; feet cut level, heads plumb.
+24. **A hip roof**: every edge an eave; the ridge and hips are where the
+    planes meet.
+25. **A roof that turns a corner**: two parts that overlap, and the valleys
+    where they cross.
+26. **A dormer**: a small part on a slope, its eaves at a height given.
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:

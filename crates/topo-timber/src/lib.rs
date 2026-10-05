@@ -5,6 +5,7 @@ pub mod fastening;
 pub mod floor;
 pub mod lumber;
 pub mod perimeter;
+pub mod roofs;
 pub mod survey;
 pub mod truss;
 pub mod wall;

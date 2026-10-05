@@ -712,7 +712,7 @@ fn a_rafter_roof_sits_on_the_plates() {
     let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
     let m = run(include_str!("../../../examples/primitives/23-a-rafter-roof.ts"), "23-a-rafter-roof.ts").unwrap();
     all_clean(&m);
-    let roof = m.groups.iter().find(|g| g.name == "Roof").unwrap();
+    let roof = m.groups.iter().find(|g| g.name == "Roof rafters").unwrap();
     let of = |role: &str| -> Vec<&topo_core::Member> { roof.members.iter().map(|&id| m.member(id)).filter(|x| x.role == role).collect() };
     // Nine pairs along 16 ft at 24", and a tie to each.
     assert_eq!((of("rafter").len(), of("ceiling_tie").len()), (18, 9));
@@ -732,7 +732,7 @@ fn a_rafter_roof_sits_on_the_plates() {
         assert!(bb.min.z > ft(8.0) - 1e-6 && (bb.max.x < ft(6.0) + 1e-6 || bb.min.x > ft(6.0) - 1e-6), "{bb:?}");
     }
     // Each rafter bears on its plate at its foot (the bearing point is its foot: one node), and each tie on both plates.
-    let bears = |role: &str| m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.name.starts_with(&format!("Roof/{role}#")) && c.name.ends_with(": on both")).count();
+    let bears = |role: &str| m.solves.iter().flat_map(|s| &s.constraints).filter(|c| c.name.starts_with(&format!("Roof rafters/{role}#")) && c.name.ends_with(": on both")).count();
     assert_eq!((bears("rafter"), bears("ceiling_tie")), (18, 18));
     // Its loads are on the rafters, per length of them: what falls on a 24" strip of plan.
     let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
@@ -1656,4 +1656,129 @@ fn a_face_seen_in_a_scan_moves_what_it_is_a_face_of() {
     let wall = run(&base.replace("  scan,\n", &format!("  scan,\n{}{}", out(0.5), out(ft(11.0)))), "wall.ts");
     let wall = wall.unwrap();
     assert!((stud(&wall, 3).y - (stud(&plain, 3).y - 0.02)).abs() < 1e-6, "{:?} {:?}", stud(&wall, 3), stud(&plain, 3));
+}
+
+/// A roof's surfaces: its group, its deck, and what is said of it by name.
+fn roof_of<'a>(m: &'a topo_core::Model, name: &str) -> (Vec<&'a topo_core::Solid>, impl Fn(&str) -> f64 + 'a) {
+    let g = m.groups.iter().find(|g| g.name == name && g.kind == "roof_surface").unwrap();
+    let deck = m.solids.iter().filter(|s| s.group == Some(g.id) && s.role == "roof_deck").collect();
+    (deck, move |key: &str| g.props[key].parse::<f64>().unwrap())
+}
+
+#[test]
+fn a_roof_is_its_surfaces_and_they_are_on_its_framing() {
+    let (ft, inch, mm) = (topo_core::units::ft, topo_core::units::inch, |v: f64| v / 1000.0);
+    // Rafters (23): two planes, and the deck's underside is the top of every rafter.
+    let m = run(include_str!("../../../examples/primitives/23-a-rafter-roof.ts"), "23-a-rafter-roof.ts").unwrap();
+    all_clean(&m);
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    let (deck, said) = roof_of(&m, "Roof");
+    assert_eq!(deck.len(), 2);
+    assert!((said("ridge") - ft(16.0)).abs() < 1e-3 && (said("eave") - ft(32.0)).abs() < 1e-3 && said("hip") == 0.0 && said("valley") == 0.0, "{} {}", said("ridge"), said("eave"));
+    let g = Geometry::build(&m, &Topology::build(&m));
+    let parts = g.parts(&m);
+    let mut seen = 0;
+    for part in parts.iter().filter(|p| p.role == "rafter") {
+        let (face, _) = part.faces.iter().max_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap();
+        for q in face {
+            let at = topo_core::Vec2::new(q.x, q.y);
+            let under = deck.iter().map(|s| s.bottom.over(at)).fold(f64::MAX, f64::min);
+            assert!((under - q.z).abs() < 1e-6, "{} {q:?} {under}", part.path);
+            seen += 1;
+        }
+    }
+    assert!(seen >= 18 * 4);
+    // Trusses (16), on walls on a curb: the same, on their top chords; and it runs a foot out past the walls.
+    let m = run(include_str!("../../../examples/primitives/16-from-the-slab-up.ts"), "16-from-the-slab-up.ts").unwrap();
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    let (deck, said) = roof_of(&m, "Roof");
+    assert_eq!(deck.len(), 2);
+    assert!((said("ridge") - ft(16.0)).abs() < 1e-3, "{}", said("ridge"));
+    let g = Geometry::build(&m, &Topology::build(&m));
+    for part in g.parts(&m).iter().filter(|p| p.role == "top_chord") {
+        let (face, _) = part.faces.iter().max_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap();
+        for q in face {
+            let under = deck.iter().map(|s| s.bottom.over(topo_core::Vec2::new(q.x, q.y))).fold(f64::MAX, f64::min);
+            assert!((under - q.z).abs() < 1e-6, "{} {q:?} {under}", part.path);
+        }
+    }
+    let xs: Vec<f64> = deck.iter().flat_map(|s| s.outline.iter().map(|p| p.x)).collect();
+    assert!((xs.iter().copied().fold(f64::MAX, f64::min) + inch(12.0)).abs() < 1e-9 && (xs.iter().copied().fold(f64::MIN, f64::max) - ft(13.0)).abs() < 1e-9);
+    let _ = mm;
+}
+
+#[test]
+fn hips_and_valleys_are_where_a_roofs_planes_meet() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    // A hip roof (24) over 24 ft by 16 ft at 6 in 12, a foot out: four planes, each eave as high as the plate (8 ft)
+    // over the wall's line; a ridge of 8 ft, 4 ft up; hips from the corners of the overhang.
+    let m = run(include_str!("../../../examples/primitives/24-a-hip-roof.ts"), "24-a-hip-roof.ts").unwrap();
+    all_clean(&m);
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    let (deck, said) = roof_of(&m, "Roof");
+    assert_eq!(deck.len(), 4);
+    let names: Vec<&str> = deck.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Roof Front", "Roof Right", "Roof Back", "Roof Left"]);
+    let front = deck[0];
+    assert!((front.bottom.over(topo_core::Vec2::new(ft(12.0), 0.0)) - ft(8.0)).abs() < 1e-6 && (front.bottom.over(topo_core::Vec2::new(ft(12.0), ft(8.0))) - ft(12.0)).abs() < 1e-6);
+    assert!((said("ridge") - ft(8.0)).abs() < 1e-3 && (said("eave") - 2.0 * ft(26.0 + 18.0)).abs() < 1e-3 && said("valley") == 0.0 && said("rake") == 0.0, "{} {}", said("ridge"), said("eave"));
+    // (A hip: 9 ft each way on plan and 4.5 ft up.)
+    assert!((said("hip") - 4.0 * ft(9.0) * 2.25f64.sqrt()).abs() < 1e-3, "{}", said("hip"));
+    assert!((said("area") - ft(26.0) * ft(18.0) * 1.25f64.sqrt()).abs() < 1e-3);
+
+    // A roof that turns a corner (25): the wing's ridge (6 ft of half span) runs back to where the main roof's
+    // slope is as high, 6 ft in; two valleys from there down to the inside corners, and on out through the
+    // overhangs.
+    let m = run(include_str!("../../../examples/primitives/25-a-roof-that-turns-a-corner.ts"), "25-a-roof-that-turns-a-corner.ts").unwrap();
+    all_clean(&m);
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    let (deck, said) = roof_of(&m, "Roof");
+    assert!(deck.iter().any(|s| s.name.starts_with("Wing eave 2")) && deck.iter().any(|s| s.name.starts_with("Main eave 1")));
+    // (Main ridge 30 ft and its rakes' foot each end; the wing's from its rake, a foot past its front, to 6 ft in.)
+    assert!((said("ridge") - (ft(32.0) + ft(17.0))).abs() < 1e-3, "{}", said("ridge"));
+    // (A valley: 7 ft each way on plan, from the overhangs' corner, and 3.5 ft up.)
+    assert!((said("valley") - 2.0 * ft(7.0) * 2.25f64.sqrt()).abs() < 1e-3, "{}", said("valley"));
+    assert_eq!(said("hip"), 0.0);
+    // Every eave is as high as the plates: the main roof's front, where it crosses the wing and no wall is under it, too.
+    for s in &deck {
+        let at = if s.name.starts_with("Main eave 1") { topo_core::Vec2::new(ft(3.0), 0.0) } else if s.name.starts_with("Wing eave 2") { topo_core::Vec2::new(ft(18.0), -ft(5.0)) } else { continue };
+        assert!((s.bottom.over(at) - ft(8.0)).abs() < 1e-6, "{} {}", s.name, s.bottom.over(at));
+    }
+
+    // A dormer (26): on the front slope, seen where it is the higher; valleys either side of it.
+    let m = run(include_str!("../../../examples/primitives/26-a-dormer.ts"), "26-a-dormer.ts").unwrap();
+    all_clean(&m);
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    let (deck, said) = roof_of(&m, "Roof");
+    assert!(deck.iter().filter(|s| s.name.starts_with("Dormer")).count() >= 2 && said("valley") > 1.0 && said("hip") == 0.0);
+    // Its eaves are 11 ft up, over its sides; its ridge (12.5 ft) meets the slope (8 ft and 8 in 12) 6.75 ft back.
+    let side = deck.iter().find(|s| s.name.starts_with("Dormer eave 2")).unwrap();
+    assert!((side.bottom.over(topo_core::Vec2::new(ft(15.0), ft(3.0))) - ft(11.0)).abs() < 1e-9);
+    assert!(deck.iter().filter(|s| s.name.starts_with("Dormer")).flat_map(|s| s.outline.iter()).all(|p| p.y < ft(6.75) + 1e-6));
+    let _ = inch;
+}
+
+#[test]
+fn a_roof_says_what_it_cannot_be() {
+    let model = |roof: &str| {
+        format!(
+            r#"import {{ Building, DFL, ft, Perimeter, pitch, Roof, Wall }} from "topo-cad";
+const wall = Wall.template({{ height: ft(8), grade: DFL.No2 }});
+const walls = Perimeter.start("Walls", [0, 0]).by([ft(12), 0], wall.named("Front")).by([0, ft(10)], wall.named("Right")).by([-ft(12), 0], wall.named("Back")).close(wall.named("Left"));
+export default Building.named("b").add(walls, {roof});"#
+        )
+    };
+    let err = |roof: &str| run(&model(roof), "m.ts").err().unwrap_or_else(|| panic!("{roof}: built")).to_string();
+    // A hip roof is not framed yet; a wall that is not there; a part that is not convex; eaves with nothing to say how high.
+    assert!(err(r#"Roof.named("R").over(walls, { pitch: pitch(6), rafters: { size: [2, 8], grade: DFL.No2 } })"#).contains("two eaves"));
+    assert!(err(r#"Roof.named("R").over(walls, { pitch: pitch(6), gables: ["Side"] })"#).contains("no edge Side"));
+    assert!(err(r#"Roof.named("R").part("L", [[0, 0], [4, 0], [4, 2], [2, 2], [2, 4], [0, 4]], { pitch: pitch(6), height: 3 })"#).contains("convex"));
+    assert!(err(r#"Roof.named("R").part("P", [[0, 0], [4, 0], [4, 3], [0, 3]], { pitch: pitch(6) })"#).contains("how high"));
+    // A shed (one eave), with its own height, and a saltbox (an edge of another pitch) are roofs.
+    let m = run(&model(r#"Roof.named("R").over(walls, { pitch: pitch(8), gables: ["Left", "Right"], edges: { Back: { pitch: pitch(4) } } })"#), "m.ts").unwrap();
+    let (deck, said) = roof_of(&m, "R");
+    // (The ridge is where 8 in 12 from the front meets 4 in 12 from the back: a third of the way back.)
+    let ft = topo_core::units::ft;
+    assert!(deck.len() == 2 && (said("ridge") - ft(12.0)).abs() < 1e-3);
+    assert!(deck.iter().flat_map(|s| s.outline.iter()).any(|p| (p.y - ft(10.0) / 3.0).abs() < 1e-6));
 }

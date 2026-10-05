@@ -1809,6 +1809,206 @@ export class RafterRoof {
   }
 }
 
+// ----- roofs as surfaces --------------------------------------------------------
+
+/** An edge of a roof part: a gable, or an eave with its own pitch, overhang or height. */
+export type RoofEdge = "gable" | { readonly pitch?: number; readonly overhang?: Length; readonly height?: Length };
+
+/** How a part of a roof is given. */
+export interface RoofPartOptions {
+  /** Its pitch (rise over run: `pitch(6)` is 6 in 12), at every eave that does not give its own. */
+  readonly pitch: number;
+  /** How far it runs out past its eaves. */
+  readonly overhang?: Length;
+  /** How far it runs out past its gables. */
+  readonly rake?: Length;
+  /** Which edges are gables, by the wall they are over or by number (from 1, as drawn). Every other edge is an eave. */
+  readonly gables?: readonly (string | number)[];
+  /** An edge that differs: `{ Back: { pitch: pitch(3) } }`, `{ 2: "gable" }`. */
+  readonly edges?: Readonly<Record<string | number, RoofEdge>>;
+  /** What its eaves are over (a part given `over` walls is over those): an eave is as high as the plate under it. */
+  readonly on?: readonly (Perimeter | Partition | Assembly)[];
+  /** How far above the plate the roof's underside is, over the eave's line (no framing to say). */
+  readonly heel?: Length;
+  /** How high its eaves are, where nothing under them says (a dormer's). */
+  readonly height?: Length;
+  /** Framed with rafters: pairs at a spacing, a tie across each (see `RafterRoof`). */
+  readonly rafters?: { readonly size: Nominal; readonly grade: Grade; readonly spacing?: Length; readonly ties?: Nominal; readonly seat?: Length };
+  /**
+   * Framed with trusses (see `TrussRoof`): `shape` is the kind (`TrussShape.fink`,
+   * the default; `TrussShape.kingPost`, ...), made to the part's span, pitch and
+   * overhang. A part not given `over` walls says `at` what node its first heel is.
+   */
+  readonly trusses?: {
+    readonly grade: Grade;
+    readonly shape?: (o: { span: Length; pitch: number; overhang: Length }) => TrussShape;
+    readonly spacing?: Length;
+    readonly chord?: Nominal;
+    readonly web?: Nominal;
+    readonly at?: NodeHandle;
+  };
+}
+
+interface RoofPart {
+  readonly name: string;
+  readonly outline: readonly Point[];
+  readonly edges: readonly ({ readonly name?: string; readonly pitch: number; readonly overhang: Length; readonly height?: Length } | null)[];
+  readonly rake: Length;
+  readonly on: readonly (Perimeter | Partition | Assembly)[];
+  readonly heel: Length;
+  readonly framing?: TrussRoof | RafterRoof;
+}
+
+/**
+ * A roof, given as its surfaces. A roof is one or more parts. A part is an
+ * outline on plan, each edge of which is an eave (the roof rises inward from
+ * it, at a pitch) or a gable. Nothing else is given: the ridge, the hips and
+ * the valleys are where the planes meet.
+ *
+ *   Roof.named("Roof").over(walls, { pitch: pitch(6), gables: ["Left", "Right"] })   // a gable roof
+ *   Roof.named("Roof").over(walls, { pitch: pitch(6) })                              // every edge an eave: a hip roof
+ *   Roof.named("Roof").over(walls, { pitch: pitch(3), gables: ["Left", "Right", "Back"] })   // one eave: a shed
+ *   Roof.named("Roof").over(walls, { pitch: pitch(8), edges: { Back: { pitch: pitch(4) } }, gables: [...] })   // a saltbox
+ *
+ * Within a part the roof is the lowest of its planes. Where parts overlap,
+ * the higher is the roof: so a wing is another part run into the main roof
+ * (they meet in valleys), and a dormer a small part on a slope. A part's
+ * outline is convex; a roof that turns a corner is two parts.
+ *
+ *   Roof.named("Roof")
+ *     .part("Main", [[0, 0], [ft(30), 0], [ft(30), ft(20)], [0, ft(20)]], { pitch: pitch(6), gables: [2, 4], on: [walls] })
+ *     .part("Wing", [[ft(8), -ft(10)], [ft(20), -ft(10)], [ft(20), ft(10)], [ft(8), ft(10)]], { pitch: pitch(6), gables: [1, 3], on: [walls] })
+ *
+ * `over(walls, ...)` takes the part's outline from a perimeter, and names its
+ * edges by the walls. How high a plane is, is not given: it is on the tops of
+ * the part's framing where it has any that slopes that way, else as high as
+ * the cap plate of the wall under its eave (and `heel` above that); an eave
+ * with nothing under it is as high as the part's others.
+ *
+ * A part with two eaves, opposite each other, is framed by saying with what:
+ * `rafters: { size: [2, 8], grade }` or `trusses: { grade }`. The framing is
+ * a `RafterRoof` or a `TrussRoof`, set out from the part (its span, its
+ * pitch, its overhang, where it is), bearing on what the part is on; add the
+ * roof to a building and its framing is added with it. `load` puts a load on
+ * the framing.
+ *
+ * The surfaces are written as a deck (sheets on the planes), and the roof is
+ * told how much it has of each kind of edge (ridge, hip, valley, eave, rake)
+ * and its area.
+ *
+ * *Not yet:* framing for hips and valleys (a hip roof is its surfaces only);
+ * the framing of a wing is not stopped where it meets the main roof.
+ */
+export class Roof {
+  private constructor(
+    readonly name: string,
+    readonly parts: readonly RoofPart[],
+    readonly deck_: Length,
+  ) {}
+  static named(name: string): Roof {
+    return new Roof(name, [], inch(0.5));
+  }
+  /** A part over a perimeter: its outline the perimeter's, its edges named by the walls. Called `name` (the roof's own name, if not given). */
+  over(walls: Perimeter, o: RoofPartOptions & { name?: string }): Roof {
+    const pts = [walls.start, ...walls.segments.map((g) => g.to)];
+    const names: (string | undefined)[] = walls.segments.map((g) => g.side?.name);
+    if (walls.closed) pts.pop();
+    else names.push(undefined);
+    return this.add(o.name ?? this.name, pts, names, { ...o, on: [walls, ...(o.on ?? [])] }, walls);
+  }
+  /** A part by its outline on plan (convex; edge 1 is from its first point to its second). */
+  part(name: string, outline: readonly Point[], o: RoofPartOptions): Roof {
+    return this.add(name, outline, outline.map(() => undefined), o, undefined);
+  }
+  private add(name: string, outline: readonly Point[], names: readonly (string | undefined)[], o: RoofPartOptions, walls: Perimeter | undefined): Roof {
+    const n = outline.length;
+    if (n < 3) throw new Error(`roof ${this.name}: part ${name} needs an outline of three points or more`);
+    if (this.parts.some((p) => p.name === name)) throw new Error(`roof ${this.name}: two parts named ${name}`);
+    if (!(o.pitch > 0)) throw new Error(`roof ${this.name}: part ${name} needs a pitch`);
+    // Which edge a key names: a wall's name, or a number from 1.
+    const edge = (key: string | number): number => {
+      const k = typeof key === "number" || /^\d+$/.test(key) ? Number(key) - 1 : names.indexOf(key);
+      if (!(k >= 0 && k < n)) throw new Error(`roof ${this.name}: part ${name} has no edge ${key} (${names.filter((x) => x).join(", ") || `1 to ${n}`})`);
+      return k;
+    };
+    const said: (RoofEdge | undefined)[] = outline.map(() => undefined);
+    for (const g of o.gables ?? []) said[edge(g)] = "gable";
+    for (const [key, e] of Object.entries(o.edges ?? {})) said[edge(key)] = e;
+    const edges = said.map((e, k) => (e === "gable" ? null : { name: names[k], pitch: e?.pitch ?? o.pitch, overhang: e?.overhang ?? o.overhang ?? 0, height: e?.height ?? o.height }));
+    const base: RoofPart = { name, outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0 };
+    return new Roof(this.name, [...this.parts, { ...base, framing: this.frame(base, o, walls) }], this.deck_);
+  }
+  /** A part's framing, set out from the part. */
+  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined): TrussRoof | RafterRoof | undefined {
+    if (!o.rafters && !o.trusses) return undefined;
+    const what = `roof ${this.name}: part ${p.name}`;
+    if (o.rafters && o.trusses) throw new Error(`${what} is framed with rafters or with trusses, not both`);
+    const eaves = p.edges.flatMap((e, k) => (e ? [k] : []));
+    const pt = (k: number): Point => p.outline[k % 4];
+    const side = (k: number): Point => [pt(k + 1)[0] - pt(k)[0], pt(k + 1)[1] - pt(k)[1]];
+    const square = p.outline.length === 4 && [0, 1, 2, 3].every((k) => Math.abs(side(k)[0] * side(k + 1)[0] + side(k)[1] * side(k + 1)[1]) < 1e-6 * Math.hypot(...side(k)) * Math.hypot(...side(k + 1)));
+    if (!square || eaves.length !== 2 || eaves[1] - eaves[0] !== 2 || p.edges[eaves[0]]!.pitch !== p.edges[eaves[1]]!.pitch) {
+      throw new Error(`${what}: only a rectangle with two eaves, opposite each other and of one pitch, is framed yet (a hip roof, or one of two pitches, is its surfaces only)`);
+    }
+    // Set out from an end of its first eave, so that it spans to the left of the way its ridge runs.
+    const k = eaves[0];
+    const [d, across] = [side(k), side(k + 1)];
+    const [length, span] = [Math.hypot(...d), Math.hypot(...across)];
+    const inside = -d[1] * across[0] + d[0] * across[1] > 0;
+    const corner = inside ? k : k + 1;
+    const along: Point = inside ? [d[0] / length, d[1] / length] : [-d[0] / length, -d[1] / length];
+    const { pitch, overhang } = p.edges[k]!;
+    if (o.rafters) {
+      const r = o.rafters;
+      return RafterRoof.of({ span, pitch, rafters: r.size, grade: r.grade, spacing: r.spacing, ties: r.ties, seat: r.seat })
+        .named(`${p.name} rafters`)
+        .from(pt(corner), { along, length })
+        .bearingOn(...p.on);
+    }
+    const t = o.trusses!;
+    const at = t.at ?? walls?.corner((corner % 4) + 1);
+    if (!at) throw new Error(`${what}: say at what node its first truss's heel is (\`trusses: { at }\`), or give the part \`over\` walls`);
+    return TrussRoof.of((t.shape ?? TrussShape.fink)({ span, pitch, overhang }), { name: `${p.name} trusses`, at, spanDir: [-along[1], along[0]], length, spacing: t.spacing, grade: t.grade, chord: t.chord, web: t.web }).bearingOn(...p.on);
+  }
+  /** How thick its deck is (half an inch, if not said). */
+  deck(thickness: Length): Roof {
+    return new Roof(this.name, this.parts, thickness);
+  }
+  /** A load over its plan area (N/m², use `psf`): on the framing of each part that has any. */
+  load(kind: LoadKind, pressure: number): Roof {
+    if (!this.parts.some((p) => p.framing)) throw new Error(`roof ${this.name}: a load is carried by framing, and no part of it is framed (rafters or trusses)`);
+    return new Roof(this.name, this.parts.map((p) => (p.framing ? { ...p, framing: p.framing.load(kind, pressure) } : p)), this.deck_);
+  }
+  private framing(part: string | undefined): TrussRoof | RafterRoof | undefined {
+    const p = part === undefined ? this.parts.find((q) => q.framing) : this.parts.find((q) => q.name === part);
+    return p?.framing;
+  }
+  /** The trusses of a part (the first framed, if none is named): for drawing targets (`roof.trusses().truss(2)`). */
+  trusses(part?: string): TrussRoof {
+    const f = this.framing(part);
+    if (!(f instanceof TrussRoof)) throw new Error(`roof ${this.name}: ${part ?? "no part"} is not framed with trusses`);
+    return f;
+  }
+  /** The rafters of a part (the first framed, if none is named). */
+  rafters(part?: string): RafterRoof {
+    const f = this.framing(part);
+    if (!(f instanceof RafterRoof)) throw new Error(`roof ${this.name}: ${part ?? "no part"} is not framed with rafters`);
+    return f;
+  }
+  /** What it is, as items of a building: its framing, then its surfaces (`Building.add` does this). */
+  expand(): Item[] {
+    return [...this.parts.flatMap((p) => (p.framing ? [p.framing] : [])), this];
+  }
+  toJSON() {
+    return {
+      type: "roof",
+      name: this.name,
+      deck: this.deck_,
+      parts: this.parts.map((p) => ({ name: p.name, outline: p.outline, edges: p.edges, rake: p.rake, framing: p.framing?.name, on: p.on.map((x) => x.name), heel: p.heel })),
+    };
+  }
+}
+
 // ----- stairs -----------------------------------------------------------------
 
 /**
@@ -2288,7 +2488,7 @@ export class Frame {
   }
 }
 
-export type Item = Perimeter | Partition | Slab | Floor | Stairs | RafterRoof | TrussRoof | Assembly | Frame | Relation;
+export type Item = Perimeter | Partition | Slab | Floor | Stairs | Roof | RafterRoof | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of
@@ -2353,9 +2553,9 @@ export class Building {
   info(i: Partial<Info>): Building {
     return this.with({ info_: { ...this.info_, ...i } });
   }
-  /** Add items (arrays, e.g. from `repeat`, are flattened). */
+  /** Add items (arrays, e.g. from `repeat`, are flattened; a `Roof` brings its framing). */
   add(...items: (Item | readonly Item[])[]): Building {
-    return this.with({ items: [...this.items, ...items.flat()] });
+    return this.with({ items: [...this.items, ...(items.flat() as Item[]).flatMap((i) => (i instanceof Roof ? i.expand() : [i]))] });
   }
   /** Field measurements; `unknown`s are fitted to them when the model is run. */
   measure(...ms: (Measurement | readonly Measurement[])[]): Building {
