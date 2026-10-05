@@ -219,24 +219,39 @@ wall's finish is only caught where it is within the gate of the framing.
 ### Without the model
 
 `scan_axes` asks the same of the scan alone (`manhattan.rs`), to check the
-above against. Every cube of the scan (25 cm by default) whose points are
-a surface gives a normal, weighted by what its own points say: the inverse
-of the variance of its direction the way it is least sure, N σ₂² / σ₃²
-(capped). A building's normals gather in six lobes, square to each other
-(a Manhattan frame; on the sphere of normals each lobe is roughly a von
+above against. A normal is taken at each of some 400,000 of the scan's
+points (evenly through them): the plane of the points within 10 cm of it,
+each counted by its confidence over its range's σ² (so a point the rays or
+the lidar's flags doubt hardly turns it), fitted twice, the second time
+without what lies far off the first. It is kept where those points are a
+surface, and weighted by how well they say which way it faces (σ₂² / σ₃²,
+capped, times the share of them that is believed), not by how many there
+are: a surface counts by its area, since where the scanner sampled densely
+more normals are taken. Every point's confidence is worked out once for
+the scan as loaded (`confidence::confidence_all`, block by block; a minute
+or two).
+
+A building's normals gather in six lobes, square to each other (a
+Manhattan frame; on the sphere of normals each lobe is roughly a von
 Mises-Fisher distribution, as in Straub et al., "A Mixture of Manhattan
 Frames"); one rotation is fitted to all six, each normal within a gate
 that narrows from 10° to 2° pulling its axis toward itself. Then each lobe
 is looked at for itself, with the scan's up as it is: how the floors and
 the undersides rise, and how the upright surfaces facing each way are
-turned and lean; with plumb as the upright surfaces alone have it, and a
-picture of the six lobes. What is not flat, and noise, is spread and does
-not gather. The model is used only to name which fitted axis is east.
+turned and lean, each with about how sure it is (the lobe's spread over
+the root of how many of its normals stand apart: those taken close
+together share their points); and plumb as the upright surfaces alone have
+it. The model is used only to name which fitted axis is east.
+
+The picture has the whole sphere of normals, as weight per solid angle on
+the cube about the frame, unfolded (`sphere_histogram`: a building is six
+dark spots at the faces' middles, a roof's slopes two spots part way to an
+edge of the down face, clutter and noise a thin haze), and each lobe close
+up, ±35 mm per metre about its axis.
+
 What it cannot say: a building racked one way and a scan tilted the other
 both lean every wall the same way; which of floor and walls is true wants
 something else (what the roof bears on, a door's jambs, gravity).
-Smaller cubes give noisier normals (at 10 cm, tens of mm per metre each),
-larger ones fewer surfaces.
 
 ## Faces placed by hand
 

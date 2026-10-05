@@ -965,13 +965,24 @@ impl Workspace {
 impl Workspace {
     /// The scan's own axes, from its normals alone (`manhattan`), each lobe looked at for itself.
     pub(crate) fn scan_axes(&mut self, args: &Value) -> Result<Vec<Value>> {
-        use crate::manhattan::{fit, lobes, plumb, surfels, upright, Lobe};
-        let cell = args.get("cell").and_then(|v| v.as_f64()).unwrap_or(0.25).clamp(0.05, 1.0) as f32;
+        use crate::manhattan::{fit, lobes, normals, plumb, sphere_histogram, upright, Lobe};
+        let radius = args.get("radius").and_then(|v| v.as_f64()).unwrap_or(0.1).clamp(0.03, 0.5) as f32;
+        let want = args.get("samples").and_then(|v| v.as_u64()).unwrap_or(400_000).clamp(10_000, 4_000_000) as usize;
+        let weighted = args.get("confidence").and_then(|v| v.as_bool()).unwrap_or(true);
         self.scan()?;
         let scan = self.scan.clone().unwrap();
-        let ns = surfels(&scan, cell);
-        if ns.len() < 100 {
-            bail!("the scan has too few flat places to say ({} cubes of {cell} m are surfaces)", ns.len());
+        // Every point's confidence: made once for the scan as it is loaded.
+        let conf = if weighted {
+            if self.conf.is_none() {
+                self.conf = Some(std::sync::Arc::new(crate::confidence::confidence_all(&scan)));
+            }
+            self.conf.clone()
+        } else {
+            None
+        };
+        let ns = normals(&scan, conf.as_ref().map(|c| c.as_slice()), radius, want);
+        if ns.len() < 200 {
+            bail!("the scan has too few flat places to say ({} of the points sampled are on a surface)", ns.len());
         }
         let f64s = |v: V3| v.map(f64::from);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -1002,17 +1013,23 @@ impl Workspace {
         let hx = unit(cross(cross(up, fx), up));
         let frame = [hx, cross(up, hx), up];
         let (gate, bin) = (0.035, 0.00025);
-        let ls = lobes(&ns, &frame, gate, bin);
+        let ls = lobes(&ns, &frame, gate, bin, 2.0 * radius);
         // The floor alone: what faces up within a quarter of a metre of the floor's height.
         let floor: Vec<_> = ns.iter().copied().filter(|s| s.at[2] < scan.floor_z + 0.25).collect();
-        let floor = lobes(&floor, &frame, gate, bin).into_iter().find(|l| l.0.axis == 2 && l.0.positive).map(|l| l.0);
+        let floor = lobes(&floor, &frame, gate, bin, 2.0 * radius).into_iter().find(|l| l.0.axis == 2 && l.0.positive).map(|l| l.0);
         let mm = |x: f64| x * 1e3;
         let rise = |u: [f64; 3]| [-dot(frame[0], u) / dot(frame[2], u), -dot(frame[1], u) / dot(frame[2], u)];
         let (xn, yn) = if named { ("x (east)", "y (north)") } else { ("its first axis", "its second") };
+        let doubted = conf.as_ref().map(|c| {
+            let low = scan.used.iter().filter(|&&i| c[i as usize] < 0.5).count();
+            format!(" Each point counts by its confidence over its range's σ² ({:.0}% of the scan's points are doubted: under 0.5).", 100.0 * low as f64 / scan.used.len().max(1) as f64)
+        });
         let mut s = format!(
-            "The scan's own axes, from the scan alone: {} surfaces (cubes of {:.0} mm whose points are flat), each a normal weighted by how well its own points say it. \
+            "The scan's own axes, from the scan alone: {} normals, one at each of the points sampled (about {want} of {}, evenly) whose neighbours within {:.0} mm are a surface; \
+             each weighted by how well those points say which way it faces, and counted by area, not by how densely it was scanned.{} \
              The model is not used{}.\nSmall numbers are mm per metre (1 mm/m = 0.057°). \"Up\" is the scan's as it is now (as levelled).\n\n",
-            ns.len(), cell * 1e3, if named { ", except to name the axes: x is the fitted axis nearest the model's east" } else { "" });
+            ns.len(), scan.used.len(), radius * 1e3, doubted.unwrap_or_else(|| " Points are not weighted by confidence.".into()),
+            if named { ", except to name the axes: x is the fitted axis nearest the model's east" } else { "" });
         let r = rise(fz);
         s += &format!("One frame fitted to all six lobes together: against the scan's up it rises [{:+.2}, {:+.2}] along {xn}, {yn} (were the scan levelled by that, its up would be this frame's).\n", mm(r[0]), mm(r[1]));
         let p = rise(plumb(&upright(&ns, &frame, gate), up));
@@ -1021,15 +1038,17 @@ impl Workspace {
             let yaw = (dot(cross(east, hx), up)).atan2(dot(east, hx));
             s += &format!("(Beside the model, as it is placed: the scan's axes are turned {:+.2} mm/m anticlockwise from the model's.)\n", mm(yaw));
         }
-        s += "\nEach lobe for itself (where it gathers: the weighted median, then the mean of what is within 6 mm/m of that; spread: of those, rms; in it: their share of the lobe, and how many surfaces):\n";
-        s += &format!("  {:<34} {:>6}  {:<52} {:>7} {:>12}\n", "surfaces facing", "share", "", "spread", "in it");
+        s += &format!("\nEach lobe for itself. Where it gathers: the weighted median, then the mean of what is within 15 mm/m of that. ±: about how sure that is, each way \
+             (the spread of those normals, over the root of how many stand apart: in different cubes of {:.0} mm; normals taken closer share their points). \
+             Then the spread itself (rms each way), the share of the lobe within 15 mm/m, and how many normals that is (and how many stand apart).\n", 2e3 * radius);
+        s += &format!("  {:<36} {:>6}  {:<52} {:>6} {:>7} {:>6} {:>15}\n", "surfaces facing", "share", "", "±", "spread", "within", "normals (apart)");
         let line = |name: &str, l: &Lobe| {
             let what = if l.axis == 2 {
                 format!("rises [{:+.2}, {:+.2}] along x, y", mm(l.a), mm(l.b))
             } else {
                 format!("turned {:+.2} anticlockwise; top leans {:+.2} toward +{}", mm(l.a), mm(l.b), ["x", "y"][l.axis])
             };
-            format!("  {:<34} {:>5.1}%  {:<52} {:>7.2} {:>5.0}% {:>5}\n", name, 100.0 * l.share, what, mm(l.spread), 100.0 * l.core, l.count)
+            format!("  {:<36} {:>5.1}%  {:<52} {:>6.2} {:>7.2} {:>5.0}% {:>8} ({})\n", name, 100.0 * l.share, what, mm(l.sure()), mm(l.spread), 100.0 * l.core, l.count, l.independent)
         };
         let names = ["+x (seen from the east: west walls)", "-x (seen from the west: east walls)", "+y (seen from the north)", "-y (seen from the south)", "up (floors, tops)", "down (undersides)"];
         for (k, (l, _, _)) in ls.iter().enumerate() {
@@ -1040,25 +1059,63 @@ impl Workspace {
         }
         s += "\nHow to read it: a scan out of level by [a, b] has its floors rising [a, b] and the tops of its walls leaning -a (those facing ±x) and -b (those facing ±y). \
               Floors and walls that do not agree so are the building's: one of them is not square to the other.\n";
-        // The picture: the six lobes, each a square of ±35 mm/m.
+
+        // The picture. Above: the whole sphere of normals, on the cube about the frame, unfolded. Below: each lobe close up.
+        let shade = |v: f64| -> [u8; 3] {
+            // (White through blue to near black, by the logarithm.)
+            let g = (250.0 - 235.0 * v) as u8;
+            [g, g, (g as f64 + (255.0 - g as f64) * 0.25) as u8]
+        };
+        let face = 230usize;
         let side = ls[0].2;
         let (pad, top) = (26usize, 26usize);
-        let mut c = crate::render::Canvas::new(3 * (side + pad) + pad, 2 * (side + top) + top, [252, 252, 250]);
+        let cross_h = 3 * face + 2 * pad;
+        let wide = (4 * face + 2 * pad).max(3 * (side + pad) + pad);
+        let mut c = crate::render::Canvas::new(wide, cross_h + 2 * (side + top) + top, [252, 252, 250]);
+        let hist = sphere_histogram(&ns, &frame, face);
+        let max = hist.iter().flatten().copied().fold(0.0, f64::max).max(1e-12);
+        // (Column and row of each face in the cross: +x, −x, +y, −y, up, down.)
+        let place = [(2, 1), (0, 1), (1, 0), (1, 2), (1, 1), (3, 1)];
+        for (k, h) in hist.iter().enumerate() {
+            let (ox, oy) = (pad + place[k].0 * face, pad + place[k].1 * face);
+            for j in 0..face {
+                for i in 0..face {
+                    let v = (1.0 + 3000.0 * h[j * face + i] / max).ln() / 3001f64.ln();
+                    c.set((ox + i) as i32, (oy + face - 1 - j) as i32, shade(v));
+                }
+            }
+            for t in 0..face {
+                let edge = [150, 156, 178];
+                c.set((ox + t) as i32, oy as i32, edge);
+                c.set((ox + t) as i32, (oy + face - 1) as i32, edge);
+                c.set(ox as i32, (oy + t) as i32, edge);
+                c.set((ox + face - 1) as i32, (oy + t) as i32, edge);
+            }
+            // (The axis itself: the middle of the face.)
+            let (mx, my) = ((ox + face / 2) as f32, (oy + face / 2) as f32);
+            for (a, b) in [((mx - 9.0, my), (mx - 3.0, my)), ((mx + 3.0, my), (mx + 9.0, my)), ((mx, my - 9.0), (mx, my - 3.0)), ((mx, my + 3.0), (mx, my + 9.0))] {
+                c.line(a, b, 1, [220, 30, 30]);
+            }
+        }
         for (k, (l, h, _)) in ls.iter().enumerate() {
-            let (ox, oy) = (pad + (k / 2) * (side + pad), top + (k % 2) * (side + top));
-            let max = h.iter().copied().fold(0.0, f64::max).max(1e-12);
+            let (ox, oy) = (pad + (k / 2) * (side + pad), cross_h + top + (k % 2) * (side + top));
+            // (Smoothed over 3 × 3 bins, so that a thin lobe still shows.)
+            let at = |i: i32, j: i32| if i >= 0 && j >= 0 && (i as usize) < side && (j as usize) < side { h[j as usize * side + i as usize] } else { 0.0 };
+            let smooth: Vec<f64> = (0..side * side).map(|q| {
+                let (i, j) = ((q % side) as i32, (q / side) as i32);
+                (-1..=1).flat_map(|dj| (-1..=1).map(move |di| (di, dj))).map(|(di, dj)| at(i + di, j + dj)).sum::<f64>() / 9.0
+            }).collect();
+            let max = smooth.iter().copied().fold(0.0, f64::max).max(1e-12);
             for j in 0..side {
                 for i in 0..side {
-                    let v = (1.0 + 400.0 * h[j * side + i] / max).ln() / 401f64.ln();
-                    let g = (250.0 - 235.0 * v) as u8;
-                    c.set((ox + i) as i32, (oy + side - 1 - j) as i32, [g, g, (g as f64 + (255.0 - g as f64) * 0.15) as u8]);
+                    c.set((ox + i) as i32, (oy + side - 1 - j) as i32, shade((1.0 + 300.0 * smooth[j * side + i] / max).ln() / 301f64.ln()));
                 }
             }
             // A grid every 10 mm/m, the axis itself heavier; a red mark where the lobe gathers.
             for t in -3i32..=3 {
                 let q = ((t as f64 * 0.010 + gate) / bin) as f32;
-                let col = if t == 0 { [60, 90, 200] } else { [200, 206, 224] };
-                for k in (0..side).step_by(if t == 0 { 1 } else { 3 }) {
+                let col = if t == 0 { [60, 90, 200] } else { [170, 178, 205] };
+                for k in (0..side).step_by(if t == 0 { 1 } else { 4 }) {
                     c.set(ox as i32 + q as i32, (oy + k) as i32, col);
                     c.set((ox + k) as i32, (oy + side - 1) as i32 - q as i32, col);
                 }
@@ -1067,13 +1124,18 @@ impl Workspace {
                 }
             }
             let (px, py) = (ox as f32 + ((l.a + gate) / bin) as f32, (oy + side - 1) as f32 - ((l.b + gate) / bin) as f32);
-            c.line((px - 7.0, py), (px + 7.0, py), 1, [220, 30, 30]);
-            c.line((px, py - 7.0), (px, py + 7.0), 1, [220, 30, 30]);
+            for (a, b) in [((px - 9.0, py), (px - 3.0, py)), ((px + 3.0, py), (px + 9.0, py)), ((px, py - 9.0), (px, py - 3.0)), ((px, py + 3.0), (px, py + 9.0))] {
+                c.line(a, b, 1, [220, 30, 30]);
+            }
         }
-        s += "\nThe picture: six squares, each the weighted distribution of normals about one axis, ±35 mm/m, a grid every 10 (blue: the axis). \
-              Columns: facing ±x, facing ±y, facing up or down; top row the positive way (+x, +y, up), bottom row the other. \
+        s += "\nThe picture, above: the whole sphere of normals as weight per solid angle (darker is more, by the logarithm), on the cube about the frame, unfolded as a cross seen from above. \
+              The up face is second from the left in the middle row (x to the right, y up); +x is to its right and -x to its left, +y above it and -y below; the down face is at the far right. \
+              Each face is ±45° about its axis (the red mark at its middle): a building's surfaces are the dark spots at the middles; what is not square to the frame is off the middle (a roof's slope is a spot part way to an edge), \
+              and clutter and noise are the thin haze.\n\
+              Below: each lobe close up, ±35 mm/m about its axis, a grid every 10 (blue: the axis). \
+              Columns: facing ±x, facing ±y, facing up or down; upper row the positive way (+x, +y, up), lower row the other. \
               In the first two columns, right is turned anticlockwise and up is the top leaning the axis's positive way; in the third, right is rising along x and up is rising along y. \
-              The red cross is where the lobe gathers (the table's numbers). Darker is more; the scale is logarithmic.\n";
+              The red mark is where the lobe gathers (the table's numbers).\n";
         Ok(vec![json!({"type": "text", "text": s}), json!({"type": "image", "mimeType": "image/png", "data": base64(&c.png())})])
     }
 }

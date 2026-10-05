@@ -218,6 +218,8 @@ pub struct Workspace {
     pub scan: Option<Arc<Scan>>,
     /// The scan thinned for drawing (made once the scan is loaded).
     pub index: Option<Arc<crate::cloud::ScanIndex>>,
+    /// Every point's confidence (made when first asked for: it takes a while).
+    pub(crate) conf: Option<Arc<Vec<f32>>>,
     pub model: Option<Model>,
     /// Why the model as it is on disk does not evaluate.
     pub model_error: Option<String>,
@@ -302,7 +304,7 @@ impl Workspace {
         }
         let placement = items.placement.map(Into::into);
         let chat = repo.git_dir().map(|d| crate::chat::Chat::open(d.join("topo-chat.json"))).unwrap_or_default();
-        let mut w = Workspace { chat, repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, model: None, model_error: None, placement, trial: None, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), effects: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
+        let mut w = Workspace { chat, repo, model_rel, model_abs: model.display().to_string(), items_path, scan: None, index: None, conf: None, model: None, model_error: None, placement, trial: None, model_rev: 0, ev: None, sel_cache: HashMap::new(), proposals: HashMap::new(), effects: HashMap::new(), store, items, presence: HashMap::new(), cursors: HashMap::new(), rev: 1 };
         if changed {
             w.save_items("topo-cad")?;
         }
@@ -407,6 +409,7 @@ impl Workspace {
     pub(crate) fn unload_scan(&mut self) {
         self.scan = None;
         self.index = None;
+        self.conf = None;
         self.ev = None;
         self.sel_cache.clear();
         self.touch();

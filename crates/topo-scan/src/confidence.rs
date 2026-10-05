@@ -195,6 +195,24 @@ pub fn confidence(scan: &Scan, idx: &[u32]) -> Vec<f32> {
         .collect()
 }
 
+/// The confidence of every point of a scan (by its index; 0 for one that is not used), worked
+/// out block by block (cubes of 1.5 m, so the rays are judged in cells of a centimetre or less).
+pub fn confidence_all(scan: &Scan) -> Vec<f32> {
+    const BLOCK: f32 = 1.5;
+    let mut blocks: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+    for &i in &scan.used {
+        let p = scan.xyz[i as usize];
+        blocks.entry(((p[0] / BLOCK).floor() as i32, (p[1] / BLOCK).floor() as i32, (p[2] / BLOCK).floor() as i32)).or_default().push(i);
+    }
+    let mut out = vec![0.0f32; scan.xyz.len()];
+    for idx in blocks.values() {
+        for (&i, c) in idx.iter().zip(confidence(scan, idx)) {
+            out[i as usize] = c;
+        }
+    }
+    out
+}
+
 /// The weight of each point in a fit: its confidence over σ² (of its range), scaled so the best is 1.
 pub fn weights(scan: &Scan, idx: &[u32], confidence: &[f32]) -> Vec<f32> {
     let range = |i: u32| scan.sensor.as_ref().map_or(2.0, |s| norm(sub(scan.xyz[i as usize], s[i as usize])));
