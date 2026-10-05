@@ -22,7 +22,7 @@
 // building, the main roof is sheathed first and the set sits on the
 // sheathing; here it sits on the chords. The main roof's eave is drawn
 // running on behind the wing's last truss.)
-import { Building, DFL, ft, inch, Perimeter, pitch, psf, Roof, Wall } from "topo-cad";
+import { Building, DFL, ft, inch, layers, Perimeter, pitch, psf, Roof, Wall } from "topo-cad";
 
 const grade = DFL.No2;
 const wall = Wall.template({ height: ft(8), grade });
@@ -40,6 +40,7 @@ const wing = Perimeter.start("Wing walls", [ft(7.5), 0])
 const roof = Roof.named("Roof")
   .over(main, { name: "Main", pitch: pitch(6), overhang: inch(12), rake: inch(12), gables: ["Left", "Right"], trusses: { grade } })
   .over(wing, { name: "Wing", pitch: pitch(6), overhang: inch(12), rake: inch(12), gables: ["Wing front", 4], reach: { 4: ft(8) }, trusses: { grade } })
+  .covering(layers("asphalt shingles", "roofing felt", "osb 7/16"))
   .load("snow", psf(25));
 
 export default Building.named("A roof that turns a corner").add(main, wing, roof);

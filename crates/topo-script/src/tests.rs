@@ -1775,7 +1775,7 @@ fn hips_and_valleys_are_where_a_roofs_planes_meet() {
     assert_eq!(said("hip"), 0.0);
     // Both are framed with trusses, and their planes are on those: over the walls' lines the two parts' eaves are
     // as high as each other.
-    let over = |name: &str, at: topo_core::Vec2| deck.iter().find(|s| s.name.starts_with(name)).unwrap().bottom.over(at);
+    let over = |name: &str, at: topo_core::Vec2| deck.iter().filter(|s| s.name.starts_with(name)).map(|s| s.bottom.over(at)).fold(f64::MAX, f64::min);
     let (front, side) = (over("Main Front", topo_core::Vec2::new(ft(3.0), 0.0)), over("Wing Wing right", topo_core::Vec2::new(ft(19.5), -ft(5.0))));
     assert!((front - side).abs() < 1e-6 && front > ft(8.0), "{front} {side}");
     // The main roof is framed through (16 trusses along 30 ft); the wing's trusses stop where it reaches the main
@@ -1797,7 +1797,7 @@ fn hips_and_valleys_are_where_a_roofs_planes_meet() {
         let on: Vec<topo_core::MemberId> = m.attachments.iter().filter(|a| c.path.contains(&a.node) || m.attached_at(a.node).any(|x| x.member == c.id)).map(|a| a.member).filter(|id| *id != c.id).collect();
         assert!(on.len() >= 2 && on.iter().all(|id| tops.contains(id)), "{} is on {:?}", m.member_path(c.id), on.iter().map(|id| m.member_path(*id)).collect::<Vec<_>>());
         let bb = g.member(c.id).bbox();
-        let under = deck.iter().filter(|s| s.name.starts_with("Main Front")).map(|s| s.bottom.over(topo_core::Vec2::new(ft(3.0), bb.max.y))).next().unwrap();
+        let under = deck.iter().filter(|s| s.name.starts_with("Main Front")).map(|s| s.bottom.over(topo_core::Vec2::new(ft(3.0), bb.max.y))).fold(f64::MAX, f64::min);
         assert!((bb.min.z - under).abs() < 1e-6, "{} {under}", bb.min.z);
     }
     // Its top chords are in the wing's planes (the deck's underside is their tops), and it carries what is on the
@@ -1812,6 +1812,9 @@ fn hips_and_valleys_are_where_a_roofs_planes_meet() {
     let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
     let carried = m.loads.iter().filter(|l| matches!(l, topo_core::Load::MemberUniform { case, member, .. } if *case == snow && m.member_path(*member).contains("valley") && m.member(*member).role == "top_chord")).count();
     assert_eq!(carried, 4);
+    // (With what it is covered with for a dead load, its trusses are checked: every chord and web of them.)
+    let a = topo_analysis::nds_asd_excluding(&m, &g, &topo_analysis::takedown(&m, &Topology::build(&m), &g), &[]);
+    assert!(a.checks.iter().any(|c| m.member_path(c.member).contains("valley") && m.member(c.member).role == "bottom_chord"));
     let ys: Vec<f64> = trusses("Wing trusses").iter().flat_map(|t| t.members.iter().flat_map(|&id| m.member(id).path.iter().map(|n| m.pos(*n).y))).collect();
     assert!((ys.iter().copied().fold(f64::MAX, f64::min) + ft(10.0)).abs() < 1e-6 && (ys.iter().copied().fold(f64::MIN, f64::max) + ft(1.0)).abs() < 1e-6, "{:?}", (ys.iter().copied().fold(f64::MAX, f64::min), ys.iter().copied().fold(f64::MIN, f64::max)));
 
