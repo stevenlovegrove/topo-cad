@@ -1940,8 +1940,10 @@ fn a_flat_part_and_a_sloped_one_are_on_trusses_made_apart_each_with_its_covering
     }
     // Each part is covered with its own: the canopy with a membrane on plywood, the slope with steel on an
     // underlayment on plywood; and that is what a schedule lists.
-    let of = |name: &str| -> Vec<&str> { let mut v: Vec<&topo_core::Solid> = deck.iter().copied().filter(|s| s.name.starts_with(name)).collect(); v.sort_by(|a, b| a.bottom.z.total_cmp(&b.bottom.z)); v.iter().map(|s| s.material.split(' ').next().unwrap()).collect() };
+    let of = |name: &str| -> Vec<&str> { let mut v: Vec<&topo_core::Solid> = deck.iter().copied().filter(|s| s.name.starts_with(name)).collect(); v.sort_by(|a, b| a.bottom.z.total_cmp(&b.bottom.z)); let mut m: Vec<&str> = v.iter().map(|s| s.material.split(' ').next().unwrap()).collect(); m.dedup(); m };
+    // (The canopy's sheet is in two pieces of one plane, either side of where the slope's part starts: a seam.)
     assert_eq!(of("Canopy"), ["Plywood", "TPO"]);
+    assert!(deck.iter().filter(|s| s.name.starts_with("Canopy")).all(|s| !s.seams.is_empty()));
     assert_eq!(of("Slope eave 1"), ["Plywood", "Polyglass", "Standing-seam"]);
     let built: Vec<(&str, usize)> = m.buildups.iter().map(|b| (b.name.as_str(), b.layers.len())).collect();
     assert_eq!(built, [("Roof: Slope", 3), ("Roof: Canopy", 2)]);
@@ -1968,4 +1970,42 @@ fn a_flat_part_and_a_sloped_one_are_on_trusses_made_apart_each_with_its_covering
     assert!(slope_snow.iter().any(|(w, _)| (w - 25.0 * psf * wide * cos).abs() < 1e-6) && slope_dead.iter().any(|(w, _)| (w - (1.45 + 0.35 + 1.4) * psf * wide).abs() < 1e-6), "{slope_snow:?}");
     // (The front top chord carries the slope from the fold up, not the stretch of it under the canopy.)
     assert!(slope_snow.iter().any(|(_, (a, _))| (a - fold / cos).abs() < 1e-6), "{slope_snow:?}");
+}
+
+#[test]
+fn a_deck_follows_trusses_that_are_not_in_one_plane_and_every_one_of_them_carries_it() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    // The same roof, one of its trusses (the third) with shallower top chords: its tops are an inch below the
+    // others', and the top chords' tops are in no one plane (the bottom chords' still are).
+    let src = include_str!("../../../examples/primitives/30-a-flat-roof-on-trusses-of-your-own.ts").replace(".bearingOn(walls);", r#".withShape([3], shape.sized("top_chord", [2, 3])).bearingOn(walls);"#);
+    assert!(src.contains("withShape"));
+    let m = run(&src, "30.ts").unwrap();
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    // The deck is a strip to each of the seven trusses, on that truss's own tops: nothing of a chord is above its strip.
+    let (deck, _) = roof_of(&m, "Roof");
+    for part in ["Slope eave 1", "Slope eave 3"] {
+        for j in 1..=7 {
+            assert!(deck.iter().any(|s| s.name.starts_with(&format!("{part} strip {j}"))), "{part} strip {j}");
+        }
+    }
+    let g = Geometry::build(&m, &Topology::build(&m));
+    for part in g.parts(&m).iter().filter(|p| p.role == "top_chord") {
+        let (face, _) = part.faces.iter().max_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap();
+        let mid = face.iter().fold(topo_core::Vec3::ZERO, |a, q| a + *q) / face.len() as f64;
+        let at = topo_core::Vec2::new(mid.x, mid.y);
+        let strip = deck.iter().filter(|s| s.name.starts_with("Slope") && topo_geom::solid_convex(s).verts.iter().any(|v| (v.x - mid.x).abs() < inch(13.0))).map(|s| (s.bottom.over(at) - mid.z).abs()).fold(f64::MAX, f64::min);
+        assert!(strip < 1e-4, "{} {strip}", part.path);
+    }
+    // Where the canopy and the slope meet is found for each truss: where its own top chord's top comes up through the
+    // bottom chords' (further in on the third, whose top chord is shallower).
+    let folds: Vec<f64> = (1..=7).map(|j| deck.iter().filter(|s| s.name.starts_with(&format!("Slope eave 1 strip {j}"))).flat_map(|s| s.outline.iter().map(|p| p.y)).fold(f64::MAX, f64::min)).collect();
+    let fold = |top: f64| (inch(5.5) - inch(top) * (1.0f64 + 1.0 / 9.0).sqrt()) * 3.0;
+    // (Strips are numbered across the trusses' run, which here is against the way the trusses are numbered: the third truss's is the fifth.)
+    assert!(folds.iter().enumerate().all(|(j, y)| (y - fold(if j == 4 { 2.5 } else { 3.5 })).abs() < 1e-5), "{folds:?} {} {}", fold(3.5), fold(2.5));
+    assert!(deck.iter().any(|s| s.name.starts_with("Canopy eave 1")) && !deck.iter().any(|s| s.name.starts_with("Canopy eave 1 strip")));
+    // And every truss carries its share, the two at the ends too (their lumber is set to one side of their line):
+    // the snow over the canopy is on all seven bottom chords, and over the slope on all fourteen top chords.
+    let snow = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Snow).unwrap().id;
+    let on = |role: &str| m.loads.iter().filter(|l| matches!(l, topo_core::Load::MemberUniform { case, member, .. } if *case == snow && m.member(*member).role == role)).count();
+    assert_eq!((on("bottom_chord"), on("top_chord")), (7, 14));
 }

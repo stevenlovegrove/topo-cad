@@ -186,10 +186,41 @@ impl RoofPart {
     }
 }
 
+/// A piece of roof to be worked out: a convex outline on plan (as far as it reaches), and the
+/// planes over it, each with which eave it is of. A part is one; so is a strip of a part whose
+/// planes are its own (where what carries the part is not all in one plane).
+#[derive(Clone, Debug)]
+pub struct Piece {
+    pub outline: Vec<Vec2>,
+    pub planes: Vec<(usize, Level)>,
+}
+
+impl RoofPart {
+    /// The part as a piece: its reach, and a plane to each eave (by edge, of its outline anticlockwise).
+    pub fn piece(&self) -> Result<Piece, String> {
+        let (planes, outline) = self.planes()?;
+        Ok(Piece { outline, planes })
+    }
+}
+
 /// The faces of a roof: for each part, where each of its planes is the lowest of that part's,
 /// less what a higher part covers. In pieces, each convex.
 pub fn faces(parts: &[RoofPart]) -> Result<Vec<Face>, String> {
-    let made: Vec<(Vec<(usize, Level)>, Vec<Vec2>)> = parts.iter().map(RoofPart::planes).collect::<Result<_, _>>()?;
+    faces_of(&parts.iter().map(RoofPart::piece).collect::<Result<Vec<_>, _>>()?)
+}
+
+/// The same, of pieces: a face's `part` is which piece it is of.
+pub fn faces_of(pieces: &[Piece]) -> Result<Vec<Face>, String> {
+    let made: Vec<(Vec<(usize, Level)>, Vec<Vec2>)> = pieces
+        .iter()
+        .map(|p| {
+            let mut outline = p.outline.clone();
+            if polygon_area(&outline) < 0.0 {
+                outline.reverse();
+            }
+            (p.planes.clone(), outline)
+        })
+        .collect();
     let mut out = vec![];
     for (a, (planes, reach)) in made.iter().enumerate() {
         for (edge, plane) in planes {

@@ -1721,20 +1721,105 @@ impl Builder {
                 carriers.push(carried);
                 frames.push(along);
             }
-            let faces = roofs::faces(&parts)?;
-            // Its deck: each face a sheet on its plane. (Named by its part and its eave; in pieces, numbered.)
-            let mut count: HashMap<String, usize> = HashMap::new();
-            // (A part drawn clockwise is turned about to be worked out: its edges with it. Which edge, as given.)
-            let given = |f: &roofs::Face| {
-                let p = &r.parts[f.part];
+            // The pieces to work out: a part; or, where what carries it is not all in one plane (trusses as built, on
+            // walls that are not level), a strip of it to each line of its carriers, from half way to the line before
+            // to half way to the next, its planes on that line's own tops. So where two parts meet (a fold, a valley)
+            // is found for each line of them. (Between two lines that differ the strips step: what the sheet does
+            // between them is not known.)
+            struct Strip {
+                part: usize,
+                /// Which line of the part's carriers it is to (none: the part is in one piece), and where that is across them.
+                line: Option<(usize, f64)>,
+                across: Vec2,
+                lo: Option<f64>,
+                hi: Option<f64>,
+            }
+            // (A part drawn clockwise is turned about to be worked out: its edges with it. An edge as given, and as worked out.)
+            let turned = |part: usize, k: usize| {
+                let p = &r.parts[part];
                 let n = p.outline.len();
-                let clockwise = polygon_area(&p.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect::<Vec<_>>()) < 0.0;
-                if clockwise { (2 * n - 2 - f.edge) % n } else { f.edge }
+                if polygon_area(&p.outline.iter().map(|&(x, y)| Vec2::new(x, y)).collect::<Vec<_>>()) < 0.0 { (2 * n - 2 - k) % n } else { k }
             };
+            let mut pieces: Vec<roofs::Piece> = vec![];
+            let mut strips: Vec<Strip> = vec![];
+            // (Where each carrier's top is, across its part's run: which line it is of.)
+            let mut line_of: HashMap<(usize, MemberId), f64> = HashMap::new();
+            for (pi, part) in parts.iter().enumerate() {
+                let whole = part.piece()?;
+                // (Its carriers' own directions on plan: the way they run, and across them.)
+                let run = carriers[pi].first().and_then(|&(_, id)| {
+                    let d = self.m.pos(self.m.member(id).end()) - self.m.pos(self.m.member(id).start());
+                    (Vec2::new(d.x, d.y).norm() > 1e-9).then(|| Vec2::new(d.x, d.y).normalized())
+                });
+                let across = run.map_or(Vec2::new(1.0, 0.0), |d| Vec2::new(-d.y, d.x));
+                // Each carrier's top: which eave's plane it is in, where it is across the run, and its points.
+                let tops: Vec<(usize, f64, Vec<Vec3>)> = carriers[pi]
+                    .iter()
+                    .filter_map(|&(k, id)| {
+                        let (face, _) = top(id)?;
+                        let t = face.iter().map(|q| across.dot(Vec2::new(q.x, q.y))).sum::<f64>() / face.len() as f64;
+                        line_of.insert((pi, id), t);
+                        Some((k, t, face))
+                    })
+                    .collect();
+                let mut lines: Vec<f64> = vec![];
+                for (_, t, _) in &tops {
+                    if !lines.iter().any(|q| (q - t).abs() < 0.01) {
+                        lines.push(*t);
+                    }
+                }
+                lines.sort_by(f64::total_cmp);
+                let plane_of = |k: usize| whole.planes.iter().find(|(tag, _)| turned(pi, *tag) == k).map(|x| x.1);
+                let off = tops.iter().flat_map(|(k, _, face)| plane_of(*k).into_iter().flat_map(move |pl| face.iter().map(move |q| (q.z - pl.over(Vec2::new(q.x, q.y))).abs()))).fold(0.0, f64::max);
+                if lines.len() < 2 || off <= 0.0015 {
+                    pieces.push(whole);
+                    strips.push(Strip { part: pi, line: None, across, lo: None, hi: None });
+                    continue;
+                }
+                for (j, &t) in lines.iter().enumerate() {
+                    // (The first strip and the last run on to the part's ends.)
+                    let (lo, hi) = ((j > 0).then(|| (lines[j - 1] + t) / 2.0), (j + 1 < lines.len()).then(|| (t + lines[j + 1]) / 2.0));
+                    let mut outline = whole.outline.clone();
+                    if let Some(x) = lo {
+                        outline = roofs::cut(&outline, across, -x);
+                    }
+                    if let Some(x) = hi {
+                        outline = roofs::cut(&outline, across * -1.0, x);
+                    }
+                    if outline.len() < 3 || polygon_area(&outline).abs() < 1e-8 {
+                        continue;
+                    }
+                    // Each of its planes on this line's tops (one the line has nothing of: as the part's is).
+                    let planes = whole
+                        .planes
+                        .iter()
+                        .map(|&(tag, global)| {
+                            let k = turned(pi, tag);
+                            let Some((a, dir, inward)) = frames[pi][k] else { return (tag, global) };
+                            let pts: Vec<(f64, f64, f64)> = tops.iter().filter(|x| x.0 == k && (x.1 - t).abs() < 0.01).flat_map(|x| x.2.iter()).map(|q| ((Vec2::new(q.x, q.y) - a).dot(inward), (Vec2::new(q.x, q.y) - a).dot(dir), q.z)).collect();
+                            if pts.len() < 3 {
+                                return (tag, global);
+                            }
+                            let (c0, c1, c2) = fit(&pts);
+                            (tag, Level { z: c0, at: a, slope: inward * c1 + dir * c2 })
+                        })
+                        .collect();
+                    pieces.push(roofs::Piece { outline, planes });
+                    strips.push(Strip { part: pi, line: Some((j, t)), across, lo, hi });
+                }
+            }
+            let faces = roofs::faces_of(&pieces)?;
+            // Its deck: each face a sheet on its plane. (Named by its part and its eave, and its strip; in pieces, numbered.)
+            let given = |f: &roofs::Face| turned(strips[f.part].part, f.edge);
             let label = |f: &roofs::Face| {
-                let (p, k) = (&r.parts[f.part], given(f));
-                format!("{} {}", p.name, p.edges[k].as_ref().and_then(|e| e.name.clone()).unwrap_or_else(|| format!("eave {}", k + 1)))
+                let (p, k) = (&r.parts[strips[f.part].part], given(f));
+                let eave = p.edges[k].as_ref().and_then(|e| e.name.clone()).unwrap_or_else(|| format!("eave {}", k + 1));
+                match strips[f.part].line {
+                    Some((j, _)) => format!("{} {eave} strip {}", p.name, j + 1),
+                    None => format!("{} {eave}", p.name),
+                }
             };
+            let mut count: HashMap<String, usize> = HashMap::new();
             for f in &faces {
                 *count.entry(label(f)).or_insert(0) += 1;
             }
@@ -1745,75 +1830,23 @@ impl Builder {
                 let k = nth.entry(base.clone()).or_insert(0);
                 *k += 1;
                 let name = if count[&base] == 1 { base } else { format!("{base}#{k}") };
-                // Where what carries it is not all in one plane (trusses as built, on walls that are not level), the
-                // sheet follows them: a strip to each line of them, on that line's tops, from half way to the line
-                // before to half way to the next. (Between two that differ the strips step: what the sheet does
-                // between them is not known.)
-                let mut strips: Vec<(Vec<Vec2>, Level, Vec<usize>)> = vec![(f.outline.clone(), f.plane, f.seams.clone())];
-                let mine: Vec<MemberId> = carriers[f.part].iter().filter(|c| c.0 == given(f)).map(|c| c.1).collect();
-                // (Their own directions on plan: the way they run, and across them.)
-                let run = mine.first().and_then(|&id| {
-                    let d = self.m.pos(self.m.member(id).end()) - self.m.pos(self.m.member(id).start());
-                    (Vec2::new(d.x, d.y).norm() > 1e-9).then(|| Vec2::new(d.x, d.y).normalized())
-                });
-                if let Some(run) = run {
-                    let (a, across) = (f.outline[0], Vec2::new(-run.y, run.x));
-                    let mut lines: Vec<(f64, Vec<(f64, f64, f64)>)> = vec![];
-                    for &id in &mine {
-                        let Some((face, _)) = top(id) else { continue };
-                        let pts: Vec<(f64, f64, f64)> = face.iter().map(|q| ((Vec2::new(q.x, q.y) - a).dot(run), (Vec2::new(q.x, q.y) - a).dot(across), q.z)).collect();
-                        let t = pts.iter().map(|q| q.1).sum::<f64>() / pts.len() as f64;
-                        match lines.iter_mut().find(|l| (l.0 - t).abs() < 0.01) {
-                            Some(l) => l.1.extend(pts),
-                            None => lines.push((t, pts)),
-                        }
-                    }
-                    lines.sort_by(|x, y| x.0.total_cmp(&y.0));
-                    let off = lines.iter().flat_map(|l| &l.1).map(|&(s, t, z)| (z - f.plane.over(a + run * s + across * t)).abs()).fold(0.0, f64::max);
-                    if lines.len() >= 2 && off > 0.0015 {
-                        let at_line = |q: Vec2, t: f64| ((q - a).dot(across) - t).abs() < 1e-7;
-                        strips.clear();
-                        for j in 0..lines.len() {
-                            // (The first strip and the last run on to the face's ends.)
-                            let (lo, hi) = ((j > 0).then(|| (lines[j - 1].0 + lines[j].0) / 2.0), (j + 1 < lines.len()).then(|| (lines[j].0 + lines[j + 1].0) / 2.0));
-                            let mut poly = f.outline.clone();
-                            if let Some(t) = lo {
-                                poly = roofs::cut(&poly, across, -(across.dot(a) + t));
-                            }
-                            if let Some(t) = hi {
-                                poly = roofs::cut(&poly, across * -1.0, across.dot(a) + t);
-                            }
-                            if poly.len() < 3 || polygon_area(&poly).abs() < 1e-8 {
-                                continue;
-                            }
-                            let (c0, c1, c2) = fit(&lines[j].1);
-                            // (Where it meets the next strip, and where the face was already in pieces, is a seam.)
-                            let seams = (0..poly.len())
-                                .filter(|&i| {
-                                    let (p0, p1) = (poly[i], poly[(i + 1) % poly.len()]);
-                                    lo.is_some_and(|t| at_line(p0, t) && at_line(p1, t))
-                                        || hi.is_some_and(|t| at_line(p0, t) && at_line(p1, t))
-                                        || f.seams.iter().any(|&e| {
-                                            let (s0, s1) = (f.outline[e], f.outline[(e + 1) % f.outline.len()]);
-                                            (p0 - s0).cross(s1 - s0).abs() < 1e-7 && (p1 - s0).cross(s1 - s0).abs() < 1e-7
-                                        })
-                                })
-                                .collect();
-                            strips.push((poly, Level { z: c0, at: a, slope: run * c1 + across * c2 }, seams));
-                        }
+                // (Where a strip meets the next of its part is a seam, as where a plane was cut into pieces is.)
+                let st = &strips[f.part];
+                let on = |q: Vec2, x: Option<f64>| x.is_some_and(|x| (st.across.dot(q) - x).abs() < 1e-7);
+                let mut seams = f.seams.clone();
+                for i in 0..f.outline.len() {
+                    let (p0, p1) = (f.outline[i], f.outline[(i + 1) % f.outline.len()]);
+                    if !seams.contains(&i) && ((on(p0, st.lo) && on(p1, st.lo)) || (on(p0, st.hi) && on(p1, st.hi))) {
+                        seams.push(i);
                     }
                 }
-                let layers = r.parts[f.part].layers.as_ref().unwrap_or(&r.layers);
-                let bays = strips.len();
-                for (j, (outline, plane, seams)) in strips.into_iter().enumerate() {
-                    let name = if bays == 1 { name.clone() } else { format!("{name} strip {}", j + 1) };
-                    // (A sheet's thickness is square to the slope: so much more, plumb.)
-                    let steep = (1.0 + plane.slope.dot(plane.slope)).sqrt();
-                    area += polygon_area(&outline).abs() * steep;
-                    for (of, at, thick, open) in sheets(layers, r.deck) {
-                        let name = if layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
-                        self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: outline.clone(), bottom: plane.raised(at * steep), top: plane.raised((at + thick) * steep), seams: seams.clone(), open });
-                    }
+                let layers = r.parts[st.part].layers.as_ref().unwrap_or(&r.layers);
+                // (A sheet's thickness is square to the slope: so much more, plumb.)
+                let steep = (1.0 + f.plane.slope.dot(f.plane.slope)).sqrt();
+                area += polygon_area(&f.outline).abs() * steep;
+                for (of, at, thick, open) in sheets(layers, r.deck) {
+                    let name = if layers.is_empty() { name.clone() } else { format!("{name}: {}", of.replace('/', "\u{2215}")) };
+                    self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: f.outline.clone(), bottom: f.plane.raised(at * steep), top: f.plane.raised((at + thick) * steep), seams: seams.clone(), open });
                 }
             }
             // What it is made of, for a schedule: the roof's layers, and those of each part that has its own.
@@ -1843,7 +1876,6 @@ impl Builder {
                 for l in &p.loads {
                     loads.push((self.case(&l.kind)?, l.pressure, l.basis(&what)?));
                 }
-                let reach = parts[k].reach()?;
                 let eaves: std::collections::BTreeSet<usize> = carriers[k].iter().map(|c| c.0).collect();
                 for eave in eaves {
                     let ms: Vec<MemberId> = carriers[k].iter().filter(|c| c.0 == eave).map(|c| c.1).collect();
@@ -1867,18 +1899,27 @@ impl Builder {
                     for &id in &ms {
                         let (a, b) = ends(id);
                         let len = a.distance(b);
-                        // What of it is under the part.
-                        let (mut t0, mut t1) = (0.0f64, 1.0f64);
-                        for i in 0..reach.len() {
-                            let (p0, p1) = (reach[i], reach[(i + 1) % reach.len()]);
-                            let side = |q: Vec3| (p1 - p0).cross(Vec2::new(q.x, q.y) - p0);
-                            let (fa, fb) = (side(a), side(b));
-                            if fa < 0.0 && fb < 0.0 {
-                                t1 = -1.0;
-                            } else if fa < 0.0 {
-                                t0 = t0.max(fa / (fa - fb));
-                            } else if fb < 0.0 {
-                                t1 = t1.min(fa / (fa - fb));
+                        // What of it is under the part, where the part is the roof: under its faces in this eave's plane
+                        // (those of this line's strip, where it is in strips).
+                        let here = line_of.get(&(k, id)).copied();
+                        let (mut t0, mut t1) = (f64::MAX, f64::MIN);
+                        for f in faces.iter().filter(|f| strips[f.part].part == k && given(f) == eave && strips[f.part].line.is_none_or(|(_, t)| here.is_some_and(|h| (h - t).abs() < 0.01))) {
+                            let turn = polygon_area(&f.outline).signum();
+                            let (mut u0, mut u1) = (0.0f64, 1.0f64);
+                            for i in 0..f.outline.len() {
+                                let (p0, p1) = (f.outline[i], f.outline[(i + 1) % f.outline.len()]);
+                                let side = |q: Vec3| turn * (p1 - p0).cross(Vec2::new(q.x, q.y) - p0);
+                                let (fa, fb) = (side(a), side(b));
+                                if fa < 0.0 && fb < 0.0 {
+                                    u1 = -1.0;
+                                } else if fa < 0.0 {
+                                    u0 = u0.max(fa / (fa - fb));
+                                } else if fb < 0.0 {
+                                    u1 = u1.min(fa / (fa - fb));
+                                }
+                            }
+                            if u1 > u0 {
+                                (t0, t1) = (t0.min(u0), t1.max(u1));
                             }
                         }
                         if (t1 - t0) * len < 1e-3 {
@@ -1894,7 +1935,8 @@ impl Builder {
                 }
             }
             // How much of each kind of edge there is: what is bought by the length (ridge cap, valley flashing, gutter).
-            let lengths = roofs::lengths(&roofs::edges(&faces));
+            // (Of the roof as each part's one plane has it: where strips step a little at each line is not an edge of it.)
+            let lengths = roofs::lengths(&roofs::edges(&roofs::faces(&parts)?));
             let props = &mut self.m.group_mut(group).props;
             props.insert("area".into(), format!("{area:.3}"));
             for (kind, key) in [(EdgeKind::Ridge, "ridge"), (EdgeKind::Hip, "hip"), (EdgeKind::Valley, "valley"), (EdgeKind::Eave, "eave"), (EdgeKind::Rake, "rake")] {

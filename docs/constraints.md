@@ -609,12 +609,16 @@ generators' own (on all their top chords, or rafters), for one used alone.
 
 **Where the framing is not in one plane** (trusses as built, on walls that
 are not level: their tops differ by millimetres along the run), a plane
-fitted to them all passes through some. The sheet then follows them: a
-strip to each line of carriers, on that line's own tops, from half way to
-the line before to half way to the next. Between two that differ the
-strips step; what the sheet does between them is not known. *Not yet:*
-where two parts meet (a fold, a valley) is still worked out from each
-part's one fitted plane, so strips do not meet exactly there.
+fitted to them all passes through some. The part is then worked out as a
+row of strips, one to each line of its carriers (from half way to the line
+before to half way to the next), each with its planes on that line's own
+tops (`roofs::Piece`, `faces_of`). So where parts meet is found for each
+line: two parts that overlap (a sloped part and a flat one on one truss)
+fold where that truss's top chord comes up through the level of its bottom
+chord, and nothing of where is given. Between two lines that differ the
+strips step; what the sheet does between them is not known. A part's loads
+are over what of each carrier is under the part where the part is the roof
+(its faces), so parts that overlap do not both load the overlap.
 
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
