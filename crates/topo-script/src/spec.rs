@@ -1694,7 +1694,10 @@ impl Builder {
                         }
                         if pts.len() >= 3 {
                             let (c0, c1, c2) = fit(&pts);
-                            eaves[k] = Some(Eave { height: (c0, c0 + c2 * len), pitch: c1, overhang: e.overhang });
+                            // (It runs out as far as what carries it does, where that is past the overhang given: a
+                            // rafter's foot, cut level on its plate, runs out past the wall's line.)
+                            let out = if e.pitch.abs() < 1e-9 { 0.0 } else { pts.iter().map(|q| -q.0).fold(0.0, f64::max) };
+                            eaves[k] = Some(Eave { height: (c0, c0 + c2 * len), pitch: c1, overhang: e.overhang.max(out) });
                             continue;
                         }
                     }

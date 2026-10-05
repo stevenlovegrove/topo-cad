@@ -1702,6 +1702,13 @@ fn a_roof_is_its_surfaces_and_they_are_on_its_framing() {
         }
     }
     assert!(seen >= 18 * 4);
+    // And the deck runs out as far as the rafters do: no overhang is given, and their feet, cut level on the plates,
+    // run out past the walls' lines (the tops of them, some 10 in).
+    let tips: Vec<f64> = parts.iter().filter(|p| p.role == "rafter").flat_map(|p| p.faces.iter().max_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap().0.iter().map(|q| q.x)).collect();
+    let (lo, hi) = (tips.iter().copied().fold(f64::MAX, f64::min), tips.iter().copied().fold(f64::MIN, f64::max));
+    let reach: Vec<f64> = deck.iter().flat_map(|s| s.outline.iter().map(|p| p.x)).collect();
+    assert!(lo < -inch(8.0) && hi > ft(12.0) + inch(8.0), "{lo} {hi}");
+    assert!((reach.iter().copied().fold(f64::MAX, f64::min) - lo).abs() < 1e-6 && (reach.iter().copied().fold(f64::MIN, f64::max) - hi).abs() < 1e-6, "{lo} {hi} {reach:?}");
     // Trusses (16), on walls on a curb: the same, on their top chords; and it runs a foot out past the walls.
     let m = run(include_str!("../../../examples/primitives/16-from-the-slab-up.ts"), "16-from-the-slab-up.ts").unwrap();
     assert!(through(&m).is_empty(), "{:?}", through(&m));
@@ -1724,7 +1731,7 @@ fn a_roof_is_its_surfaces_and_they_are_on_its_framing() {
 #[test]
 fn hips_and_valleys_are_where_a_roofs_planes_meet() {
     let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
-    // A hip roof (24) over 24 ft by 16 ft at 6 in 12, a foot out: four planes; a ridge of 8 ft; hips from the
+    // A hip roof (24) over 24 ft by 16 ft at 6 in 12, 16" out: four planes; a ridge of 8 ft; hips from the
     // corners of the overhang. Framed with rafters, its planes are their tops: a 2x8's depth (plumb) above the
     // plate, where a foot is (1 3/4" in from the wall's line).
     let m = run(include_str!("../../../examples/primitives/24-a-hip-roof.ts"), "24-a-hip-roof.ts").unwrap();
@@ -1755,10 +1762,12 @@ fn hips_and_valleys_are_where_a_roofs_planes_meet() {
         let bb = g.member(h.id).bbox();
         assert!(bb.max.y < ft(8.0) + 1e-6 || bb.min.y > ft(8.0) - 1e-6, "{bb:?}");
     }
-    assert!((said("ridge") - ft(8.0)).abs() < 1e-3 && (said("eave") - 2.0 * ft(26.0 + 18.0)).abs() < 1e-3 && said("valley") == 0.0 && said("rake") == 0.0, "{} {}", said("ridge"), said("eave"));
-    // (A hip: 9 ft each way on plan and 4.5 ft up.)
-    assert!((said("hip") - 4.0 * ft(9.0) * 2.25f64.sqrt()).abs() < 1e-3, "{}", said("hip"));
-    assert!((said("area") - ft(26.0) * ft(18.0) * 1.25f64.sqrt()).abs() < 1e-3);
+    // (It runs 16" out past the walls: further than the rafters' feet do, which is as far as it would run of itself.)
+    let out = inch(16.0);
+    assert!((said("ridge") - ft(8.0)).abs() < 1e-3 && (said("eave") - 2.0 * (ft(24.0 + 16.0) + 4.0 * out)).abs() < 1e-3 && said("valley") == 0.0 && said("rake") == 0.0, "{} {}", said("ridge"), said("eave"));
+    // (A hip: 8 ft and the overhang each way on plan, and half that up.)
+    assert!((said("hip") - 4.0 * (ft(8.0) + out) * 2.25f64.sqrt()).abs() < 1e-3, "{}", said("hip"));
+    assert!((said("area") - (ft(24.0) + 2.0 * out) * (ft(16.0) + 2.0 * out) * 1.25f64.sqrt()).abs() < 1e-3);
 
     // A roof that turns a corner (25): the wing's ridge (6 ft of half span) runs back to where the main roof's
     // slope is as high, 6 ft in; two valleys from there down to the inside corners, and on out through the

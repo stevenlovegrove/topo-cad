@@ -1,7 +1,7 @@
 // A hip roof.
 //
 // A roof is given as its surfaces, and those by its edges: a roof over these
-// walls, at 6 in 12, running a foot out past them. No edge is said to be a
+// walls, at 6 in 12, running 16" out past them. No edge is said to be a
 // gable, so every edge is an eave: a plane rises inward from each, and the roof
 // is the lowest of them. The ridge and the four hips are not given: they are
 // where the planes meet.
@@ -28,7 +28,7 @@ const walls = Perimeter.start("Walls", [0, 0])
   .close(wall.named("Left"));
 
 const roof = Roof.named("Roof")
-  .over(walls, { pitch: pitch(6), overhang: inch(12), rafters: { size: [2, 8], grade: DFL.No2 } })
+  .over(walls, { pitch: pitch(6), overhang: inch(16), rafters: { size: [2, 8], grade: DFL.No2 } })
   .load("dead", psf(12))
   .load("snow", psf(25));
 
