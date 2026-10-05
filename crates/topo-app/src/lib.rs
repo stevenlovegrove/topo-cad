@@ -442,7 +442,15 @@ fn mesh(b: &Built) -> Value {
                 topo_geom::PartKind::Member(id) => short(&b.model, id),
                 topo_geom::PartKind::Solid(k) => b.model.solids[k].name.clone(),
             };
-            json!({ "path": p.path, "label": label, "role": p.role, "faces": faces })
+            // (A solid says what it is of, and which edges of its faces are only seams in a sheet.)
+            let (material, seams) = match p.kind {
+                topo_geom::PartKind::Member(_) => (None, vec![]),
+                topo_geom::PartKind::Solid(k) => {
+                    let s = &b.model.solids[k];
+                    (Some(s.material.clone()), s.seam_edges().into_iter().map(|(a, c)| [[r(a.x), r(a.y), r(a.z)], [r(c.x), r(c.y), r(c.z)]]).collect())
+                }
+            };
+            json!({ "path": p.path, "label": label, "role": p.role, "material": material, "seams": seams, "faces": faces })
         })
         .collect();
     let v3 = |p: topo_core::Vec3| [r(p.x), r(p.y), r(p.z)];

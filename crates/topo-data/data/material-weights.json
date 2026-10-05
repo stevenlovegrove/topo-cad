@@ -150,6 +150,13 @@
    "psf": 0.31,
    "verified": true,
    "thickness_in": 0.06
+  },
+  {
+   "key": "hardwood flooring 7/8",
+   "description": "Hardwood flooring 7/8\" (ASCE 7 Table C3.1-1a)",
+   "psf": 4.0,
+   "verified": true,
+   "thickness_in": 0.875
   }
  ]
 }

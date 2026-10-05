@@ -499,6 +499,7 @@
 <script type="module">
 import { api, storage } from "./app/router.js";
 import { service } from "./app/service.js";
+import { initModel3d, materialColour } from "./app/model3d.js";
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -554,6 +555,7 @@ async function poll() {
       await loadSources(false);
       renderTabs();
       if (shown("3d")) await load3d();
+      if (shown("shaded")) await shaded.load();
       if (!s.error) await loadSheet();
     }
   } catch (e) {
@@ -1141,17 +1143,7 @@ let covers3d = [];
 const hiddenLayers = new Set();
 const layerKey = (s, i) => `${s.name}|${i}`;
 function layers3dOn() { return mesh3d && mesh3d.surfaces && mesh3d.surfaces.length && $("layersOn").checked; }
-function layerColour(name) {
-  const n = name.toLowerCase();
-  if (/standing|steel|metal/.test(n)) return "#9fb3c6";
-  if (/tpo/.test(n)) return "#efefe9";
-  if (/underlayment|polystick|felt|membrane/.test(n)) return "#50555e";
-  if (/plywood|osb|wsp/.test(n)) return "#dfc088";
-  if (/board/.test(n)) return "#b98a52";
-  if (/shingle/.test(n)) return "#707070";
-  if (/gypsum/.test(n)) return "#f3f1ea";
-  return "#c9c9c0";
-}
+const layerColour = materialColour;
 function shade(hex, k) {
   const v = parseInt(hex.slice(1), 16);
   const c = [v >> 16, (v >> 8) & 255, v & 255].map((x) => Math.round(Math.max(0, Math.min(255, x * k))));
@@ -2087,6 +2079,8 @@ function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
 
 layoutPanes();
+// The model shaded, in WebGL: with or without a scan.
+const shaded = initModel3d({ registerPane, api, inspect, parked: $("parked"), version: () => (state && !state.error ? state.version : null) });
 // Storage first (its change handler lists the projects), then keep the view in step.
 await storage.boot();
 // A scan workspace, if this site serves one: its model opens, and the scan's panes,

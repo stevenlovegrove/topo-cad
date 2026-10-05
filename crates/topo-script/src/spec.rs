@@ -323,6 +323,9 @@ pub struct DeckSpec {
     /// `deck 4`): about an opening it is in pieces.
     #[serde(default)]
     pub pieces: Vec<[String; 4]>,
+    /// What it is made of, top first (none given: plywood): sheets one on another, `thickness` in all.
+    #[serde(default)]
+    pub layers: Vec<Layer>,
 }
 
 /// A frame with points in it.
@@ -497,6 +500,24 @@ pub struct RoofSpec {
     pub parts: Vec<RoofPartSpec>,
     /// Its deck: a sheet this thick on its planes.
     pub deck: f64,
+    /// What it is covered with, top first (none given: the deck, of plywood): a sheet of each
+    /// on its planes, one on another.
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+}
+
+/// The sheets of a build-up, from the underside up: what each is of, how far its underside is
+/// above the build-up's, and how thick it is. (No layers given: one sheet, of plywood.)
+fn sheets(layers: &[Layer], thickness: f64) -> Vec<(String, f64, f64)> {
+    if layers.is_empty() {
+        return vec![("plywood".into(), 0.0, thickness)];
+    }
+    let (mut at, mut out) = (0.0, vec![]);
+    for l in layers.iter().rev().filter(|l| l.thickness > 0.0) {
+        out.push((l.name.clone(), at, l.thickness));
+        at += l.thickness;
+    }
+    out
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1715,8 +1736,13 @@ impl Builder {
                 let k = nth.entry(base.clone()).or_insert(0);
                 *k += 1;
                 let name = if count[&base] == 1 { base } else { format!("{base}#{k}") };
-                area += polygon_area(&f.outline).abs() * (1.0 + f.plane.slope.dot(f.plane.slope)).sqrt();
-                self.m.solids.push(Solid { name, role: "roof_deck".into(), material: "plywood".into(), group: Some(group), outline: f.outline.clone(), bottom: f.plane, top: f.plane.raised(r.deck), seams: f.seams.clone() });
+                // (A sheet's thickness is square to the slope: so much more, plumb.)
+                let steep = (1.0 + f.plane.slope.dot(f.plane.slope)).sqrt();
+                area += polygon_area(&f.outline).abs() * steep;
+                for (of, at, thick) in sheets(&r.layers, r.deck) {
+                    let name = if r.layers.is_empty() { name.clone() } else { format!("{name}: {of}") };
+                    self.m.solids.push(Solid { name, role: "roof_deck".into(), material: of, group: Some(group), outline: f.outline.clone(), bottom: f.plane.raised(at * steep), top: f.plane.raised((at + thick) * steep), seams: f.seams.clone() });
+                }
             }
             // How much of each kind of edge there is: what is bought by the length (ridge cap, valley flashing, gutter).
             let lengths = roofs::lengths(&roofs::edges(&faces));
@@ -1748,7 +1774,10 @@ impl Builder {
                 let under = Level { z: c[0].z + deck.above, at: Vec2::new(c[0].x, c[0].y), slope };
                 let group = ids.first().and_then(|&id| self.m.member(id).group);
                 let name = if pieces.len() == 1 { "deck".to_string() } else { format!("deck#{}", k + 1) };
-                self.m.solids.push(Solid { name, role: "deck".into(), material: "plywood".into(), group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under, top: under.raised(deck.thickness), seams: vec![] });
+                for (of, at, thick) in sheets(&deck.layers, deck.thickness) {
+                    let name = if deck.layers.is_empty() { name.clone() } else { format!("{name}: {of}") };
+                    self.m.solids.push(Solid { name, role: "deck".into(), material: of, group, outline: c.iter().map(|p| Vec2::new(p.x, p.y)).collect(), bottom: under.raised(at), top: under.raised(at + thick), seams: vec![] });
+                }
             }
         }
         // Ends cut level or plumb, where a member says so.

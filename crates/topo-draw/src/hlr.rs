@@ -66,9 +66,7 @@ impl Piece {
     /// slab with a notch in it hides a little more than it should, seen from below.)
     pub fn of_solid(s: &topo_core::Solid, member: MemberId) -> Piece {
         let faces: Vec<topo_geom::Face> = s.faces().into_iter().map(|f| topo_geom::Face { outer: f.outer, holes: vec![], normal: f.normal }).collect();
-        // A seam: along it on the top and on the underside, and up its two ends.
-        let at = |p: Vec2, l: &topo_core::Level| Vec3::new(p.x, p.y, l.over(p));
-        let seams = s.seam_lines().into_iter().flat_map(|(a, b)| [(at(a, &s.top), at(b, &s.top)), (at(a, &s.bottom), at(b, &s.bottom)), (at(a, &s.bottom), at(a, &s.top)), (at(b, &s.bottom), at(b, &s.top))]).collect();
+        let seams = s.seam_edges();
         Piece { member, ply: 0, convex: topo_geom::solid_convex(s), faces, seams }
     }
 }

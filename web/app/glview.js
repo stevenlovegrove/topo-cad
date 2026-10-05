@@ -137,6 +137,8 @@ export function defaultState() {
     // Height cuts, in the model's frame (null: none).
     zMin: null, zMax: null,
     layers: { scan: true, model: true, marks: true, issues: true },
+    // The model drawn solid (its faces hide what is behind them), not as glass over the points; on paper, not on black.
+    solid: false, paper: false,
     pointSize: 2,
   };
 }
@@ -537,11 +539,12 @@ export class GLView {
     if (!w || !h) return;
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     gl.viewport(0, 0, w, h);
-    gl.clearColor(0.085, 0.09, 0.105, 1);
+    const s = this.state, cam = this.camera();
+    if (s.paper) gl.clearColor(0.97, 0.97, 0.955, 1);
+    else gl.clearColor(0.085, 0.09, 0.105, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
-    const s = this.state, cam = this.camera();
     const z = [s.zMin == null ? -1e9 : s.zMin + this.zOffset, s.zMax == null ? 1e9 : s.zMax + this.zOffset];
     const box = s.box;
     const cuts = (u) => {
@@ -601,7 +604,16 @@ export class GLView {
     if (box) gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    if (s.layers.model && this.tris) {
+    if (s.layers.model && this.tris && s.solid) {
+      // Faces as they are, each hiding what is behind it (set back a little, so their edges lie on them).
+      gl.disable(gl.BLEND);
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(1, 1);
+      gl.bindVertexArray(this.tris.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, this.tris.count);
+      gl.disable(gl.POLYGON_OFFSET_FILL);
+      gl.enable(gl.BLEND);
+    } else if (s.layers.model && this.tris) {
       // Faces are translucent: seen through to the points, not hiding each other.
       gl.depthMask(false);
       gl.bindVertexArray(this.tris.vao);

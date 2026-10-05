@@ -543,9 +543,20 @@ pitch and overhang, where its first heel is, which way it spans, what it
 bears on. The same generators and the same solve; the part only says where.
 *Not yet:* framing for hips and valleys, and stopping a wing's framing where
 it meets the main roof; ridge, hip and valley lines as things of the model
-(they are lengths only); `Model.surfaces` (a truss roof's layers, for its
-dead load) is still apart from these surfaces. (`16-from-the-slab-up.ts`,
-`23` to `26`.)
+(they are lengths only). (`16-from-the-slab-up.ts`, `23` to `26`.)
+
+What a roof is covered with, and what a floor's deck is made of, are given
+as layers, top first, by the names of materials (`layers(...)`, from the
+table of material weights): `roof.covering(layers("standing seam 24ga
+steel", "polystick mts", "plywood 15/32"))`, `floor.deck(layers("hardwood
+flooring 7/8", "plywood 23/32"))`. Each layer is a sheet (a solid, its
+material the layer's), one on another: a roof's on its planes, as thick as
+it is square to the slope; a floor's on its joists, and what stands on the
+floor stands on the top of them. Their weight is a dead load on the framing
+under them (a roof's per area of slope). A ribbed sheet (standing seam) is
+drawn as the sheet without its ribs. *Not yet:* `TrussRoof.dead(layers(...))`
+still records its layers apart (`Model.surfaces`, drawn as panels in the
+line view): a roof given as a `Roof` does not use it. (`27`.)
 
 A **surveyed wall**'s posts are numbers of it as well (`Survey::relations`):
 each starts where its reading puts it; each reading is a reading of the
@@ -647,6 +658,15 @@ is narrower than they are wide: no backing is framed for them yet.
 25. **A roof that turns a corner**: two parts that overlap, and the valleys
     where they cross.
 26. **A dormer**: a small part on a slope, its eaves at a height given.
+27. **What a floor and a roof are made of**: a deck and a covering given
+    as layers of materials; each a sheet, and their weight a dead load.
+
+**3D, shaded** (a pane beside "3D, exact lines") draws the model in WebGL:
+every part, members and solids alike, in the colour of what it is of,
+hiding what is behind it; orbit, pan and zoom; a click says what a part is
+(and opens a member's checks). It is drawn from the mesh the engine gives
+the page, so it needs no scan and no service (`web/app/model3d.js`, on the
+scan workspace's `glview.js`).
 
 The 3D view draws the **skeleton** over the model, with a panel to show
 or hide each kind:

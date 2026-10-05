@@ -72,6 +72,13 @@ impl Solid {
         self.seams.iter().filter(|&&k| k < n).map(|&k| (self.outline[k], self.outline[(k + 1) % n])).collect()
     }
 
+    /// Edges of its faces that are not edges of the thing: along each seam on its top and its
+    /// underside, and up the seam's two ends.
+    pub fn seam_edges(&self) -> Vec<(Vec3, Vec3)> {
+        let at = |p: Vec2, l: &Level| Vec3::new(p.x, p.y, l.over(p));
+        self.seam_lines().into_iter().flat_map(|(a, b)| [(at(a, &self.top), at(b, &self.top)), (at(a, &self.bottom), at(b, &self.bottom)), (at(a, &self.bottom), at(a, &self.top)), (at(b, &self.bottom), at(b, &self.top))]).collect()
+    }
+
     /// Its faces: top, underside, and a side for each edge of its outline (but a seam).
     pub fn faces(&self) -> Vec<SolidFace> {
         let seams = self.seam_lines();

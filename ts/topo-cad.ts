@@ -180,6 +180,15 @@ export function layers(...items: (string | readonly [string, number] | Layer)[])
   return { pressure: psf(total), label: `${parts.join(" + ")} = ${total.toFixed(1)} psf, ${t.source.publication} ${t.source.edition} ${t.source.table}${star}`, layers: out };
 }
 
+/**
+ * The sheets a build-up is drawn as, top first: each layer that has a
+ * thickness, a ribbed sheet (standing seam) as the sheet without its ribs.
+ */
+function sheetsOf(d: DeadLoad): Layer[] {
+  if (!d.layers) throw new Error("a build-up is given by its layers: `layers(\"standing seam 24ga steel\", \"plywood 15/32\")`");
+  return d.layers.filter((l) => l.thickness > 0).map((l) => ({ name: l.name, psf: l.psf, thickness: l.strips?.sheet ? Math.min(l.thickness, mm(1)) : l.thickness, verified: l.verified }));
+}
+
 // ----- materials -----------------------------------------------------------
 
 export interface Grade {
@@ -1519,12 +1528,14 @@ export class Floor {
     readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
     readonly deck_: Length = 0,
     readonly opening_: { readonly along: Length; readonly across: Length; readonly length: Length; readonly width: Length } | undefined = undefined,
+    /** What its deck is made of, top first, where that is said. */
+    readonly layers_: readonly Layer[] = [],
   ) {}
   static of(o: { joists: Nominal; grade: Grade; spacing?: Length }): Floor {
     return new Floor("Floor", { joists: o.joists, spacing: o.spacing ?? inch(16), grade: o.grade }, undefined, [], []);
   }
-  private with(p: Partial<{ name: string; rect: Floor["rect"]; bearsOn: Floor["bearsOn"]; loads: Floor["loads"]; deck: Length; opening: Floor["opening_"] }>): Floor {
-    return new Floor(p.name ?? this.name, this.framing, p.rect ?? this.rect, p.bearsOn ?? this.bearsOn, p.loads ?? this.loads, p.deck ?? this.deck_, p.opening ?? this.opening_);
+  private with(p: Partial<{ name: string; rect: Floor["rect"]; bearsOn: Floor["bearsOn"]; loads: Floor["loads"]; deck: Length; opening: Floor["opening_"]; layers: readonly Layer[] }>): Floor {
+    return new Floor(p.name ?? this.name, this.framing, p.rect ?? this.rect, p.bearsOn ?? this.bearsOn, p.loads ?? this.loads, p.deck ?? this.deck_, p.opening ?? this.opening_, p.layers ?? this.layers_);
   }
   named(name: string): Floor {
     return this.with({ name });
@@ -1533,9 +1544,15 @@ export class Floor {
    * A deck on it, this thick (a 3/4" subfloor: `deck(inch(0.75))`): a sheet
    * over the whole of it (about its opening, if it has one), on the joists.
    * What stands on the floor stands on the deck.
+   *
+   * Or what it is made of, top first: `deck(layers("plywood 1/2", "plywood 23/32"))`
+   * (see `layers`). It is then as thick as they are together, drawn as a
+   * sheet of each, and their weight is a dead load on the floor.
    */
-  deck(thickness: Length): Floor {
-    return this.with({ deck: thickness });
+  deck(what: Length | DeadLoad): Floor {
+    if (typeof what === "number") return this.with({ deck: what, layers: [] });
+    const sheets = sheetsOf(what);
+    return this.with({ deck: sheets.reduce((t, l) => t + l.thickness, 0), layers: sheets, loads: [...this.loads, { kind: "dead", pressure: what.pressure }] });
   }
   /** How far its top (its deck's, if it has one) is above the underside of its joists. */
   get top(): Length {
@@ -1712,7 +1729,7 @@ export class Floor {
     // (Free, and sat on what it bears on; on plan, where it is drawn, as a hint.)
     const o = this.opening_;
     const pieces = o ? [["deck 1", "deck a", "deck d", "deck 4"], ["deck b", "deck 2", "deck 3", "deck c"], ["deck a", "deck b", "deck f", "deck e"], ["deck h", "deck g", "deck c", "deck d"]] : [];
-    return { ...this.assembly().toJSON(), deck: this.deck_ > 0 ? { thickness: this.deck_, above: dressed(this.framing.joists[1]), pieces } : undefined };
+    return { ...this.assembly().toJSON(), deck: this.deck_ > 0 ? { thickness: this.deck_, above: dressed(this.framing.joists[1]), pieces, layers: this.layers_ } : undefined };
   }
 }
 
@@ -1904,6 +1921,8 @@ export class Roof {
     readonly name: string,
     readonly parts: readonly RoofPart[],
     readonly deck_: Length,
+    /** What it is covered with, top first, where that is said. */
+    readonly layers_: readonly Layer[] = [],
   ) {}
   static named(name: string): Roof {
     return new Roof(name, [], inch(0.5));
@@ -1936,7 +1955,7 @@ export class Roof {
     for (const [key, e] of Object.entries(o.edges ?? {})) said[edge(key)] = e;
     const edges = said.map((e, k) => (e === "gable" ? null : { name: names[k], pitch: e?.pitch ?? o.pitch, overhang: e?.overhang ?? o.overhang ?? 0, height: e?.height ?? o.height }));
     const base: RoofPart = { name, outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0 };
-    return new Roof(this.name, [...this.parts, { ...base, framing: this.frame(base, o, walls) }], this.deck_);
+    return new Roof(this.name, [...this.parts, { ...base, framing: this.frame(base, o, walls) }], this.deck_, this.layers_);
   }
   /** A part's framing, set out from the part. */
   private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined): TrussRoof | RafterRoof | undefined {
@@ -1972,12 +1991,26 @@ export class Roof {
   }
   /** How thick its deck is (half an inch, if not said). */
   deck(thickness: Length): Roof {
-    return new Roof(this.name, this.parts, thickness);
+    return new Roof(this.name, this.parts, thickness, []);
+  }
+  /**
+   * What it is covered with, top (weather side) first, down to its deck:
+   * `covering(layers("standing seam 24ga steel", "polystick mts", "plywood 15/32"))`
+   * (see `layers`; in place of `deck`). Each layer is a sheet on the roof's
+   * planes, one on another, of that material; their weight is a dead load on
+   * the framing of each part that has any (per area of slope). Say it after
+   * the parts.
+   */
+  covering(d: DeadLoad): Roof {
+    const sheets = sheetsOf(d);
+    // (Framing takes a load per plan area: a load on the slope is that much more of it.)
+    const parts = this.parts.map((p) => (p.framing ? { ...p, framing: p.framing.load("dead", d.pressure * Math.hypot(1, p.edges.find((e) => e)!.pitch)) } : p));
+    return new Roof(this.name, parts, sheets.reduce((t, l) => t + l.thickness, 0), sheets);
   }
   /** A load over its plan area (N/m², use `psf`): on the framing of each part that has any. */
   load(kind: LoadKind, pressure: number): Roof {
     if (!this.parts.some((p) => p.framing)) throw new Error(`roof ${this.name}: a load is carried by framing, and no part of it is framed (rafters or trusses)`);
-    return new Roof(this.name, this.parts.map((p) => (p.framing ? { ...p, framing: p.framing.load(kind, pressure) } : p)), this.deck_);
+    return new Roof(this.name, this.parts.map((p) => (p.framing ? { ...p, framing: p.framing.load(kind, pressure) } : p)), this.deck_, this.layers_);
   }
   private framing(part: string | undefined): TrussRoof | RafterRoof | undefined {
     const p = part === undefined ? this.parts.find((q) => q.framing) : this.parts.find((q) => q.name === part);
@@ -2004,6 +2037,7 @@ export class Roof {
       type: "roof",
       name: this.name,
       deck: this.deck_,
+      layers: this.layers_,
       parts: this.parts.map((p) => ({ name: p.name, outline: p.outline, edges: p.edges, rake: p.rake, framing: p.framing?.name, on: p.on.map((x) => x.name), heel: p.heel })),
     };
   }

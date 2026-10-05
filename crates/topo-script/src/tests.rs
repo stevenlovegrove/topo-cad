@@ -1782,3 +1782,38 @@ export default Building.named("b").add(walls, {roof});"#
     assert!(deck.len() == 2 && (said("ridge") - ft(12.0)).abs() < 1e-3);
     assert!(deck.iter().flat_map(|s| s.outline.iter()).any(|p| (p.y - ft(10.0) / 3.0).abs() < 1e-6));
 }
+
+#[test]
+fn a_floor_and_a_roof_are_made_of_layers_and_carry_their_weight() {
+    let (ft, inch) = (topo_core::units::ft, topo_core::units::inch);
+    let m = run(include_str!("../../../examples/primitives/27-what-a-floor-and-a-roof-are-made-of.ts"), "27-what-a-floor-and-a-roof-are-made-of.ts").unwrap();
+    all_clean(&m);
+    assert!(through(&m).is_empty(), "{:?}", through(&m));
+    // The floor's deck: plywood on the joists (their tops 8 ft and a 2x10 up), hardwood on that.
+    let deck: Vec<&topo_core::Solid> = m.solids.iter().filter(|s| s.role == "deck").collect();
+    assert_eq!(deck.len(), 2);
+    let (ply, wood) = (deck.iter().find(|s| s.material.starts_with("Plywood")).unwrap(), deck.iter().find(|s| s.material.starts_with("Hardwood")).unwrap());
+    let joists = ft(8.0) + inch(9.25);
+    assert!((ply.bottom.z - joists).abs() < 1e-6 && (ply.top.z - wood.bottom.z).abs() < 1e-12 && (wood.top.z - joists - inch(0.7188 + 0.875)).abs() < 1e-6, "{} {}", ply.bottom.z, wood.top.z);
+    // The upper walls stand on the hardwood.
+    let plate = m.members.iter().find(|x| x.role == "bottom_plate" && m.member_path(x.id).contains("Upper")).unwrap();
+    assert!((m.pos(plate.start()).z - wood.top.z).abs() < 1e-6, "{}", m.pos(plate.start()).z);
+    // The roof: three sheets on each of its two planes, the plywood on the trusses, the steel on top (a thin sheet).
+    let (roof, _) = roof_of(&m, "Roof");
+    assert_eq!(roof.len(), 6);
+    let at = topo_core::Vec2::new(ft(3.0), ft(8.0));
+    let mut stack: Vec<&&topo_core::Solid> = roof.iter().filter(|s| s.name.starts_with("Roof Left")).collect();
+    stack.sort_by(|a, b| a.bottom.over(at).total_cmp(&b.bottom.over(at)));
+    assert!(stack[0].material.starts_with("Plywood") && stack[2].material.starts_with("Standing-seam"), "{:?}", stack.iter().map(|s| &s.material).collect::<Vec<_>>());
+    assert!((stack[0].top.over(at) - stack[1].bottom.over(at)).abs() < 1e-12 && (stack[1].top.over(at) - stack[2].bottom.over(at)).abs() < 1e-12);
+    // (Thick square to the slope: 15/32" of plywood is that over cos, plumb.)
+    assert!((stack[0].top.over(at) - stack[0].bottom.over(at) - inch(0.4688) * 1.25f64.sqrt()).abs() < 1e-5, "{}", (stack[0].top.over(at) - stack[0].bottom.over(at)) / inch(1.0));
+    assert!((stack[2].top.over(at) - stack[2].bottom.over(at) - 0.001 * 1.25f64.sqrt()).abs() < 1e-9);
+    // Their weight is dead load: on the floor's joists, and on the roof per area of slope.
+    let dead = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Dead).unwrap().id;
+    let area: Vec<f64> = m.loads.iter().filter_map(|l| match l { topo_core::Load::Area { case, pressure, .. } if *case == dead => Some(*pressure / 47.880259), _ => None }).collect();
+    let covering: f64 = 1.45 + 0.35 + 1.4;
+    assert!(area.iter().any(|p| (p - covering * 1.25f64.sqrt()).abs() < 1e-6), "{area:?}");
+    let on_joists = m.loads.iter().filter(|l| matches!(l, topo_core::Load::MemberUniform { case, .. } if *case == dead)).count();
+    assert!(on_joists > 0);
+}
