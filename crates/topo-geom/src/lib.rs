@@ -135,6 +135,67 @@ impl Geometry {
     }
 }
 
+/// What a part of the building is: a framing member, or a solid it stands on (a slab, a curb).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartKind {
+    Member(MemberId),
+    /// (Its index in `Model::solids`.)
+    Solid(usize),
+}
+
+/// A part of the building as a thing in space, whatever it is: what a view draws, a person
+/// picks and a scan is compared with. Members and solids are different things to build and to
+/// analyse; to look at, they are parts alike.
+#[derive(Clone, Debug)]
+pub struct Part {
+    pub kind: PartKind,
+    /// Its full path (`Garage/Walls/East wall/stud#3`, `Garage/Slab/slab`).
+    pub path: String,
+    pub role: String,
+    /// Its faces: each an outline, anticlockwise seen from outside, and its outward normal.
+    pub faces: Vec<(Vec<Vec3>, Vec3)>,
+    /// Its own directions (unit, square to each other): for a member, along it and its section's
+    /// two; for a solid, along its longest edge on plan, across that, and up.
+    pub axes: [Vec3; 3],
+    /// Its two ends along the first of those (a member's first and last nodes).
+    pub ends: [Vec3; 2],
+}
+
+impl Geometry {
+    /// Every part of the model: its members (in order, so a member's id is its index here), then its solids.
+    pub fn parts(&self, model: &Model) -> Vec<Part> {
+        let members = model.members.iter().map(|m| {
+            let g = self.member(m.id);
+            Part {
+                kind: PartKind::Member(m.id),
+                path: model.member_path(m.id),
+                role: m.role.clone(),
+                faces: g.faces().into_iter().map(|f| (f.outer, f.normal)).collect(),
+                axes: [g.place.x, g.place.u, g.place.v],
+                ends: [model.pos(m.start()), model.pos(m.end())],
+            }
+        });
+        let solids = model.solids.iter().enumerate().map(|(k, s)| {
+            let n = s.outline.len();
+            let long = (0..n).map(|k| s.outline[(k + 1) % n] - s.outline[k]).max_by(|a, b| a.norm().total_cmp(&b.norm())).filter(|d| d.norm() > 1e-9).map_or(Vec3::X, |d| Vec3::new(d.x, d.y, 0.0) / d.norm());
+            let faces: Vec<(Vec<Vec3>, Vec3)> = s.faces().into_iter().map(|f| (f.outer, f.normal)).collect();
+            let axes = [long, Vec3::Z.cross(long), Vec3::Z];
+            // (Its ends: the middle of its box, half its length either way.)
+            let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+            for p in faces.iter().flat_map(|f| &f.0) {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(p.dot(axes[a]));
+                    hi[a] = hi[a].max(p.dot(axes[a]));
+                }
+            }
+            let mid = |a: usize| 0.5 * (lo[a] + hi[a]);
+            let at = |t: f64| axes[0] * t + axes[1] * mid(1) + axes[2] * mid(2);
+            Part { kind: PartKind::Solid(k), path: model.solid_path(s), role: s.role.clone(), faces, axes, ends: [at(lo[0]), at(hi[0])] }
+        });
+        members.chain(solids).collect()
+    }
+}
+
 /// Overhang (m) of a butt-cut end face beyond its target tolerated as full bearing: 1 mm.
 pub const BEARING_TOL: f64 = 1e-3;
 

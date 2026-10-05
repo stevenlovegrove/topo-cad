@@ -24,6 +24,7 @@ pub mod git;
 pub mod issues;
 pub mod mcp;
 pub mod offer;
+pub mod orient;
 pub mod ply;
 pub mod rays;
 pub mod render;
@@ -126,22 +127,22 @@ pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -
     let script = topo_script::Script::from_files(&files, entry).map_err(|e| anyhow!("{e}"))?;
     let (model, report) = topo_script::solve::solve(&script).map_err(|e| anyhow!("{e}"))?;
     let geom = Geometry::build(&model, &Topology::build(&model));
-    let members = model
-        .members
-        .iter()
+    // Every part of the model alike (members, then what they stand on): its faces and its box.
+    let members: Vec<PredMember> = geom
+        .parts(&model)
+        .into_iter()
         .enumerate()
-        .map(|(k, m)| {
-            let g = geom.member(m.id);
-            let faces: Vec<PredFace> = g
-                .faces()
-                .into_iter()
-                .map(|f| {
-                    let poly: Vec<V3> = f.outer.iter().map(|&p| v(p)).collect();
-                    PredFace { area: poly_area(&poly), poly, normal: v(f.normal) }
+        .map(|(k, part)| {
+            let faces: Vec<PredFace> = part
+                .faces
+                .iter()
+                .map(|(outer, normal)| {
+                    let poly: Vec<V3> = outer.iter().map(|&p| v(p)).collect();
+                    PredFace { area: poly_area(&poly), poly, normal: v(*normal) }
                 })
                 .collect();
-            // Oriented box in the member's axes.
-            let axes = [v(g.place.x), v(g.place.u), v(g.place.v)];
+            // Oriented box in its own axes.
+            let axes = part.axes.map(v);
             let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
             for f in &faces {
                 for p in &f.poly {
@@ -155,40 +156,9 @@ pub fn predict_with(entry: &str, read: &mut dyn FnMut(&str) -> Option<String>) -
             let c: [f32; 3] = std::array::from_fn(|a| 0.5 * (lo[a] + hi[a]));
             let centre = add(add(scale(axes[0], c[0]), scale(axes[1], c[1])), scale(axes[2], c[2]));
             let obb = Obb { centre, axes, length: hi[0] - lo[0], width: hi[1] - lo[1], depth: hi[2] - lo[2] };
-            let ends = [v(model.pos(m.start())), v(model.pos(m.end()))];
-            PredMember { id: k, path: model.member_path(m.id), role: m.role.clone(), faces, obb, ends }
+            PredMember { id: k, path: part.path, role: part.role, faces, obb, ends: part.ends.map(v) }
         })
         .collect();
-    // What the framing stands on (slabs, curbs), after the members: seen in the scan as they are.
-    let mut members: Vec<PredMember> = members;
-    for s in &model.solids {
-        let faces: Vec<PredFace> = s
-            .faces()
-            .into_iter()
-            .map(|f| {
-                let poly: Vec<V3> = f.outer.iter().map(|&p| v(p)).collect();
-                PredFace { area: poly_area(&poly), poly, normal: v(f.normal) }
-            })
-            .collect();
-        // Its box: along its longest edge on plan, across it, and up.
-        let n = s.outline.len();
-        let long = (0..n).map(|k| s.outline[(k + 1) % n] - s.outline[k]).max_by(|a, b| a.norm().total_cmp(&b.norm())).filter(|d| d.norm() > 1e-9).map_or((1.0, 0.0), |d| (d.x / d.norm(), d.y / d.norm()));
-        let axes = [[long.0 as f32, long.1 as f32, 0.0], [-long.1 as f32, long.0 as f32, 0.0], [0.0, 0.0, 1.0]];
-        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-        for p in faces.iter().flat_map(|f| &f.poly) {
-            for a in 0..3 {
-                let t = dot(*p, axes[a]);
-                lo[a] = lo[a].min(t);
-                hi[a] = hi[a].max(t);
-            }
-        }
-        let c: [f32; 3] = std::array::from_fn(|a| 0.5 * (lo[a] + hi[a]));
-        let centre = add(add(scale(axes[0], c[0]), scale(axes[1], c[1])), scale(axes[2], c[2]));
-        let obb = Obb { centre, axes, length: hi[0] - lo[0], width: hi[1] - lo[1], depth: hi[2] - lo[2] };
-        let half = scale(axes[0], obb.length / 2.0);
-        let ends = [add(centre, scale(half, -1.0)), add(centre, half)];
-        members.push(PredMember { id: members.len(), path: model.solid_path(s), role: s.role.clone(), faces, obb, ends });
-    }
     // The scan's frame, if the model has one: model → scan is its placement, turned back.
     let scan_frame = model.groups.iter().find(|g| g.kind == "frame" && g.name == "Scan").map(|g| {
         let f = g.frame;

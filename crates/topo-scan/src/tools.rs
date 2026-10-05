@@ -812,3 +812,152 @@ impl Workspace {
         Ok(vec![json!({"type": "text", "text": s})])
     }
 }
+
+impl Workspace {
+    /// How the scan is turned against the model: a joint fit of one small rotation over all the
+    /// model's surfaces (`orient`), and each part's own beside it.
+    pub(crate) fn orientation(&mut self, args: &Value) -> Result<Vec<Value>> {
+        use crate::orient::{fit, Patch, Turn};
+        use rayon::prelude::*;
+        use std::collections::{BTreeMap, HashMap};
+        let pl = self.placement()?;
+        let gate = args.get("gate").and_then(|v| v.as_f64()).unwrap_or(0.03) as f32;
+        let filter = args.get("filter").and_then(|v| v.as_str());
+        self.scan()?;
+        let (scan, index, m) = (self.scan.clone().unwrap(), self.index.clone(), self.model()?);
+        // Each member's part of the building: its group (the trusses together).
+        let part = |path: &str| -> String {
+            let g = path.rsplit_once('/').map_or(path, |x| x.0);
+            let g = g.split_once('/').map_or(g, |x| x.1);
+            if let Some((roof, t)) = g.rsplit_once('/') {
+                if t.starts_with('T') && t[1..].chars().all(|c| c.is_ascii_digit()) {
+                    return roof.to_string();
+                }
+            }
+            g.to_string()
+        };
+        let parts: Vec<String> = m.pred.members.iter().map(|x| part(&x.path)).collect();
+        let stride = (scan.used.len() / 4_000_000).max(1);
+        // A surface: the faces of one member group that lie in one plane (to 5 mm) and face one way.
+        type Key = (u32, [i16; 3], i32);
+        let surfaces: HashMap<Key, Patch> = scan
+            .used
+            .par_iter()
+            .step_by(stride)
+            .fold(HashMap::new, |mut acc: HashMap<Key, Patch>, &i| {
+                let p = scan.xyz[i as usize];
+                let pm = pl.inverse(p);
+                let Some((s, _)) = m.samples.nearest(pm, gate) else { return acc };
+                let (n, q) = (m.samples.normals[s as usize], m.samples.pts[s as usize]);
+                // (Only points of a surface that faces as the face does: not edges, clutter, or what crosses it.)
+                if let Some(ix) = &index {
+                    match ix.normal_at(p) {
+                        Some(ns) if crate::dot(pl.unrotate(ns), n).abs() > 0.94 => {}
+                        _ => return acc,
+                    }
+                }
+                let key = (m.samples.member[s as usize], n.map(|x| (x * 50.0).round() as i16), (crate::dot(n, q) / 0.005).round() as i32);
+                acc.entry(key).or_insert_with(|| Patch::new(n.map(f64::from))).add(pm.map(f64::from), 1.0);
+                acc
+            })
+            .reduce(HashMap::new, |mut a, b| {
+                for (k, v) in b {
+                    a.entry(k).and_modify(|x| x.merge(&v)).or_insert(v);
+                }
+                a
+            });
+        // Coplanar faces of one part are one surface; then by part, and by which way they face.
+        let mut merged: BTreeMap<(String, [i16; 3], i32), Patch> = BTreeMap::new();
+        for ((member, n, d), p) in surfaces {
+            merged.entry((parts[member as usize].clone(), n, d)).and_modify(|x| x.merge(&p)).or_insert(p);
+        }
+        let kind = |n: [f64; 3]| if n[2].abs() > 0.9 { "level" } else if n[2].abs() < 0.1 { "upright" } else { "sloped" };
+        let mut rows: BTreeMap<(String, &str), Vec<Patch>> = BTreeMap::new();
+        let (mut dropped, mut points) = (0, 0.0);
+        for ((part, _, _), p) in merged {
+            // (Enough points to be a surface, and flat: not two surfaces taken as one.)
+            if p.w < 150.0 || p.rms() > 0.012 {
+                dropped += 1;
+                continue;
+            }
+            points += p.w;
+            rows.entry((part, kind(p.n))).or_default().push(p);
+        }
+        if rows.is_empty() {
+            bail!("no surface of the model has enough scan points near it (within {gate} m): is the model placed in the scan?");
+        }
+        let fitted = |k: &(String, &str)| filter.is_none_or(|f| k.0.contains(f));
+        let over = |want: &dyn Fn(&(String, &str)) -> bool, but: Option<&(String, &str)>| -> Option<Turn> {
+            let ps: Vec<&Patch> = rows.iter().filter(|(k, _)| fitted(k) && want(k) && Some(*k) != but).flat_map(|(_, v)| v).collect();
+            fit(&ps)
+        };
+        let mm = |x: f64| x * 1e3;
+        let mut s = format!(
+            "The scan against the model's orientations: {} surfaces of {} parts, {:.0} scan points (every {stride}th, within {:.0} mm of a face of the model \
+             and on a surface facing as it does); {dropped} surfaces left out (too few points, or not flat to 12 mm).\n\
+             A turn is small, in mm per metre (1 mm/m = 0.057°). The model's frame: x east, y north, z up.\n\
+             How to read it: a scan that is out of level by [a, b] shows as every floor rising [a, b] and every wall's top leaning [-a, -b]; \
+             if the floors and the walls do not agree, it is the building, not the scan (or a surface is not what the model has there).\n\n",
+            rows.values().map(Vec::len).sum::<usize>(), rows.len(), points, gate * 1e3);
+        // The joint fits.
+        s += "Joint fit (what the scan would be turned by to agree with the model):\n";
+        let all = |_: &(String, &str)| true;
+        let level = |k: &(String, &str)| k.1 == "level";
+        let upright = |k: &(String, &str)| k.1 == "upright";
+        let sets: [(&str, &dyn Fn(&(String, &str)) -> bool); 3] = [("all surfaces", &all), ("level surfaces only", &level), ("upright surfaces only", &upright)];
+        let mut joint: Option<Turn> = None;
+        for (name, want) in sets {
+            let Some(t) = over(want, None) else { continue };
+            // (How much it moves when any one part is left out: the most, each way.)
+            let mut spread = [0.0f64; 3];
+            for k in rows.keys().filter(|k| fitted(k) && want(k)) {
+                if let Some(o) = over(want, Some(k)) {
+                    let d = [o.level()[0] - t.level()[0], o.level()[1] - t.level()[1], o.yaw() - t.yaw()];
+                    for a in 0..3 {
+                        spread[a] = spread[a].max(d[a].abs());
+                    }
+                }
+            }
+            let said = |axis: usize| !t.unsaid.iter().any(|e| e[axis].abs() > 0.7);
+            let part = |v: f64, sp: f64, ok: bool| if ok { format!("{:+.2} (±{:.2})", mm(v), mm(sp)) } else { "not said".to_string() };
+            s += &format!(
+                "  {name:<24} rises along x {}, along y {} mm/m; turned {} mm/m anticlockwise about the vertical\n",
+                part(t.level()[0], spread[0], said(1)), part(t.level()[1], spread[1], said(0)), part(-t.yaw(), spread[2], said(2)));
+            if joint.is_none() {
+                joint = Some(t);
+            }
+        }
+        let joint = joint.context("nothing to fit")?;
+        s += "  (± is the most it changes when any one part is left out. \"Rises\" is what scan_filter level would take, added to what it has, to level it out.)\n\n";
+        // Each part's own, as scanned, and what is left of it after the joint turn.
+        s += &format!("{:<44} {:>8} {:>9} {:>4}  {:<34} {}\n", "part", "faces", "points", "srf", "as scanned, against the model", "left after the joint turn of all");
+        for (k, ps) in &rows {
+            let refs: Vec<&Patch> = ps.iter().collect();
+            let Some(own) = fit(&refs) else { continue };
+            let left: [f64; 3] = {
+                let mut d: [f64; 3] = std::array::from_fn(|a| own.omega[a] - joint.omega[a]);
+                for e in &own.unsaid {
+                    let c: f64 = (0..3).map(|a| d[a] * e[a]).sum();
+                    for a in 0..3 {
+                        d[a] -= c * e[a];
+                    }
+                }
+                d
+            };
+            let said = |axis: usize| !own.unsaid.iter().any(|e| e[axis].abs() > 0.7);
+            let show = |w: [f64; 3]| match k.1 {
+                "level" => format!("rises [{:+.1}, {:+.1}]", mm(w[1]), mm(-w[0])),
+                "upright" => {
+                    let lean = if said(0) || said(1) { format!("top leans [{:+.1}, {:+.1}]", mm(-w[1]), mm(w[0])) } else { "lean not said".into() };
+                    let yaw = if said(2) { format!(", turned {:+.1}", mm(-w[2])) } else { String::new() };
+                    format!("{lean}{yaw}")
+                }
+                _ => format!("turn [{:+.1}, {:+.1}, {:+.1}]", mm(w[0]), mm(w[1]), mm(w[2])),
+            };
+            let n: f64 = ps.iter().map(|p| p.w).sum();
+            s += &format!("{:<44} {:>8} {:>9.0} {:>4}  {:<34} {}{}\n", k.0, k.1, n, ps.len(), show(own.omega), show(left), if fitted(k) { "" } else { "  (not fitted)" });
+        }
+        s += "\n(mm per metre; [x, y]: east, north. A wall's lean is said only across it: a wall running north says its lean east or west. \"Turned\" is anticlockwise from above.)\n";
+        Ok(vec![json!({"type": "text", "text": s})])
+    }
+}

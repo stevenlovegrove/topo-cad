@@ -429,20 +429,19 @@ fn member_detail(b: &Built, path: &str, combo: &str) -> Result<Value, String> {
 /// sheathing and finish build-ups with the panels they lie on.
 fn mesh(b: &Built) -> Value {
     let r = |v: f64| (v * 10_000.0).round() / 10_000.0;
+    // (Every part alike: members, then what they stand on.)
     let members: Vec<Value> = b
-        .model
-        .members
+        .geom
+        .parts(&b.model)
         .iter()
-        .map(|m| {
-            let g = b.geom.member(m.id);
-            let faces: Vec<Vec<[f64; 3]>> = g.faces().iter().map(|f| f.outer.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
-            json!({ "path": b.model.member_path(m.id), "label": short(&b.model, m.id), "role": m.role, "faces": faces })
+        .map(|p| {
+            let faces: Vec<Vec<[f64; 3]>> = p.faces.iter().map(|f| f.0.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
+            let label = match p.kind {
+                topo_geom::PartKind::Member(id) => short(&b.model, id),
+                topo_geom::PartKind::Solid(k) => b.model.solids[k].name.clone(),
+            };
+            json!({ "path": p.path, "label": label, "role": p.role, "faces": faces })
         })
-        // (And what the framing stands on, slabs and curbs, after the members: drawn as they are.)
-        .chain(b.model.solids.iter().map(|s| {
-            let faces: Vec<Vec<[f64; 3]>> = s.faces().iter().map(|f| f.outer.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
-            json!({ "path": b.model.solid_path(s), "label": s.name, "role": s.role, "faces": faces })
-        }))
         .collect();
     let v3 = |p: topo_core::Vec3| [r(p.x), r(p.y), r(p.z)];
     let surfaces: Vec<Value> = b

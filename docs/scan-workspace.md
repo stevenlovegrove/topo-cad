@@ -195,6 +195,27 @@ narrow bay) is judged as points off any surface, so its noise toward the
 viewer is doubted more than its noise away, and a fit to it may sit a few
 millimetres deep. Evidence per member does not weight yet.
 
+## How the scan is turned against the model
+
+`orientation` fits one small rotation of the scan over all the model's
+surfaces at once, against their orientations as modelled (`orient.rs`). A
+surface is the scan's points within a gate of a set of coplanar faces of
+one part (a wall's face, a slab's top, the sides of a truss's chords), on
+a scan surface facing as they do. Where a surface is along its normal is
+left free (a finish stands off the framing), so only orientation is
+fitted: each surface gives the turn's normal equations from the scatter of
+its points about their own middle, and a thin face says only what its
+spread can. It reports the joint turn as a turn about the vertical and a
+slope to level out (what `scan_filter level` takes), over all surfaces,
+over the level ones alone and over the upright ones alone, each with the
+most it changes when any one part is left out; then each part's own turn,
+as scanned and after the joint one. A scan out of level shows as floors
+rising one way and walls leaning the other by as much; where floors and
+walls disagree it is the building (a slab laid to fall, a wall that
+leans), and the tool says so by showing both, not by choosing. It changes
+nothing. *Not yet:* points are not weighted by confidence here, and a
+wall's finish is only caught where it is within the gate of the framing.
+
 ## Faces placed by hand
 
 Where something is plainer to see than to describe (a stud's side face among
