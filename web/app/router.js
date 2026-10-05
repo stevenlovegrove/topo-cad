@@ -226,7 +226,7 @@ async function route(path, body) {
   if (path.startsWith("/api/view3d")) {
     const a = q(path);
     const t0 = performance.now();
-    const r = await engine("request", { op: "view3d", args: { az: Number(a.az), el: Number(a.el) } });
+    const r = await engine("request", { op: "view3d", args: { az: Number(a.az), el: Number(a.el), hide: a.hide ?? "" } });
     return { ...r, ms: performance.now() - t0 };
   }
   for (const op of ["pick", "preview", "parse"]) if (path === `/api/${op}`) return engine("request", { op, args: body });
