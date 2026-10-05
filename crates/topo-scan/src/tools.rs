@@ -1009,16 +1009,18 @@ impl Workspace {
             let pick = if dot(a, east).abs() >= dot(b, east).abs() { a } else { b };
             if dot(pick, east) < 0.0 { pick.map(|x| -x) } else { pick }
         };
-        // The frame the lobes are looked at in: the scan's up as it is, the fitted frame's level axes.
-        let hx = unit(cross(cross(up, fx), up));
-        let frame = [hx, cross(up, hx), up];
+        // The frame the lobes are looked at in: the fitted one (x the axis nearest east, z up).
+        let frame = [fx, cross(fz, fx), fz];
         let (gate, bin) = (0.035, 0.00025);
         let ls = lobes(&ns, &frame, gate, bin, 2.0 * radius);
         // The floor alone: what faces up within a quarter of a metre of the floor's height.
         let floor: Vec<_> = ns.iter().copied().filter(|s| s.at[2] < scan.floor_z + 0.25).collect();
         let floor = lobes(&floor, &frame, gate, bin, 2.0 * radius).into_iter().find(|l| l.0.axis == 2 && l.0.positive).map(|l| l.0);
         let mm = |x: f64| x * 1e3;
-        let rise = |u: [f64; 3]| [-dot(frame[0], u) / dot(frame[2], u), -dot(frame[1], u) / dot(frame[2], u)];
+        // (How the scan's own up and level axis sit in a frame: what is level in the frame rises so in the scan.)
+        let hx = unit(cross(cross(up, fx), up));
+        let scan_frame = [hx, cross(up, hx), up];
+        let rise = |u: [f64; 3]| [-dot(scan_frame[0], u) / dot(scan_frame[2], u), -dot(scan_frame[1], u) / dot(scan_frame[2], u)];
         let (xn, yn) = if named { ("x (east)", "y (north)") } else { ("its first axis", "its second") };
         let doubted = conf.as_ref().map(|c| {
             let low = scan.used.iter().filter(|&&i| c[i as usize] < 0.5).count();
@@ -1027,17 +1029,22 @@ impl Workspace {
         let mut s = format!(
             "The scan's own axes, from the scan alone: {} normals, one at each of the points sampled (about {want} of {}, evenly) whose neighbours within {:.0} mm are a surface; \
              each weighted by how well those points say which way it faces, and counted by area, not by how densely it was scanned.{} \
-             The model is not used{}.\nSmall numbers are mm per metre (1 mm/m = 0.057°). \"Up\" is the scan's as it is now (as levelled).\n\n",
+             The model is not used{}.\nSmall numbers are mm per metre (1 mm/m = 0.057°).\n\n",
             ns.len(), scan.used.len(), radius * 1e3, doubted.unwrap_or_else(|| " Points are not weighted by confidence.".into()),
             if named { ", except to name the axes: x is the fitted axis nearest the model's east" } else { "" });
         let r = rise(fz);
-        s += &format!("One frame fitted to all six lobes together: against the scan's up it rises [{:+.2}, {:+.2}] along {xn}, {yn} (were the scan levelled by that, its up would be this frame's).\n", mm(r[0]), mm(r[1]));
-        let p = rise(plumb(&upright(&ns, &frame, gate), up));
-        s += &format!("Plumb, as the upright surfaces alone have it (the direction they are all most nearly square to): rises [{:+.2}, {:+.2}].\n", mm(p[0]), mm(p[1]));
+        s += &format!(
+            "The alignment: one rotation (all three of its freedoms) fitted to the six lobes together, robustly (a normal pulls less the further off its axis it is). \
+             Against the scan as it is, the fitted frame's level rises [{:+.2}, {:+.2}] along {xn}, {yn}: levelling the scan by that (scan_filter level, added to what it has) would make its up this frame's.\n",
+            mm(r[0]), mm(r[1]));
         if named {
             let yaw = (dot(cross(east, hx), up)).atan2(dot(east, hx));
-            s += &format!("(Beside the model, as it is placed: the scan's axes are turned {:+.2} mm/m anticlockwise from the model's.)\n", mm(yaw));
+            s += &format!("About the vertical it is turned {:+.2} mm/m anticlockwise from the model's axes as the model is placed (the only use made of the model, with the axes' names).\n", mm(yaw));
         }
+        s += &format!("What decides it, by weight: surfaces facing ±x {:.0}%, ±y {:.0}%, up and down {:.0}%.\n", 100.0 * (ls[0].0.share + ls[1].0.share), 100.0 * (ls[2].0.share + ls[3].0.share), 100.0 * (ls[4].0.share + ls[5].0.share));
+        let p = plumb(&upright(&ns, &frame, gate), fz);
+        s += &format!("(Plumb as the upright surfaces alone have it is [{:+.2}, {:+.2}] off this frame's up.)\n", mm(dot(frame[0], p) / dot(frame[2], p)), mm(dot(frame[1], p) / dot(frame[2], p)));
+        s += "\nEverything below is in the fitted frame: how each kind of surface sits off the alignment.\n";
         s += &format!("\nEach lobe for itself. Where it gathers: the weighted median, then the mean of what is within 15 mm/m of that. ±: about how sure that is, each way \
              (the spread of those normals, over the root of how many stand apart: in different cubes of {:.0} mm; normals taken closer share their points). \
              Then the spread itself (rms each way), the share of the lobe within 15 mm/m, and how many normals that is (and how many stand apart).\n", 2e3 * radius);
@@ -1057,8 +1064,8 @@ impl Workspace {
         if let Some(l) = &floor {
             s += &line("up, at the floor's height only", l);
         }
-        s += "\nHow to read it: a scan out of level by [a, b] has its floors rising [a, b] and the tops of its walls leaning -a (those facing ±x) and -b (those facing ±y). \
-              Floors and walls that do not agree so are the building's: one of them is not square to the other.\n";
+        s += "\nHow to read it: were the building square and the alignment right, every lobe would be at zero. What is left is how the kinds of surface are not square to each other: \
+              a floor that rises while the walls stand plumb in this frame is a floor laid to fall, or walls that lean together (racked); the alignment follows what there is most of (above).\n";
 
         // The picture. Above: the whole sphere of normals, on the cube about the frame, unfolded. Below: each lobe close up.
         let shade = |v: f64| -> [u8; 3] {

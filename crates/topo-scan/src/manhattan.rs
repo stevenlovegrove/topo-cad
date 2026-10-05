@@ -138,11 +138,14 @@ fn solve3(a: &M3, b: [f64; 3]) -> Option<[f64; 3]> {
 }
 
 /// The frame (three unit axes, square to each other, as rows) whose six directions the normals
-/// gather about best, from `start`: each normal within the gate of one of the six pulls that
-/// axis toward itself, by its weight; the gate narrows from 10° to 2°.
+/// gather about best, from `start`: a rotation, all three of its freedoms fitted together. Each
+/// normal within the gate of one of the six pulls that axis toward itself, by its weight; the
+/// gate narrows from 10° to 2°, and from 3° on a normal pulls less the further off it is (by
+/// 1 / (1 + (θ / 10 mm/m)²), Cauchy's: what gathers decides, the haze about it hardly), so the
+/// frame is where the lobes' peaks are square to each other, not where their means are.
 pub fn fit(normals: &[Surfel], start: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut f = start;
-    for gate in [10.0f64, 6.0, 4.0, 3.0, 2.0, 2.0] {
+    for gate in [10.0f64, 6.0, 4.0, 3.0, 2.0, 2.0, 2.0] {
         let cos = gate.to_radians().cos();
         for _ in 0..4 {
             // In the frame: m = F n; its axis a; the small turn ω with m + ω × m ≈ a over all:
@@ -160,10 +163,11 @@ pub fn fit(normals: &[Surfel], start: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
                         let mut axis = [0.0; 3];
                         axis[k] = m[k].signum();
                         let c = cross(m, axis);
+                        let w = if gate <= 3.0 { s.w / (1.0 + dot(c, c) / (0.010 * 0.010)) } else { s.w };
                         for i in 0..3 {
-                            b[i] += s.w * c[i];
+                            b[i] += w * c[i];
                             for j in 0..3 {
-                                a[i][j] += s.w * (if i == j { 1.0 } else { 0.0 } - m[i] * m[j]);
+                                a[i][j] += w * (if i == j { 1.0 } else { 0.0 } - m[i] * m[j]);
                             }
                         }
                         (a, b)

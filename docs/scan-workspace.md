@@ -234,11 +234,16 @@ or two).
 A building's normals gather in six lobes, square to each other (a
 Manhattan frame; on the sphere of normals each lobe is roughly a von
 Mises-Fisher distribution, as in Straub et al., "A Mixture of Manhattan
-Frames"); one rotation is fitted to all six, each normal within a gate
-that narrows from 10° to 2° pulling its axis toward itself. Then each lobe
-is looked at for itself, with the scan's up as it is: how the floors and
-the undersides rise, and how the upright surfaces facing each way are
-turned and lean, each with about how sure it is (the lobe's spread over
+Frames"); one rotation, all three of its freedoms, is fitted to all six
+first, robustly: each normal within a gate that narrows from 10° to 2°
+pulls its axis toward itself, the less the further off it is (Cauchy's
+weight, at 10 mm per metre), so the frame is where the lobes' peaks are
+square to each other. It is reported against the scan as it is (the slope
+that levelling the scan by would make its up the frame's), with what
+decides it by weight. Then each lobe is looked at for itself in that
+frame, as what is left over: how the floors and the undersides rise, and
+how the upright surfaces facing each way are turned and lean, each with
+about how sure it is (the lobe's spread over
 the root of how many of its normals stand apart: those taken close
 together share their points); and plumb as the upright surfaces alone have
 it. The model is used only to name which fitted axis is east.
