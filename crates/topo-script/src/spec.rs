@@ -1599,6 +1599,11 @@ impl Builder {
             for &id in &ids {
                 for end in [self.m.member(id).start(), self.m.member(id).end()] {
                     if let Some(&to) = ids.iter().find(|&&o| o != id && self.m.member(o).path.contains(&end)) {
+                        // (What things hang from is not itself fastened to what hangs from it, where its own end is
+                        // at the same node: a stringer's head, where the top tread is.)
+                        if a.hung_from.contains(&self.m.member(id).role) && !a.hung_from.contains(&self.m.member(to).role) {
+                            continue;
+                        }
                         // (Hung from what it ends on, where that is a member things hang from; else as the assembly is joined.)
                         let hung = hanger.filter(|_| a.hung_from.contains(&self.m.member(to).role));
                         self.m.connect(end, id, Some(to), hung.unwrap_or(c));

@@ -320,7 +320,8 @@ fn analysis_summary(b: &Built) -> Value {
     let checked = ratios.iter().flatten().count();
     let over = ratios.iter().flatten().filter(|(r, i)| *r > 1.0 && !a.checks[*i].indicative).count();
     let indicative_over = ratios.iter().flatten().filter(|(r, i)| *r > 1.0 && a.checks[*i].indicative).count();
-    let mut worst: Vec<(f64, usize)> = ratios.iter().flatten().copied().collect();
+    // (A check with nothing to carry it has no ratio: it is over, and listed first; the page is given a number.)
+    let mut worst: Vec<(f64, usize)> = ratios.iter().flatten().map(|&(r, i)| (if r.is_finite() { r } else { 999.0 }, i)).collect();
     worst.sort_by(|x, y| y.0.total_cmp(&x.0));
     let mut combos: Vec<String> = a.combos.iter().map(|c| c.name.clone()).collect();
     for c in &a.checks {

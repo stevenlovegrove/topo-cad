@@ -556,7 +556,11 @@ async function poll() {
       if (shown("3d")) await load3d();
       if (!s.error) await loadSheet();
     }
-  } catch (e) { $("status").textContent = "server not reachable"; }
+  } catch (e) {
+    // (Said for what it is: the service not answering, or something of the page's own failing.)
+    console.error("poll:", e);
+    $("status").textContent = e instanceof TypeError && /fetch|network/i.test(e.message) ? "server not reachable" : `page error: ${e?.message ?? e}`;
+  }
   setTimeout(poll, 1000);
 }
 
@@ -662,13 +666,13 @@ function renderStructure() {
   $("asce").textContent = `NDS 2018 ASD · ${a.combinations || "ASCE " + a.asce7}`;
   const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : `<b class="ok">all within capacity</b>`;
   const ind = a.indicative_over ? ` · <span class="muted" title="Members designed by others (e.g. manufactured trusses): checked for information only">${a.indicative_over} indicative over 1.0</span>` : "";
-  $("strSummary").innerHTML = `${a.checked} members checked · ${over}${ind} · max ratio ${a.max.toFixed(2)}` +
+  $("strSummary").innerHTML = `${a.checked} members checked · ${over}${ind} · max ratio ${Number.isFinite(a.max) ? a.max.toFixed(2) : "none"}` +
     (a.unverified ? `<span class="badge" title="Some reference values are not yet verified against their source">unverified data</span>` : "") +
     (a.issues.length ? `<div class="muted" style="margin-top:4px">${a.issues.map(esc).join("<br>")}</div>` : "");
   const sel = $("heatCombo"), prev = sel.value;
   sel.innerHTML = `<option value="">governing (all)</option>` + a.combos.map((c) => `<option>${esc(c)}</option>`).join("");
   if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
-  $("worst").innerHTML = a.worst.map((w) => `<li data-path="${esc(w.path)}"><span class="ratio" style="color:${heatColor(w.ratio)}">${w.ratio.toFixed(2)}</span><span>${esc(w.label)} <span class="muted">— ${esc(w.title)} (${esc(w.combination)})${w.indicative ? " · indicative" : ""}</span></span></li>`).join("");
+  $("worst").innerHTML = a.worst.map((w) => `<li data-path="${esc(w.path)}"><span class="ratio" style="color:${heatColor(w.ratio ?? 99)}">${Number.isFinite(w.ratio) ? w.ratio.toFixed(2) : "n/a"}</span><span>${esc(w.label)} <span class="muted">— ${esc(w.title)} (${esc(w.combination)})${w.indicative ? " · indicative" : ""}</span></span></li>`).join("");
   for (const li of $("worst").children) li.onclick = () => inspect(li.dataset.path);
   if (inspected) inspect(inspected, true);
 }

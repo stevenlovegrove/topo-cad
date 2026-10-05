@@ -1567,10 +1567,11 @@ export class Floor {
   }
   /**
    * An opening in it (a stairwell): a clear rectangle, `along` the joists
-   * from the floor's corner and `across` them, `length` by `width`. A trimmer
-   * joist runs either side of it; a header crosses at each end of it, hung
-   * from the trimmers; the joists it cuts stop at the headers (tail joists),
-   * hung from them. Its corners are points of the floor (`opening 1` to
+   * from the floor's corner and `across` them, `length` by `width`. A doubled
+   * trimmer joist runs either side of it; a doubled header crosses at each end
+   * of it, hung from the trimmers; the joists it cuts stop at the headers
+   * (tail joists), hung from them. (Lay the opening's length along the
+   * joists where you can: fewer are cut, and the headers are short.) Its corners are points of the floor (`opening 1` to
    * `opening 4`, at the underside of the joists; in the order start, along,
    * along + across, across). It has to be clear of the floor's edges by a
    * few joist thicknesses.
@@ -1609,19 +1610,20 @@ export class Floor {
     let js: J[] = [];
     // About an opening: a trimmer either side of it (in place of any joist that would be within one's thickness of
     // it), and the joists between them tails.
-    const [t0, t1] = o ? [o.across - b / 2, o.across + o.width + b / 2] : [0, 0];
+    // (Trimmers and headers are doubled: two plies, so each is two thicknesses wide, its middle one in from the opening.)
+    const [t0, t1] = o ? [o.across - b, o.across + o.width + b] : [0, 0];
     if (o && (t0 < 3 * b || t1 > wid - 3 * b || o.along < 0 || o.along + o.length > len)) throw new Error(`floor ${this.name}: its opening has to be inside it, clear of its sides`);
     let [nj, nt] = [0, 0];
     for (const y of commons) {
-      if (o && (Math.abs(y - t0) < b || Math.abs(y - t1) < b)) continue;
+      if (o && (Math.abs(y - t0) < 1.5 * b || Math.abs(y - t1) < 1.5 * b)) continue;
       if (o && y > t0 && y < t1) js.push({ y, role: "tail_joist", id: `tail ${++nt}` });
       else js.push({ y, role: "joist", id: `joist ${++nj}` });
     }
     if (o) js.push({ y: t0, role: "trimmer_joist", id: "trimmer 1" }, { y: t1, role: "trimmer_joist", id: "trimmer 2" });
     js.sort((p, q) => p.y - q.y);
     // (A header at each end of the opening, unless the opening runs to the floor's end there.)
-    const [hx0, hx1] = o ? [o.along - b / 2, o.along + o.length + b / 2] : [0, 0];
-    const [hasA, hasB] = [!!o && hx0 > x0 + 2 * b, !!o && hx1 < x1 - 2 * b];
+    const [hx0, hx1] = o ? [o.along - b, o.along + o.length + b] : [0, 0];
+    const [hasA, hasB] = [!!o && hx0 > x0 + 3 * b, !!o && hx1 < x1 - 3 * b];
     let a = Assembly.named(this.name).point("corner 1", at(x0, b / 2)).point("corner 2", at(x1, b / 2)).point("corner 3", at(x1, wid - b / 2)).point("corner 4", at(x0, wid - b / 2));
     const [rim0, rim1]: string[][] = [["corner 1"], ["corner 2"]];
     const [headA, headB]: string[][] = [[], []];
@@ -1649,15 +1651,15 @@ export class Floor {
     a = a.member("band_joist", ["corner 1", "corner 2"], { ...m, priority: 10 });
     for (const j of js) {
       if (j.role === "joist") a = a.member("joist", [`${j.id} start`, `${j.id} end`], { ...m, priority: 10 });
-      else if (j.role === "trimmer_joist") a = a.member("trimmer_joist", [`${j.id} start`, ...(hasA ? [`${j.id} at header 1`] : []), ...(hasB ? [`${j.id} at header 2`] : []), `${j.id} end`], { ...m, priority: 15 });
+      else if (j.role === "trimmer_joist") a = a.member("trimmer_joist", [`${j.id} start`, ...(hasA ? [`${j.id} at header 1`] : []), ...(hasB ? [`${j.id} at header 2`] : []), `${j.id} end`], { ...m, plies: 2, priority: 15 });
       else {
         if (hasA) a = a.member("tail_joist", [`${j.id} start`, `${j.id} at header 1`], { ...m, priority: 10 });
         if (hasB) a = a.member("tail_joist", [`${j.id} at header 2`, `${j.id} end`], { ...m, priority: 10 });
       }
     }
     a = a.member("band_joist", ["corner 4", "corner 3"], { ...m, priority: 10 });
-    if (hasA) a = a.member("floor_header", headA, { ...m, priority: 12 });
-    if (hasB) a = a.member("floor_header", headB, { ...m, priority: 12 });
+    if (hasA) a = a.member("floor_header", headA, { ...m, plies: 2, priority: 12 });
+    if (hasB) a = a.member("floor_header", headB, { ...m, plies: 2, priority: 12 });
     const roles = new Set(js.map((j) => j.role));
     for (const l of this.loads) {
       for (const role of ["joist", "trimmer_joist", "tail_joist"] as const) if (roles.has(role)) a = a.lineLoad(l.kind, role, l.pressure * spacing);

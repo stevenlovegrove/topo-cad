@@ -488,6 +488,10 @@ fn nothing_passes_through_anything_in_any_example() {
         ran += 1;
         let name = p.strip_prefix(&root).unwrap().display().to_string();
         found.extend(through(&m).into_iter().map(|t| format!("{name}: {t}")));
+        // (And every check of it has a ratio: one with nothing to carry it would be without.)
+        let (topo, g) = (Topology::build(&m), Geometry::build(&m, &Topology::build(&m)));
+        let a = topo_analysis::nds_asd_excluding(&m, &g, &topo_analysis::takedown(&m, &topo, &g), &[]);
+        found.extend(a.checks.iter().filter(|c| !c.ratio().is_finite()).map(|c| format!("{name}: {} has a check without a ratio ({})", m.member_path(c.member), c.title)));
     }
     assert!(ran >= 20, "only {ran} of {} examples are models that evaluate", all.len());
     assert!(found.is_empty(), "{} places where one thing passes through another:\n{}", found.len(), found.join("\n"));
@@ -644,11 +648,12 @@ fn an_opening_is_framed_in_a_floor_and_stairs_come_up_through_it() {
     let m = run(include_str!("../../../examples/primitives/21-a-stairwell-and-stairs.ts"), "21-a-stairwell-and-stairs.ts").unwrap();
     all_clean(&m);
     let of = |group: &str, role: &str| -> Vec<&topo_core::Member> { m.groups.iter().find(|g| g.name == group).unwrap().members.iter().map(|&id| m.member(id)).filter(|x| x.role == role).collect() };
-    // About the opening: a trimmer either side, a header at each end, and the joists it cuts in two tails each
-    // (10 ft across at 16": seven of them), hung: tails from the headers, headers from the trimmers.
-    assert_eq!((of("Floor", "trimmer_joist").len(), of("Floor", "floor_header").len(), of("Floor", "tail_joist").len()), (2, 2, 14));
+    // About the opening: a doubled trimmer either side, a doubled header at each end, and the joists it cuts in two
+    // tails each (3 ft 6 in across at 16": three of them), hung: tails from the headers, headers from the trimmers.
+    assert_eq!((of("Floor", "trimmer_joist").len(), of("Floor", "floor_header").len(), of("Floor", "tail_joist").len()), (2, 2, 6));
+    assert!(of("Floor", "trimmer_joist").iter().chain(&of("Floor", "floor_header")).all(|x| m.section(x.section).plies == 2));
     let hung = |from: &str, on: &str| m.joints.iter().flat_map(|j| &j.connections).filter(|c| m.member(c.member).role == from && c.to.is_some_and(|t| m.member(t).role == on) && !m.connection(c.connection).hardware.is_empty()).count();
-    assert_eq!((hung("tail_joist", "floor_header"), hung("floor_header", "trimmer_joist")), (14, 4));
+    assert_eq!((hung("tail_joist", "floor_header"), hung("floor_header", "trimmer_joist")), (6, 4));
     // The opening is clear: no joist crosses it, and the deck is in four pieces about it.
     let (x0, x1, y0, y1) = (ft(1.0), ft(4.5), ft(4.0), ft(14.0));
     let g = Geometry::build(&m, &Topology::build(&m));
@@ -659,13 +664,22 @@ fn an_opening_is_framed_in_a_floor_and_stairs_come_up_through_it() {
     assert_eq!(m.solids.iter().filter(|s| s.role == "deck").count(), 4);
     // The flight: 14 risers to the floor's top (8 ft, the joists, the deck), so 13 treads; its stringers' feet on the
     // ground, level; their heads at the far end of the opening, the last tread one riser under the floor's top.
-    let rise = ft(8.0) + inch(9.25) + inch(0.75);
+    let rise = ft(8.0) + inch(11.25) + inch(0.75);
     assert_eq!((of("Stairs", "stringer").len(), of("Stairs", "tread").len()), (2, 13));
     let s = of("Stairs", "stringer")[0];
     let (foot, head) = (m.pos(s.start()), m.pos(s.end()));
     assert!(foot.z.abs() < 1e-9 && (head.z - rise * 13.0 / 14.0).abs() < 1e-6 && (head.y - y1).abs() < 1e-6 && (head.y - foot.y - inch(130.0)).abs() < 1e-6, "{foot:?} {head:?}");
     // Its feet are cut level, on the ground: no part of a stringer is below it.
     assert!(of("Stairs", "stringer").iter().all(|s| g.member(s.id).bbox().min.z > -1e-6));
+    // What hangs is carried by its hanger, not checked as nails: every check has a ratio, and that is said.
+    let td = topo_analysis::takedown(&m, &Topology::build(&m), &g);
+    let a = topo_analysis::nds_asd_excluding(&m, &g, &td, &[]);
+    // (And framed so, with the opening's length along the joists, nothing is over what it can carry.)
+    assert!(a.checks.iter().filter(|c| !c.indicative).all(|c| c.ratio() <= 1.0), "{:?}", a.checks.iter().filter(|c| c.ratio() > 1.0).map(|c| (m.member_path(c.member), c.title.clone(), c.ratio())).collect::<Vec<_>>());
+    assert!(!a.checks.is_empty() && a.checks.iter().all(|c| c.ratio().is_finite()), "{:?}", a.checks.iter().filter(|c| !c.ratio().is_finite()).map(|c| (m.member_path(c.member), c.title.clone())).collect::<Vec<_>>());
+    assert!(a.issues.iter().any(|i| i.code == "hardware-not-checked"));
+    // Nothing is left on nails alone: said of nothing.
+    assert!(!a.issues.iter().chain(&td.issues).any(|i| i.message.contains("relies on nails")), "{:?}", a.issues.iter().chain(&td.issues).map(|i| &i.message).collect::<Vec<_>>());
 }
 
 #[test]
