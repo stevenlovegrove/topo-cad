@@ -654,9 +654,12 @@ function renderStructure() {
       L.combos.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.factors.map(([n, f]) => `<span class="chip">${f === 1 ? "" : f + "×"}${esc(n)}</span>`).join("")}</td><td class=num title="${esc(c.cd_why)}">${c.cd.toFixed(2)}</td></tr>`).join("");
   }
   $("asce").textContent = `NDS 2018 ASD · ${a.combinations || "ASCE " + a.asce7}`;
-  const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : `<b class="ok">all within capacity</b>`;
+  // (A pass is of what was checked: said so where some members were not, with which.)
+  const all = !a.members || a.checked >= a.members;
+  const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : !a.checked ? `<b class="bad">nothing checked</b>` : `<b class="ok">${all ? "all" : "those"} within capacity</b>`;
+  const left = all ? "" : ` · <span class="muted" title="${esc((a.unchecked || []).map((u) => `${u.count} ${u.role}`).join(", "))}: no load reaches them, or no check applies">${a.members - a.checked} not checked</span>`;
   const ind = a.indicative_over ? ` · <span class="muted" title="Members designed by others (e.g. manufactured trusses): checked for information only">${a.indicative_over} indicative over 1.0</span>` : "";
-  $("strSummary").innerHTML = `${a.checked} members checked · ${over}${ind} · max ratio ${Number.isFinite(a.max) ? a.max.toFixed(2) : "none"}` +
+  $("strSummary").innerHTML = `${a.checked}${all ? "" : ` of ${a.members}`} members checked${left} · ${over}${ind} · max ratio ${Number.isFinite(a.max) ? a.max.toFixed(2) : "none"}` +
     (a.unverified ? `<span class="badge" title="Some reference values are not yet verified against their source">unverified data</span>` : "") +
     (a.issues.length ? `<div class="muted" style="margin-top:4px">${a.issues.map(esc).join("<br>")}</div>` : "");
   const sel = $("heatCombo"), prev = sel.value;

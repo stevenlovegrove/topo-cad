@@ -2069,3 +2069,40 @@ fn trusses_keep_their_stations_on_a_wall_whose_top_slopes_along_the_ridge() {
     let heel = |x: f64| m.members.iter().filter(|c| c.role == "bottom_chord").map(|c| c.path.iter().map(|n| m.pos(*n)).filter(|p| p.y.abs() < 0.2).map(|p| (p.x, p.z)).next().unwrap()).min_by(|a, b| (a.0 - x).abs().total_cmp(&(b.0 - x).abs())).unwrap().1;
     assert!((heel(ft(12.0)) - heel(0.0) - inch(1.0)).abs() < inch(0.1), "{} {}", heel(0.0), heel(ft(12.0)));
 }
+
+#[test]
+fn what_is_built_is_checked_under_its_own_weight_whether_or_not_a_dead_load_is_said() {
+    // The roof that turns a corner, with snow on it and nothing said of what covers it.
+    let src = include_str!("../../../examples/primitives/25-a-roof-that-turns-a-corner.ts").replace(r#"  .covering(layers("asphalt shingles", "roofing felt", "osb 7/16"))
+"#, "");
+    assert!(!src.contains(".covering("));
+    let m = run(&src, "25.ts").unwrap();
+    // There is a dead load all the same (its members' own weight), so the combinations with snow are there, and its
+    // trusses and studs are checked: not six plates for deflection and nothing else.
+    let dead = m.load_cases.iter().find(|c| c.kind == topo_core::LoadKind::Dead).expect("a dead case");
+    assert!(dead.self_weight);
+    let (topo, g) = (Topology::build(&m), Geometry::build(&m, &Topology::build(&m)));
+    let a = topo_analysis::nds_asd_excluding(&m, &g, &topo_analysis::takedown(&m, &topo, &g), &[]);
+    let checked: std::collections::HashSet<&str> = a.checks.iter().map(|c| m.member(c.member).role.as_str()).collect();
+    for role in ["top_chord", "bottom_chord", "web", "stud", "top_plate"] {
+        assert!(checked.contains(role), "{role} is not checked: {checked:?}");
+    }
+    assert!(a.checks.iter().any(|c| c.combination.contains('D') && c.combination.contains('S')), "{:?}", a.combos.iter().map(|c| &c.name).collect::<Vec<_>>());
+    // And it is said that the roof carries a load with nothing covering it (to be told, not a fault): of each part.
+    let said: Vec<&topo_core::Issue> = m.issues.iter().filter(|i| i.code == "no-covering").collect();
+    assert!(said.len() == 2 && said.iter().all(|i| i.severity == topo_core::Severity::Info), "{:#?}", m.issues);
+    // Covered, nothing is said.
+    let m = run(include_str!("../../../examples/primitives/25-a-roof-that-turns-a-corner.ts"), "25.ts").unwrap();
+    assert!(!m.issues.iter().any(|i| i.code == "no-covering" || i.code == "no-dead-load"), "{:#?}", m.issues);
+    // A floor with a live load and no dead load is told so too; one whose deck is given by its layers is not.
+    let floor = include_str!("../../../examples/primitives/11-a-floor-on-walls.ts").replace("  .load(\"dead\", psf(10))\n", "");
+    assert!(!floor.contains("\"dead\""));
+    let m = run(&floor, "11.ts").unwrap();
+    assert!(m.issues.iter().any(|i| i.code == "no-dead-load" && i.message.starts_with("Floor ")), "{:#?}", m.issues);
+    let m = run(include_str!("../../../examples/primitives/27-what-a-floor-and-a-roof-are-made-of.ts"), "27.ts").unwrap();
+    assert!(!m.issues.iter().any(|i| i.code == "no-covering" || i.code == "no-dead-load"), "{:#?}", m.issues);
+    // A script that counts its members' weight elsewhere has no dead case made for it.
+    let none = include_str!("../../../examples/primitives/03-trusses-on-walls.ts").replace("Building.named(\"Trusses on walls\")", "Building.named(\"Trusses on walls\").designBasis({ selfWeight: false })");
+    let m = run(&none, "03.ts").unwrap();
+    assert!(m.load_cases.iter().all(|c| !c.self_weight));
+}

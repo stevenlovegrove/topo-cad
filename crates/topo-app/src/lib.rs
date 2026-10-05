@@ -329,11 +329,20 @@ fn analysis_summary(b: &Built) -> Value {
             combos.push(c.combination.clone());
         }
     }
+    // What was not checked, by what it is: a pass is only of what was looked at.
+    let mut unchecked: std::collections::BTreeMap<String, usize> = Default::default();
+    for (m, r) in b.model.members.iter().zip(&ratios) {
+        if r.is_none() {
+            *unchecked.entry(m.role.replace('_', " ")).or_default() += 1;
+        }
+    }
     json!({
         "asce7": b.model.standards.asce7,
         "combinations": b.model.standards.combinations_label(),
         "combos": combos,
         "checked": checked,
+        "members": b.model.members.len(),
+        "unchecked": unchecked.iter().map(|(role, n)| json!({ "role": role, "count": n })).collect::<Vec<_>>(),
         "over": over,
         "indicative_over": indicative_over,
         "max": worst.first().map(|w| w.0).unwrap_or(0.0),

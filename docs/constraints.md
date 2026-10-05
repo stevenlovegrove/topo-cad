@@ -619,6 +619,19 @@ weight of what covers a part is a dead load on it, per area of surface,
 without being said. `TrussRoof.load` and `RafterRoof.load` are still those
 generators' own (on all their top chords, or rafters), for one used alone.
 
+**There is always a dead load.** What is built weighs what it weighs,
+whether or not anything is said to be on it: every building has a dead
+case, with its members' own weight (unless the script says that is counted
+elsewhere: `designBasis({ selfWeight: false })`). So the combinations a
+code gives, each of which starts from the dead load, are there for a model
+with only snow or a live load on it, and its members are checked. (Without
+one there was no combination but a deflection under the snow alone: a few
+plates checked, and "all within capacity".) A roof that carries a load with
+nothing said of what covers it, and a floor or a roof of rafters loaded
+with no dead load said, are told so (`no-covering`, `no-dead-load`: to be
+told, not faults). The checks' summary says how many of the members were
+checked, and which were not.
+
 **Where the framing is not in one plane** (trusses as built, on walls that
 are not level: their tops differ by millimetres along the run), a plane
 fitted to them all passes through some. The part is then worked out as a

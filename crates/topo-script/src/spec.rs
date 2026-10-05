@@ -812,6 +812,8 @@ struct Builder {
     perimeters: HashMap<String, (PerimeterParts, f64)>,
     /// The walls of each of those, as built (placed), side by side.
     built_walls: HashMap<String, Vec<Option<Wall>>>,
+    /// What frames a part of a roof given as its surfaces, by name: its loads are that roof's to say.
+    surfaced: std::collections::HashSet<String>,
     /// Each roof of trusses' top chords, once it is placed (in the scene).
     truss_tops: HashMap<String, Vec<scene::MemberRef>>,
     /// Where partitions tee into walls: by perimeter and wall, how far along each.
@@ -1895,6 +1897,9 @@ impl Builder {
                     }
                     continue;
                 }
+                if covering <= 0.0 && !p.loads.is_empty() && !p.loads.iter().any(|l| l.kind == "dead") {
+                    self.m.issues.push(Issue::new(Severity::Info, "no-covering", format!("{what} carries a load, and nothing is said of what it is covered with: its dead load is its framing's own weight only (roof.covering(layers(...)), or a dead load)")));
+                }
                 // (The weight of what covers it first: dead load is the first of the cases.)
                 let mut loads: Vec<(LoadCaseId, f64, AreaBasis)> = vec![];
                 if covering > 0.0 {
@@ -2079,6 +2084,10 @@ impl Builder {
         for name in &a.supports {
             let node = *nodes.get(name.as_str()).ok_or(format!("assembly {}: unknown support point {name}", a.name))?;
             self.m.supports.push(Support { node, restraint: Restraint::PINNED, description: Some(format!("{} on foundation", a.name)) });
+        }
+        // (What sits on what is under it, a floor or a roof of rafters, and is loaded: something is on it that weighs.)
+        if a.on_plan && !a.loads.is_empty() && !a.loads.iter().any(|l| l.kind == "dead") && !self.surfaced.contains(&a.name) {
+            self.m.issues.push(Issue::new(Severity::Info, "no-dead-load", format!("{} carries a load, and no dead load is said of it: only its members' own weight is counted (a deck given by its layers, or load(\"dead\", ...))", a.name)));
         }
         for l in &a.loads {
             let case = self.case(&l.kind)?;
@@ -2284,7 +2293,12 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
         let d = v3(v[0], v[1], v[2]).try_normalized().ok_or_else(|| format!("building {}: direction {name} is zero", spec.name))?;
         m.name_direction(root, name, d);
     }
-    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), built_walls: HashMap::new(), truss_tops: HashMap::new(), tees: HashMap::new(), slabs: HashMap::new(), assemblies: HashMap::new(), root };
+    let mut b = Builder { m, moving: HashMap::new(), grades: HashMap::new(), perimeters: HashMap::new(), built_walls: HashMap::new(), surfaced: spec.items.iter().filter_map(|i| if let ItemSpec::Roof(r) = i { Some(r) } else { None }).flat_map(|r| r.parts.iter().flat_map(|p| p.framing.iter().chain(&p.framing_more).cloned())).collect(), truss_tops: HashMap::new(), tees: HashMap::new(), slabs: HashMap::new(), assemblies: HashMap::new(), root };
+    // What is built weighs what it weighs, whether or not anything is said to be on it: there is always a dead load
+    // (its members' own weight, unless the script says that is counted elsewhere), and so every member is checked.
+    if spec.self_weight != Some(false) {
+        b.case("dead")?;
+    }
     // One scene: perimeters (written by their generator, as bodies of it, at numbers of it),
     // assemblies, and the relations between their nodes; solved, then written into the model.
     // Then roofs, on what it placed.
