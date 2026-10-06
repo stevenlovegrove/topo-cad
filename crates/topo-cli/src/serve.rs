@@ -20,6 +20,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use tiny_http::{Header, Method, Request, Response, Server};
 
+use crate::work::Work;
+
 /// The app's static files, from the source tree unless given.
 pub fn default_web_dir() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web"))
@@ -170,9 +172,19 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn handle(files: &Files, web: &Path, mut req: Request) {
-    let url = req.url().split('?').next().unwrap_or("/").to_string();
+fn handle(files: &Files, web: &Path, work: Option<&Work>, mut req: Request) {
+    let full = req.url().to_string();
+    let (url, query) = full.split_once('?').unwrap_or((&full, ""));
+    let url = url.to_string();
+    let q: std::collections::HashMap<String, String> = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (percent_decode(k), percent_decode(v))).collect();
     let method = req.method().clone();
+    if Work::handles(&url) {
+        return match work {
+            Some(w) => w.handle(req, &url, &q),
+            // No scan was given: the app works without the workspace.
+            None => text(req, 404, "no scan workspace here (start `topo serve` with a model and a scan)"),
+        };
+    }
     if let Some(rest) = url.strip_prefix("/files/") {
         let id = percent_decode(rest);
         if id == "manifest.json" {
@@ -201,6 +213,10 @@ fn handle(files: &Files, web: &Path, mut req: Request) {
                 match r {
                     Ok(()) => {
                         eprintln!("saved {id}");
+                        // In a scan project, a save is a commit by whoever made it.
+                        if let Some(w) = work {
+                            w.saved(q.get("who").map_or("someone", String::as_str), &path);
+                        }
                         text(req, 200, "saved")
                     }
                     Err(e) => text(req, 500, &e.to_string()),
@@ -224,18 +240,35 @@ fn handle(files: &Files, web: &Path, mut req: Request) {
     }
 }
 
-pub fn serve(paths: &[PathBuf], port: u16, web: &Path) -> Result<(), String> {
+/// `scan`: a scan to work the model against (the scan workspace: see
+/// `work.rs`); the model is then the first model file among `paths`, or
+/// the scan is `Some("")` to use the one the model's project names.
+pub fn serve(paths: &[PathBuf], port: u16, web: &Path, scan: Option<&str>) -> Result<(), String> {
     let paths: Vec<PathBuf> = if paths.is_empty() { vec![PathBuf::from(".")] } else { paths.to_vec() };
     if !web.join("pkg").join("topo_wasm_bg.wasm").exists() {
         return Err(format!("the app's engine is not built: run web/build.sh (looked in {})", web.join("pkg").display()));
     }
-    let files = Files::new(&paths, true)?;
+    // A scan workspace serves its project (and what it imports), not `./projects` too.
+    let files = std::sync::Arc::new(Files::new(&paths, scan.is_none())?);
+    let work = match scan {
+        Some(scan) => {
+            let model = paths.iter().find(|p| p.is_file()).ok_or("a scan needs its model: topo serve MODEL.ts SCAN.ply")?;
+            let entry = model.canonicalize().ok().and_then(|m| files.id(&m)).ok_or("the model is not among the served files")?;
+            Some(Work::start(model, Some(scan).filter(|s| !s.is_empty()), entry)?)
+        }
+        None => None,
+    };
     let server = Server::http(("127.0.0.1", port)).map_err(|e| format!("cannot listen on port {port}: {e}"))?;
     eprintln!("topo serve: http://127.0.0.1:{port}/");
     eprintln!("  app: {}", web.display());
     eprintln!("  files: {} ({})", files.base.display(), files.roots.iter().map(|r| r.strip_prefix(&files.base).unwrap_or(r).display().to_string()).collect::<Vec<_>>().join(", "));
+    if work.is_some() {
+        eprintln!("  scan workspace: agents attach at http://127.0.0.1:{port}/mcp/NAME");
+    }
+    // A thread per request: event streams and agents' waits stay open.
     for req in server.incoming_requests() {
-        handle(&files, web, req);
+        let (files, web, work) = (files.clone(), web.to_path_buf(), work.clone());
+        std::thread::spawn(move || handle(&files, &web, work.as_ref(), req));
     }
     Ok(())
 }

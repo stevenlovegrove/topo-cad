@@ -7,7 +7,7 @@
 // ends). Running the model fits the unknowns to the measurements — there is no
 // hand-derived geometry here.
 import {
-  Building, detail, DFL, dressed, elevation, ft, horizontal, inch, iso, lengthOf, meet, measured, type Nominal, notes, Perimeter, plan, type Point,
+  Building, detail, DFL, dressed, elevation, Frame, ft, horizontal, inch, iso, lengthOf, meet, measured, type Nominal, notes, Perimeter, plan, type Point,
   psf, schedule, sheet, standardSheets, TrussRoof, TrussShape, unknown, Wall,
 } from "topo-cad";
 import { fieldMeasurements } from "./garage-truss.measured";
@@ -49,7 +49,9 @@ const run = ft(6);
 const wall = Wall.template({ height: ft(8), grade: DFL.No2 }).studs([2, 6]).justify("center");
 const leftWalls = Perimeter.start("Left wall", [0, leftWallAt]).to([run, leftWallAt], wall.named("Left bearing wall"));
 const rightWalls = Perimeter.start("Right wall", [0, rightWallAt]).to([run, rightWallAt], wall.named("Right bearing wall"));
-const roof = TrussRoof.of(shape, { name: "Existing trusses", origin: [0, 0], spanDir: [0, 1], length: run, spacing: inch(24), grade: DFL.No2 })
+// The heel line is set out from the building's origin on plan (a datum: x and y only).
+const setOut = Frame.world.point("heel line", { x: 0, y: 0 });
+const roof = TrussRoof.of(shape, { name: "Existing trusses", at: setOut.node("heel line"), spanDir: [0, 1], length: run, spacing: inch(24), grade: DFL.No2 })
   .bearingOn(leftWalls, rightWalls)
   .load("dead", psf(20))
   .load("snow", psf(25));
@@ -83,7 +85,7 @@ export default Building.named("Existing garage truss")
     date: "2026-09-26",
     notes: ["2x6 bottom chord; 2x4 top chords and webs. Eave tail plumb cut.", "Left flat part cantilevers past the left wall. Wall height is a placeholder."],
   })
-  .add(leftWalls, rightWalls, roof)
+  .add(leftWalls, rightWalls, setOut, roof)
   .measure(measurements, fieldMeasurements)
   // The drawing set, in tab order: generated sheets and our own.
   .sheets(

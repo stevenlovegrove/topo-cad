@@ -186,6 +186,16 @@ export function layers(...items: (string | readonly [string, number] | Layer)[])
   return { pressure: psf(total), label: `${parts.join(" + ")} = ${total.toFixed(1)} psf, ${t.source.publication} ${t.source.edition} ${t.source.table}${star}`, layers: out };
 }
 
+/**
+ * A build-up's layers, and how thick it is as it is drawn: a sheet of each
+ * layer that has a thickness, a ribbed sheet (standing seam) as the sheet
+ * without its ribs.
+ */
+function builtUp(d: DeadLoad): { layers: readonly Layer[]; thickness: Length } {
+  if (!d.layers) throw new Error("a build-up is given by its layers: `layers(\"standing seam 24ga steel\", \"plywood 15/32\")`");
+  return { layers: d.layers, thickness: d.layers.reduce((t, l) => t + (l.strips?.sheet ? Math.min(l.thickness, mm(1)) : l.thickness), 0) };
+}
+
 // ----- materials -----------------------------------------------------------
 
 export interface Grade {
@@ -623,20 +633,119 @@ export class Survey {
   }
 }
 
+// ----- what walls stand on ---------------------------------------------------
+
+/** What a wall stands on: a slab, or a curb on one. Its bottom is that thing's top. */
+export interface Support {
+  readonly slab: string;
+  /** The curb's height above the slab, all along it (0: the slab itself, unless `level`). */
+  readonly curb: Length;
+  /** The height of the curb's top, where it is level whatever the slab does under it. */
+  readonly level?: Length;
+  /** A floor instead of a slab: its name, and how far above the underside of its joists its top is. */
+  readonly floor?: string;
+  readonly above?: Length;
+}
+
+/**
+ * A slab: a plan outline with its top at a height, this thick. What walls
+ * stand on is a thing, and a wall's bottom is where that thing's top is: a
+ * wall is not given a height to start at.
+ *
+ *   const slab = Slab.named("Slab").outline(corners).top(-mm(40));
+ *   const walls = Perimeter.start("Walls", a).on(slab.curb(mm(40)))   // on a 40 mm curb
+ *     .to(b, wall.named("East").on(slab))                             // this one on the slab
+ *
+ * Its top is a number of the one solve: where it is drawn is a hint, so a
+ * reading of it (`survey(slab.at([x, y]), { z })`, or a floor seen in a scan:
+ * `coincide(scan.on(p, [0, 0, 1]), slab.at([x, y]), { tolerance })`) moves it,
+ * and what stands on it moves with it. A floor at two heights is two slabs.
+ * Add it to the building like anything else.
+ *
+ * A slab may be laid to fall (`sloped`): its top is then a plane, and a wall
+ * standing on it, or on a curb of one height on it (`curb`), has a bottom
+ * that follows it. A curb whose top is level (`curbTo`) is what makes a
+ * level seat on a slab that is not: the wall's bottom is at that level, and
+ * the curb is as tall under it as the slab is below that there.
+ *
+ *   const slab = Slab.named("Slab").outline(corners).top(0).sloped([mm(10), 0]);  // rises 10 mm per metre along x
+ *   const walls = Perimeter.start("Walls", a).on(slab.curbTo(mm(100)))
+ */
+export class Slab {
+  private constructor(
+    readonly name: string,
+    readonly outline_: readonly Point[],
+    readonly top_: Length,
+    readonly thickness_: Length,
+    readonly slope_: Point = [0, 0],
+    readonly about_: Point | undefined = undefined,
+  ) {}
+  static named(name: string): Slab {
+    return new Slab(name, [], 0, inch(4));
+  }
+  /** Its outline on plan, either way round. */
+  outline(points: readonly Point[]): Slab {
+    return new Slab(this.name, points, this.top_, this.thickness_, this.slope_, this.about_);
+  }
+  /** The height of its top (default 0); where it slopes, at the place its slope is given about. */
+  top(z: Length): Slab {
+    return new Slab(this.name, this.outline_, z, this.thickness_, this.slope_, this.about_);
+  }
+  /** How thick it is (default 4 in). */
+  thickness(t: Length): Slab {
+    return new Slab(this.name, this.outline_, this.top_, t, this.slope_, this.about_);
+  }
+  /**
+   * Laid to fall: its top rises by `slope[0]` per metre along x and `slope[1]`
+   * along y (a ratio: `mm(10)` is 10 mm per metre). Its height (`top`) is
+   * what it is at `about` on plan (its outline's first point, if not said).
+   */
+  sloped(slope: Point, about?: Point): Slab {
+    return new Slab(this.name, this.outline_, this.top_, this.thickness_, slope, about ?? this.about_);
+  }
+  /** A curb on it, `height` high all along (its top follows the slab's), to stand a wall on: under the wall's bottom plate, as wide. */
+  curb(height: Length): Support {
+    if (!(height > 0)) throw new Error(`slab ${this.name}: a curb has a height`);
+    return { slab: this.name, curb: height };
+  }
+  /**
+   * A curb on it whose top is level, at `level`: a wall on it has its bottom
+   * there, and the curb is as tall as the slab is below that under it (none
+   * where the slab comes up to it). On a slab laid to fall, this is what
+   * the walls' plates sit level on.
+   */
+  curbTo(level: Length): Support {
+    return { slab: this.name, curb: 0, level };
+  }
+  /** A point of its top, as a node: over `p` on plan, as high as the top is. */
+  at(p: Point): NodeHandle {
+    return new NodeHandle(`${this.name}:top ${p[0]},${p[1]}`);
+  }
+  toJSON() {
+    if (this.outline_.length < 3) throw new Error(`slab ${this.name}: give its outline (at least three points)`);
+    return { type: "slab", name: this.name, outline: this.outline_, top: this.top_, thickness: this.thickness_, slope: this.slope_, about: this.about_ };
+  }
+}
+
+const support = (on: Slab | Floor | Support): Support => (on instanceof Slab ? { slab: on.name, curb: 0 } : on instanceof Floor ? { slab: "", curb: 0, floor: on.name, above: on.top } : on);
+
 // ----- walls ---------------------------------------------------------------
 
 interface WallSpec {
   readonly name: string;
   readonly height: Length;
+  readonly height_end?: Length;
   readonly studs: Nominal;
   readonly spacing: Length;
   readonly layout_from?: readonly Length[];
+  readonly studs_at?: readonly Length[];
   readonly grade: Grade;
   readonly header_grade?: Grade;
   readonly justify: "exterior" | "center";
   readonly openings: readonly OpeningSpec[];
   readonly cap_breaks: readonly Length[];
   readonly survey?: SurveySpec;
+  readonly on?: Support;
 }
 
 /**
@@ -665,20 +774,47 @@ export class Wall {
     return this.with({ name });
   }
   height(h: Length): Wall {
-    return this.with({ height: h });
+    return this.with({ height: h, height_end: undefined });
+  }
+  /**
+   * Its height (to the top of the double top plate, above its bottom) at its
+   * start and at its end: its top slopes between them. Where two walls meet
+   * at one height they are held at one height there (as the solve moves
+   * them); where they meet at different heights, that corner is a step.
+   */
+  heights(start: Length, end: Length): Wall {
+    return this.with({ height: start, height_end: end });
   }
   studs(size: Nominal, spacing?: Length): Wall {
     return this.with({ studs: size, spacing: spacing ?? this.spec.spacing });
   }
   /**
-   * As built: the stud layout is set out from a stud whose centre is `x`
-   * along the wall from its start (the others follow at the spacing, either
-   * way), not from the wall's start. Further studs set out the stretch
-   * between openings each is in, where that is framed on its own (a pier
-   * between two doors).
+   * As built: the stud layout is ONE grid at the wall's spacing, set out so
+   * that a stud's centre is `x` along the wall from its start (the others
+   * follow at the spacing, either way), not from the wall's start. It moves
+   * every stud of the wall together.
+   *
+   * Further arguments do NOT place further studs. Each names a stud in a
+   * stretch between two openings (or an opening and an end) and re-sets the
+   * grid of that stretch alone, where it is framed on its own (a pier between
+   * two doors). In a wall without openings a further argument therefore
+   * replaces the grid of the whole wall.
+   *
+   * Where the studs are not at one spacing, give the wall its spacing
+   * (`studs(size, spacing)`) or place them one by one with `studsAt`.
    */
   studsFrom(x: Length, ...stretches: Length[]): Wall {
     return this.with({ layout_from: [x, ...stretches] });
+  }
+  /**
+   * As built, where the studs are not on one grid: studs with their centres
+   * exactly at these distances along the wall from its start (as measured).
+   * There are no other studs between the first and the last of them; beyond
+   * them the layout carries on at the wall's spacing from the outermost
+   * (`studsFrom` is then not used). Framing at openings and ends is as ever.
+   */
+  studsAt(...xs: Length[]): Wall {
+    return this.with({ studs_at: xs });
   }
   grade(g: Grade): Wall {
     return this.with({ grade: g });
@@ -700,6 +836,15 @@ export class Wall {
    */
   surveyed(s: Survey): Wall {
     return this.with({ survey: s.toJSON() });
+  }
+  /**
+   * What it stands on (a `Slab`, or a curb on one: `slab.curb(mm(40))`), where
+   * that is not what its perimeter stands on. Its bottom is that thing's top,
+   * and its height is above that: beside a wall as tall on something higher,
+   * its top is as much lower, and the two meet at a step, top and bottom.
+   */
+  on(what: Slab | Floor | Support): Wall {
+    return this.with({ on: support(what) });
   }
   /** Interrupt the cap plate at `x` (where a partition tees in and laps over). */
   capBreak(x: Length): Wall {
@@ -729,10 +874,72 @@ export class Perimeter {
     readonly z: Length,
     readonly segments: readonly Segment[],
     readonly closed: boolean,
+    readonly free_: boolean = false,
+    /** The bottom of the walls at each corner (from 1, the start), where it is not `z`. */
+    readonly bases: readonly (Length | null)[] = [],
+    /** What its walls stand on, if it is said. */
+    readonly on_: Support | undefined = undefined,
   ) {}
 
   static start(name: string, at: Point, opts: { z?: Length } = {}): Perimeter {
     return new Perimeter(name, at, opts.z ?? 0, [], false);
+  }
+  private with(p: { name?: string; start?: Point; z?: Length; segments?: readonly Segment[]; closed?: boolean; free?: boolean; bases?: readonly (Length | null)[]; on?: Support }): Perimeter {
+    return new Perimeter(p.name ?? this.name, p.start ?? this.start, p.z ?? this.z, p.segments ?? this.segments, p.closed ?? this.closed, p.free ?? this.free_, p.bases ?? this.bases, p.on ?? this.on_);
+  }
+  /**
+   * What its walls stand on (a `Slab`, or a curb on one): their bottoms are
+   * that thing's top, not `z`. A wall may stand on something else (`Wall.on`).
+   * Or a `Floor`: the storey above. Each corner is then as high as the
+   * floor's top is under it, wherever the solve sits the floor (it is drawn
+   * anywhere: its `z` is only where the solve starts), and the walls go up
+   * and down, and tilt, with it.
+   */
+  on(what: Slab | Floor | Support): Perimeter {
+    return this.with({ on: support(what) });
+  }
+  /**
+   * A corner, as a node (1 is its start, then each corner it turns, in
+   * order), at the bottom of the walls there. A corner is three numbers of
+   * the one solve, where it is drawn a hint: relations to it (a datum, a
+   * `survey` of it, a `tape` to it), or to anything the walls are built with,
+   * move it, and the walls are built on the corners where they then are.
+   */
+  corner(i: number): NodeHandle {
+    return new NodeHandle(`${this.name}/corner ${i}`);
+  }
+  /**
+   * The bottom of the walls at a corner (1 is its start), where it is not the
+   * perimeter's `z`: a wall between corners at different heights has a
+   * bottom plate that slopes.
+   */
+  base(corner: number, z: Length): Perimeter {
+    const bases = [...this.bases];
+    while (bases.length < corner) bases.push(null);
+    bases[corner - 1] = z;
+    return this.with({ bases });
+  }
+  /**
+   * An end of a common stud of one of its walls, as a node (`walls.stud("Front", 3, "bottom")`):
+   * studs are numbered along each wall from its start. A wall's studs are
+   * numbers of it: where the layout puts them is a hint (one that gives way
+   * to where the corners are drawn), `studsAt` a reading. Readings and datums
+   * on stud ends (`tape`, `survey`) move them, and the wall is built with its
+   * studs there.
+   */
+  stud(wall: string, k: number, end: "bottom" | "top"): NodeHandle {
+    return new NodeHandle(`${this.name}/${wall}/stud#${k}:${end}`);
+  }
+  /**
+   * A point of one of its members, as a node to relate others to: an end
+   * (`walls.node("Front/cap_plate", "start")`), or a distance along it from
+   * its start (`walls.node("Front/cap_plate", 1.2)`). The member is named by
+   * its path within the perimeter (`cap_plate#2` where a wall's cap is in
+   * pieces). It moves with the perimeter's numbers (its corners, its walls'
+   * heights and studs) as the member would.
+   */
+  node(member: string, at: "start" | "end" | Length): NodeHandle {
+    return new NodeHandle(typeof at === "number" ? `${this.name}/${member}@${at}` : `${this.name}/${member}:${at}`);
   }
   /** Current end point of the path. */
   get end(): Point {
@@ -741,7 +948,7 @@ export class Perimeter {
   private push(to: Point, side: Side): Perimeter {
     if (this.closed) throw new Error(`perimeter ${this.name} is already closed`);
     const spec = side === "open" ? null : side.spec;
-    return new Perimeter(this.name, this.start, this.z, [...this.segments, { to, side: spec }], false);
+    return this.with({ segments: [...this.segments, { to, side: spec }] });
   }
   /** Straight segment to an absolute point. */
   to(p: Point, side: Side): Perimeter {
@@ -759,8 +966,14 @@ export class Perimeter {
   }
   /** Final segment back to the start. */
   close(side: Side): Perimeter {
-    const p = this.push(this.start, side);
-    return new Perimeter(p.name, p.start, p.z, p.segments, true);
+    return this.push(this.start, side).with({ closed: true });
+  }
+  /**
+   * A place on one of its walls, `x` along it from its start: where an
+   * interior wall meets it (`Partition.between`).
+   */
+  along(wall: string, x: Length): WallPlace {
+    return { perimeter: this.name, wall, x };
   }
   /** One of this perimeter's walls as a drawing target, e.g. `elevation(p.wall("Wall A"))`. */
   wall(name: string): string {
@@ -774,13 +987,21 @@ export class Perimeter {
   moved(d: Point | Point3): Perimeter {
     const mv = (p: Point): Point => [p[0] + d[0], p[1] + d[1]];
     const dz = (d as readonly number[])[2] ?? 0;
-    return new Perimeter(this.name, mv(this.start), this.z + dz, this.segments.map((g) => ({ ...g, to: mv(g.to) })), this.closed);
+    return this.with({ start: mv(this.start), z: this.z + dz, segments: this.segments.map((g) => ({ ...g, to: mv(g.to) })), bases: this.bases.map((b) => (b === null ? null : b + dz)) });
   }
   named(name: string): Perimeter {
-    return new Perimeter(name, this.start, this.z, this.segments, this.closed);
+    return this.with({ name });
+  }
+  /**
+   * Free: where it is drawn is only where the solve starts; relations to its
+   * nodes (`datum`, `coincide`) place it, all of it, and it keeps upright and
+   * turned as drawn where they leave it free.
+   */
+  free(): Perimeter {
+    return this.with({ free: true });
   }
   toJSON() {
-    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed };
+    return { type: "perimeter", name: this.name, start: this.start, z: this.z, segments: this.segments, closed: this.closed, free: this.free_, bases: this.bases, on: this.on_ };
   }
 }
 
@@ -800,6 +1021,38 @@ export function intersect(a1: Point, a2: Point, b1: Point, b2: Point): Point {
   const t = ((b1[0] - a1[0]) * dy2 - (b1[1] - a1[1]) * dx2) / den;
   return [a1[0] + dx1 * t, a1[1] + dy1 * t];
 }
+/** A convex outline with each edge moved outward by so much (edge k from point k to the next). */
+function grown(outline: readonly Point[], by: readonly Length[]): Point[] {
+  const n = outline.length;
+  const area = outline.reduce((t, p, k) => t + p[0] * outline[(k + 1) % n][1] - outline[(k + 1) % n][0] * p[1], 0);
+  const line = (k: number): [Point, Point] => {
+    const [p, q] = [outline[k], outline[(k + 1) % n]];
+    const l = Math.hypot(q[0] - p[0], q[1] - p[1]) * Math.sign(area);
+    const out: Point = [((q[1] - p[1]) / l) * by[k], (-(q[0] - p[0]) / l) * by[k]];
+    return [[p[0] + out[0], p[1] + out[1]], [q[0] + out[0], q[1] + out[1]]];
+  };
+  return outline.map((_, k) => intersect(...line((k + n - 1) % n), ...line(k)));
+}
+/** What of a convex outline is inside another. */
+function clipped(subject: readonly Point[], by: readonly Point[]): Point[] {
+  const n = by.length;
+  const turn = Math.sign(by.reduce((t, p, k) => t + p[0] * by[(k + 1) % n][1] - by[(k + 1) % n][0] * p[1], 0));
+  let out = subject.slice();
+  for (let k = 0; k < n && out.length; k++) {
+    const [p, q] = [by[k], by[(k + 1) % n]];
+    const f = (r: Point) => turn * ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+    const next: Point[] = [];
+    out.forEach((r, i) => {
+      const t = out[(i + 1) % out.length];
+      const [fr, ft] = [f(r), f(t)];
+      if (fr >= 0) next.push(r);
+      if ((fr > 0 && ft < 0) || (fr < 0 && ft > 0)) next.push(lerp(r, t, fr / (fr - ft)));
+    });
+    out = next;
+  }
+  return out;
+}
+
 /** Pitch as rise per unit run: `pitch(6, 12)` = 6:12. */
 export const pitch = (rise: number, run: number = 12): number => rise / run;
 
@@ -1019,13 +1272,15 @@ export type LoadKind = "dead" | "live" | "roof_live" | "snow" | "wind" | "seismi
 interface AreaLoad {
   readonly kind: LoadKind;
   readonly pressure: number;
+  readonly basis?: "plan" | "surface";
+  readonly label?: string;
 }
 
 /** A run of identical trusses at a spacing, with flush gable-end trusses. */
 export class TrussRoof {
   private constructor(readonly spec: {
     readonly name: string;
-    readonly origin: Point;
+    readonly at: string;
     readonly span_dir: Point;
     readonly shape: TrussShape;
     readonly length: Length;
@@ -1033,24 +1288,33 @@ export class TrussRoof {
     readonly chord: Nominal;
     readonly web: Nominal;
     readonly grade: Grade;
-    readonly height?: Length;
     readonly bears_on: readonly string[];
     readonly loads: readonly AreaLoad[];
     readonly overrides?: readonly { readonly trusses: readonly number[]; readonly shape: TrussShape }[];
     readonly shifts?: readonly { readonly trusses: readonly number[]; readonly along: Length }[];
+    readonly start?: Length;
   }) {}
 
   /**
-   * `origin`: outside corner of a bearing wall where the first truss's left
-   * heel sits; `spanDir`: direction the trusses span; `length`: along the ridge.
+   * Where the first truss's left heel is on plan: `at` a node, so the roof
+   * goes where that node does: a corner of the walls
+   * (`walls.node("Left/cap_plate", "start")`), a point of a scan's frame
+   * (`scan.node("heel line")`), or a datum (`Frame.world.point(...)`).
+   * `spanDir`: the direction the trusses span; `length`: along the ridge.
+   * Their height is not given: they sit on what they bear on (`bearingOn`).
+   * `start`: how far along the ridge from `at` the first truss is (a roof
+   * over part of what it is set out on).
    */
   static of(
     shape: TrussShape,
-    o: { name?: string; origin: Point; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal; height?: Length },
+    o: { name?: string; at?: NodeHandle; spanDir: Point; length: Length; spacing?: Length; grade: Grade; chord?: Nominal; web?: Nominal; start?: Length },
   ): TrussRoof {
+    if (!(o.at instanceof NodeHandle)) {
+      throw new Error("a truss roof is set out at a node: give `at` (a corner of the walls, a point of a scan's frame, or a datum: `Frame.world.point(name, { x, y })`)");
+    }
     return new TrussRoof({
       name: o.name ?? "Roof trusses",
-      origin: o.origin,
+      at: o.at.name,
       span_dir: o.spanDir,
       shape,
       length: o.length,
@@ -1058,13 +1322,13 @@ export class TrussRoof {
       chord: o.chord ?? [2, 4],
       web: o.web ?? [2, 4],
       grade: o.grade,
-      height: o.height,
       bears_on: [],
       loads: [],
+      start: o.start,
     });
   }
   /**
-   * A different shape for some trusses (1-based numbers, T1 at the origin),
+   * A different shape for some trusses (1-based numbers, T1 where the roof is set out),
    * e.g. the trusses over a wing with a different bearing. The same
    * spacing and loads apply.
    */
@@ -1083,7 +1347,8 @@ export class TrussRoof {
   /** Fink trusses (shorthand for `TrussRoof.of(TrussShape.fink(...), ...)`). */
   static fink(o: {
     name?: string;
-    origin: Point;
+    origin?: Point;
+    at?: NodeHandle;
     spanDir: Point;
     span: Length;
     length: Length;
@@ -1091,35 +1356,45 @@ export class TrussRoof {
     spacing?: Length;
     overhang?: Length;
     grade: Grade;
-    height?: Length;
   }): TrussRoof {
     return TrussRoof.of(TrussShape.fink({ span: o.span, pitch: o.pitch, overhang: o.overhang ?? inch(12) }), o);
   }
   /**
-   * Trusses bear on the cap plates of these perimeters (which also set the
-   * height if not given) and on the horizontal members (beams, headers) of
-   * these assemblies, wherever a bottom chord crosses them.
+   * What the trusses sit on: the cap plates of these perimeters and the
+   * horizontal members (beams, headers) of these assemblies. A utility:
+   * it looks at what is under any part of each truss's bottom chord, as
+   * they are modelled, and states each contact (a node on the chord's
+   * underside and on the top it is on). Each truss is a free thing of the
+   * building's one solve, sat by those contacts: at their height, level or
+   * tilted as they say, on the two that carry it (it is clear of any that
+   * are lower), touching every other on the line through them. It is
+   * fastened at those contacts and nowhere else. A truss with none of them
+   * under it is an error.
+   *
+   * Or another roof of trusses, added to the building before this one: its
+   * top chords, which slope (a valley set on a main roof). A truss then
+   * touches each at its uphill face.
    */
-  bearingOn(...ps: (Perimeter | Assembly)[]): TrussRoof {
+  bearingOn(...ps: (Perimeter | Partition | Assembly | TrussRoof)[]): TrussRoof {
     return new TrussRoof({ ...this.spec, bears_on: [...this.spec.bears_on, ...ps.map((p) => p.name)] });
   }
   /**
-   * Uniform load on the roof, in pascals (use `psf`). `basis`: per unit of
-   * plan area (default; snow and roof live loads) or of sloped surface.
+   * Uniform load on the roof, in pascals (use `psf`), carried by the top
+   * chords. `basis`: per unit of plan area (default; snow and roof live
+   * loads) or of sloped surface. (What a roof is covered with, a flat part
+   * on the bottom chords, and loads on one part or another, are a `Roof`'s:
+   * give the trusses to one as a part's `framing`.)
    */
-  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string; on?: "slope" | "flat"; layers?: readonly Layer[] } = {}): TrussRoof {
+  load(kind: LoadKind, pressure: number, o: { basis?: "plan" | "surface"; label?: string } = {}): TrussRoof {
     return new TrussRoof({ ...this.spec, loads: [...this.spec.loads, { kind, pressure, ...o }] });
   }
-  /**
-   * Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`.
-   * `on: "flat"` puts it on the flat roof over the bottom chords beyond the heels.
-   */
-  snow(d: DeadLoad, o: { on?: "slope" | "flat" } = {}): TrussRoof {
-    return this.load("snow", d.pressure, { basis: "plan", label: d.label, ...o });
+  /** Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`. */
+  snow(d: DeadLoad): TrussRoof {
+    return this.load("snow", d.pressure, { basis: "plan", label: d.label });
   }
-  /** Roofing dead load along the slope (or on the flat part), from `layers(...)`. */
-  dead(d: DeadLoad, o: { on?: "slope" | "flat" } = {}): TrussRoof {
-    return this.load("dead", d.pressure, { basis: "surface", label: d.label, layers: d.layers, ...o });
+  /** A dead load along the slope. */
+  dead(d: DeadLoad): TrussRoof {
+    return this.load("dead", d.pressure, { basis: "surface", label: d.label });
   }
   get name(): string {
     return this.spec.name;
@@ -1131,10 +1406,6 @@ export class TrussRoof {
   /** A member of the `i`-th truss (1-based; 1 and the last are the gable ends), by its shape name. */
   trussMember(i: number, name: string): MemberRef {
     return new MemberRef(`${this.spec.name}/T${i}/${name}`);
-  }
-  /** Plan offset (a z component is ignored: height follows the bearing walls). */
-  moved(d: Point | Point3): TrussRoof {
-    return new TrussRoof({ ...this.spec, origin: [this.spec.origin[0] + d[0], this.spec.origin[1] + d[1]] });
   }
   named(name: string): TrussRoof {
     return new TrussRoof({ ...this.spec, name });
@@ -1170,6 +1441,11 @@ export class Placement {
     const rel: Point3 = [o[0] - about[0], o[1] - about[1], o[2] - about[2]];
     const ro = r(rel);
     return new Placement([ro[0] + about[0], ro[1] + about[1], ro[2] + about[2]], r(this.x), r(this.y), r(this.z));
+  }
+  /** Where a point of the placed frame is, in the frame it is placed in. */
+  apply(p: Point3): Point3 {
+    const [o, x, y, z] = [this.origin, this.x, this.y, this.z];
+    return [o[0] + x[0] * p[0] + y[0] * p[1] + z[0] * p[2], o[1] + x[1] * p[0] + y[1] * p[1] + z[1] * p[2], o[2] + x[2] * p[0] + y[2] * p[1] + z[2] * p[2]];
   }
   toJSON() {
     return { origin: this.origin, x: this.x, y: this.y, z: this.z };
@@ -1209,7 +1485,15 @@ interface AssemblyMemberSpec {
   readonly depth?: Point3;
   readonly anchor?: readonly [number, number];
   readonly priority: number;
+  readonly cut?: readonly [Cut | null, Cut | null];
 }
+/**
+ * How an end of a member is cut, where that is not as its joint has it: on a
+ * `"level"` plane through its node, a `"plumb"` one (upright, square to its
+ * run on plan), `"square"` to itself; or on the plane through its node that is
+ * square to a direction given (in the assembly's frame).
+ */
+export type Cut = "level" | "plumb" | "square" | Point3;
 
 /**
  * Any custom piece of topology: named points and members in a local frame.
@@ -1228,6 +1512,9 @@ export class Assembly {
     readonly supports: readonly AssemblySupport[],
     readonly loads: readonly AssemblyLoad[],
     readonly bonds: readonly (readonly [string, string])[],
+    readonly rests: readonly (readonly [string, string])[] = [],
+    readonly free_: boolean = false,
+    readonly extra: { readonly onPlan?: boolean; readonly hungFrom?: readonly string[]; readonly bearing?: readonly string[] } = {},
     readonly jointsAt: readonly { readonly point: string; readonly member?: string; readonly joint: Joints }[] = [],
   ) {}
 
@@ -1235,7 +1522,7 @@ export class Assembly {
     return new Assembly(name, Placement.identity, [], [], undefined, [], [], [], []);
   }
   private copy(
-    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly AssemblySupport[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; jointsAt: Assembly["jointsAt"] }>,
+    p: Partial<{ name: string; placement: Placement; points: Assembly["points"]; members: Assembly["members"]; joints: Joints; bearsOn: readonly string[]; supports: readonly AssemblySupport[]; loads: readonly AssemblyLoad[]; bonds: Assembly["bonds"]; rests: Assembly["rests"]; free_: boolean; extra: Assembly["extra"]; jointsAt: Assembly["jointsAt"] }>,
   ): Assembly {
     return new Assembly(
       p.name ?? this.name,
@@ -1247,6 +1534,9 @@ export class Assembly {
       p.supports ?? this.supports,
       p.loads ?? this.loads,
       p.bonds ?? this.bonds,
+      p.rests ?? this.rests,
+      p.free_ ?? this.free_,
+      p.extra ?? this.extra,
       p.jointsAt ?? this.jointsAt,
     );
   }
@@ -1289,6 +1579,49 @@ export class Assembly {
     if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
     return this.copy({ jointsAt: [...this.jointsAt, { point, member: o.member, joint: kind }] });
   }
+  /**
+   * Free: its placement is only where it starts. It is placed by relations
+   * between its nodes and others (`coincide`, `datum`), and kept upright
+   * (its z up) where they leave it free to turn.
+   */
+  free(): Assembly {
+    return this.copy({ free_: true });
+  }
+  /**
+   * Free, but on plan where it is drawn unless a relation says otherwise (a
+   * hint): for what only sits on things (`bearingOn`), which gives it
+   * its height and its tilt, and nothing else.
+   */
+  sitting(): Assembly {
+    return this.copy({ free_: true, extra: { ...this.extra, onPlan: true } });
+  }
+  /**
+   * Members of these roles are hung from: where another of its members ends
+   * on one of them it is joined by a hanger, not by nails (a floor's header
+   * on its trimmers, tail joists on the header).
+   */
+  hungFrom(...roles: string[]): Assembly {
+    return this.copy({ extra: { ...this.extra, hungFrom: [...(this.extra.hungFrom ?? []), ...roles] } });
+  }
+  /** Only its members of these roles bear on what it bears on (`bearingOn`): a roof's rafters and ties, not its ridge. */
+  bearingWith(...roles: string[]): Assembly {
+    return this.copy({ extra: { ...this.extra, bearing: [...(this.extra.bearing ?? []), ...roles] } });
+  }
+  /** One of its points, as a node others can be related to: `assembly.node("top")`. */
+  node(point: string): NodeHandle {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`assembly ${this.name}: unknown point ${point}`);
+    return new NodeHandle(`${this.name}/${point}`);
+  }
+  /**
+   * One member resting on another where they cross (`"joist"`, `"beam"` or
+   * `"joist#2"`): the bearing point is a node, on the underside of the first
+   * and on the top of the second. They have to touch there: this joins
+   * them, it does not move them.
+   */
+  resting(upper: string, lower: string): Assembly {
+    for (const x of [upper, lower]) if (!this.members.some((m) => m.role === x.split("#")[0])) throw new Error(`assembly ${this.name}: no member ${x}`);
+    return this.copy({ rests: [...this.rests, [upper, lower]] });
+  }
   /** Two members fastened face to face (e.g. a cap nailed onto a header): `"header_cap"`, `"header"` or `"post#2"`. */
   bonded(a: string, b: string): Assembly {
     for (const x of [a, b]) if (!this.members.some((m) => m.role === x.split("#")[0])) throw new Error(`assembly ${this.name}: no member ${x}`);
@@ -1318,23 +1651,39 @@ export class Assembly {
     return this.copy({ points: [...this.points, { name, at }] });
   }
   /** Add a member through named points (straight, in order). */
-  member(role: string, path: readonly string[], o: Stock & { depth?: Point3; anchor?: readonly [number, number]; priority?: number }): Assembly {
+  member(
+    role: string,
+    path: readonly string[],
+    o: Stock & {
+      depth?: Point3;
+      anchor?: readonly [number, number];
+      priority?: number;
+      /** How its start and its end are cut, where not as their joints have them: `level` (a stringer's foot on a floor) or `plumb` (its head against a header). */
+      cut?: readonly [Cut | null, Cut | null];
+    },
+  ): Assembly {
     for (const n of path) if (!this.points.some((p) => p.name === n)) throw new Error(`assembly ${this.name}: unknown point ${n}`);
     const stock = "section" in o ? { section: o.section, material: o.material, plies: 1 } : { size: o.size, grade: o.grade, plies: o.plies ?? 1 };
-    const m: AssemblyMemberSpec = { role, path, ...stock, depth: o.depth, anchor: o.anchor, priority: o.priority ?? 0 };
+    const m: AssemblyMemberSpec = { role, path, ...stock, depth: o.depth, anchor: o.anchor, priority: o.priority ?? 0, cut: o.cut };
     return this.copy({ members: [...this.members, m] });
   }
   /**
    * How members that meet are joined: nailing, or a made joint
    * (`Joint.welded()`, `Connector.angleBracket({ count: 2 })`). Default:
-   * nailed for lumber; otherwise nothing is recorded and members are taken
-   * as continuous with each other.
+   * nailed for lumber; otherwise joined so as to carry moment, by a means
+   * not said (say it).
    */
   joints(kind: Joints): Assembly {
     return this.copy({ joints: kind });
   }
-  /** Connect to the cap plates of these perimeters where axes meet. */
-  bearingOn(...ps: Perimeter[]): Assembly {
+  /**
+   * A utility: each of its members that crosses a cap plate of these
+   * perimeters (on plan), or a level member of these assemblies (a beam;
+   * the assembly added to the building before this one), rests on it, at a
+   * node on both (as `resting`). They have to touch: it joins them where
+   * they do, and says so where they do not.
+   */
+  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): Assembly {
     return this.copy({ bearsOn: [...this.bearsOn, ...ps.map((p) => p.name)] });
   }
   placed(p: Placement): Assembly {
@@ -1359,7 +1708,953 @@ export class Assembly {
       supports: this.supports,
       loads: this.loads,
       bonds: this.bonds,
+      rests: this.rests,
+      free: this.free_,
+      on_plan: this.extra.onPlan,
+      hung_from: this.extra.hungFrom,
+      bearing_roles: this.extra.bearing,
     };
+  }
+}
+
+// ----- interior walls ----------------------------------------------------------
+
+/** A place on a wall: so far along it from its start (`walls.along("Front", ft(6))`). */
+export interface WallPlace {
+  readonly perimeter: string;
+  readonly wall: string;
+  readonly x: Length;
+}
+
+/**
+ * An interior wall: from a place on one wall to a place on another, or to a
+ * point on plan where it ends free. Where it meets a wall it tees into it:
+ * that wall's cap plate is broken there and this one's laps over it, its
+ * lower plates end on that wall's, and its studs keep clear of it. It is as
+ * tall as the walls it meets, where it meets them, and stands where they do
+ * (or on what its wall says, `Wall.on`). It is built between those walls
+ * as the solve has them, so it goes where they go.
+ *
+ *   const mid = Partition.between(walls.along("Front", ft(12)), walls.along("Back", ft(12)), wall.named("Middle"));
+ *   floor.bearingOn(walls, mid)          // a bearing wall: floors and roofs sit on it as on any wall
+ *   Partition.between(mid.along(ft(6)), walls.along("Right", ft(8)), wall.named("Cross"))   // one may meet another
+ *
+ * Its wall is framed on its centre line (its line is its middle), and has to
+ * be named. It is added to the building like anything else.
+ */
+export class Partition {
+  private constructor(
+    readonly wall_: Wall,
+    readonly from: WallPlace | { readonly point: Point },
+    readonly to: WallPlace | { readonly point: Point },
+  ) {}
+  static between(from: WallPlace, to: WallPlace | Point, wall: Wall): Partition {
+    if (!wall.spec.name) throw new Error("a partition's wall needs a name: wall.named(...)");
+    return new Partition(wall, from, Array.isArray(to) ? { point: to as Point } : (to as WallPlace));
+  }
+  get name(): string {
+    return this.wall_.spec.name;
+  }
+  /** A place on it, `x` along it from where it starts: where another partition meets it. */
+  along(x: Length): WallPlace {
+    return { perimeter: this.name, wall: this.name, x };
+  }
+  /** A member of it, e.g. `member("cap_plate")`. */
+  member(name: string): MemberRef {
+    return new MemberRef(`${this.name}/${name}`);
+  }
+  toJSON() {
+    return { type: "partition", wall: this.wall_.spec, from: this.from, to: this.to };
+  }
+}
+
+// ----- floors ---------------------------------------------------------------
+
+/**
+ * A floor platform: rim joists across the ends of the joists, a band joist
+ * along each side, and common joists between them at a spacing. Its
+ * rectangle is given on plan; its height is not: it sits on what it bears on
+ * (`bearingOn`), each joist resting on each wall plate it crosses, as trusses
+ * sit on what is under them.
+ *
+ *   const floor = Floor.of({ joists: [2, 10], grade: DFL.No2 }).named("Floor")
+ *     .from([0, 0], { along: [0, 1], length: ft(10), width: -ft(12) })
+ *     .bearingOn(walls)
+ *     .load("dead", psf(10)).load("live", psf(40));
+ *
+ * It is an assembly (`floor.assembly()`): its members are `rim_joist`,
+ * `band_joist` and `joist`, and its corners are points of it
+ * (`floor.node("corner 1")`: where the middle of a rim meets the middle of a
+ * band joist, at their underside; in the order start, along, along + across,
+ * across). On plan it stays where it is drawn unless something moves it.
+ */
+export class Floor {
+  private constructor(
+    readonly name: string,
+    readonly framing: { readonly joists: Nominal; readonly spacing: Length; readonly grade: Grade },
+    readonly rect: { readonly corner: Point; readonly along: Point; readonly length: Length; readonly width: Length; readonly z: Length } | undefined,
+    readonly bearsOn: readonly (Perimeter | Partition | Assembly)[],
+    readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
+    readonly deck_: Length = 0,
+    readonly opening_: { readonly along: Length; readonly across: Length; readonly length: Length; readonly width: Length } | undefined = undefined,
+    /** What its deck is made of, top first, where that is said. */
+    readonly layers_: readonly Layer[] = [],
+  ) {}
+  static of(o: { joists: Nominal; grade: Grade; spacing?: Length }): Floor {
+    return new Floor("Floor", { joists: o.joists, spacing: o.spacing ?? inch(16), grade: o.grade }, undefined, [], []);
+  }
+  private with(p: Partial<{ name: string; rect: Floor["rect"]; bearsOn: Floor["bearsOn"]; loads: Floor["loads"]; deck: Length; opening: Floor["opening_"]; layers: readonly Layer[] }>): Floor {
+    return new Floor(p.name ?? this.name, this.framing, p.rect ?? this.rect, p.bearsOn ?? this.bearsOn, p.loads ?? this.loads, p.deck ?? this.deck_, p.opening ?? this.opening_, p.layers ?? this.layers_);
+  }
+  named(name: string): Floor {
+    return this.with({ name });
+  }
+  /**
+   * A deck on it, this thick (a 3/4" subfloor: `deck(inch(0.75))`): a sheet
+   * over the whole of it (about its opening, if it has one), on the joists.
+   * What stands on the floor stands on the deck.
+   *
+   * Or what it is made of, top first: `deck(layers("plywood 1/2", "plywood 23/32"))`
+   * (see `layers`). It is then as thick as they are together, drawn as a
+   * sheet of each, and their weight is a dead load on the floor.
+   */
+  deck(what: Length | DeadLoad): Floor {
+    if (typeof what === "number") return this.with({ deck: what, layers: [] });
+    const made = builtUp(what);
+    return this.with({ deck: made.thickness, layers: made.layers, loads: [...this.loads, { kind: "dead", pressure: what.pressure }] });
+  }
+  /** How far its top (its deck's, if it has one) is above the underside of its joists. */
+  get top(): Length {
+    return dressed(this.framing.joists[1]) + this.deck_;
+  }
+  /**
+   * Its rectangle on plan: from `corner`, the joists run `along` (a
+   * direction) for `length`, out to out of the rims; the joists are laid out
+   * from the corner across them for `width`, to the left of `along` (a
+   * negative width: to the right). `z` is only where the solve starts (the
+   * underside of the joists): it sits on what it bears on.
+   */
+  from(corner: Point, o: { along: Point; length: Length; width: Length; z?: Length }): Floor {
+    if (!(o.length > 0) || o.width === 0 || !(Math.hypot(o.along[0], o.along[1]) > 0)) throw new Error(`floor ${this.name}: give a direction, a length and a width`);
+    return this.with({ rect: { corner, along: o.along, length: o.length, width: o.width, z: o.z ?? 0 } });
+  }
+  /**
+   * What it sits on: each of its members rests on each cap plate of these
+   * perimeters that it crosses on plan, and on each level member (a beam) of
+   * these assemblies that it crosses (an assembly has to be added to the
+   * building before the floor).
+   */
+  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): Floor {
+    return this.with({ bearsOn: [...this.bearsOn, ...ps] });
+  }
+  /** A load over its area (N/m², use `psf`), carried by the joists: each takes what is nearest it. */
+  load(kind: LoadKind, pressure: number): Floor {
+    return this.with({ loads: [...this.loads, { kind, pressure }] });
+  }
+  /**
+   * An opening in it (a stairwell): a clear rectangle, `along` the joists
+   * from the floor's corner and `across` them, `length` by `width`. A doubled
+   * trimmer joist runs either side of it; a doubled header crosses at each end
+   * of it, hung from the trimmers; the joists it cuts stop at the headers
+   * (tail joists), hung from them. (Lay the opening's length along the
+   * joists where you can: fewer are cut, and the headers are short.) Its corners are points of the floor (`opening 1` to
+   * `opening 4`, at the underside of the joists; in the order start, along,
+   * along + across, across). It has to be clear of the floor's edges by a
+   * few joist thicknesses.
+   */
+  opening(o: { along: Length; across: Length; length: Length; width: Length }): Floor {
+    return this.with({ opening: o });
+  }
+  /** One of its corners (1 to 4: start, along, along + across, across), or of its opening's, as a node, at the underside of the joists. */
+  node(point: "corner 1" | "corner 2" | "corner 3" | "corner 4" | "opening 1" | "opening 2" | "opening 3" | "opening 4"): NodeHandle {
+    return new NodeHandle(`${this.name}/${point}`);
+  }
+  /** Its geometry on plan, and its joists across it: what `assembly` and `loose` are made from. */
+  private layout() {
+    const r = this.rect;
+    if (!r) throw new Error(`floor ${this.name}: give its rectangle with from(corner, { along, length, width })`);
+    const n = Math.hypot(r.along[0], r.along[1]);
+    const x: Point = [r.along[0] / n, r.along[1] / n];
+    const side = Math.sign(r.width);
+    const y: Point = [-x[1] * side, x[0] * side];
+    const [len, wid] = [r.length, Math.abs(r.width)];
+    const at = (a: Length, b: Length): Point3 => [r.corner[0] + x[0] * a + y[0] * b, r.corner[1] + x[1] * a + y[1] * b, r.z];
+    const { joists: size, spacing, grade } = this.framing;
+    const b = dressed(size[0]);
+    // Across the joists: a band joist at each side, commons between them at the spacing (from the outside of the
+    // first band joist). Each member's axis is along the middle of its underside: a rim's and a band joist's half a
+    // thickness inside the rectangle, so the rims run its whole width and everything else butts into them.
+    const commons: Length[] = [];
+    for (let k = 1; k * spacing < wid - 1.5 * b; k++) commons.push(k * spacing);
+    return { at, len, wid, b, size, spacing, grade, commons, x0: b / 2, x1: len - b / 2 };
+  }
+  /** What it is made of: a free assembly, sat on what it bears on. */
+  assembly(): Assembly {
+    const { at, len, wid, b, size, spacing, grade, commons, x0, x1 } = this.layout();
+    type J = { y: Length; role: "band_joist" | "joist" | "trimmer_joist" | "tail_joist"; id: string };
+    const o = this.opening_;
+    let js: J[] = [];
+    // About an opening: a trimmer either side of it (in place of any joist that would be within one's thickness of
+    // it), and the joists between them tails.
+    // (Trimmers and headers are doubled: two plies, so each is two thicknesses wide, its middle one in from the opening.)
+    const [t0, t1] = o ? [o.across - b, o.across + o.width + b] : [0, 0];
+    if (o && (t0 < 3 * b || t1 > wid - 3 * b || o.along < 0 || o.along + o.length > len)) throw new Error(`floor ${this.name}: its opening has to be inside it, clear of its sides`);
+    let [nj, nt] = [0, 0];
+    for (const y of commons) {
+      if (o && (Math.abs(y - t0) < 1.5 * b || Math.abs(y - t1) < 1.5 * b)) continue;
+      if (o && y > t0 && y < t1) js.push({ y, role: "tail_joist", id: `tail ${++nt}` });
+      else js.push({ y, role: "joist", id: `joist ${++nj}` });
+    }
+    if (o) js.push({ y: t0, role: "trimmer_joist", id: "trimmer 1" }, { y: t1, role: "trimmer_joist", id: "trimmer 2" });
+    js.sort((p, q) => p.y - q.y);
+    // (A header at each end of the opening, unless the opening runs to the floor's end there.)
+    const [hx0, hx1] = o ? [o.along - b, o.along + o.length + b] : [0, 0];
+    const [hasA, hasB] = [!!o && hx0 > x0 + 3 * b, !!o && hx1 < x1 - 3 * b];
+    let a = Assembly.named(this.name).point("corner 1", at(x0, b / 2)).point("corner 2", at(x1, b / 2)).point("corner 3", at(x1, wid - b / 2)).point("corner 4", at(x0, wid - b / 2));
+    const [rim0, rim1]: string[][] = [["corner 1"], ["corner 2"]];
+    const [headA, headB]: string[][] = [[], []];
+    for (const j of js) {
+      const tail = j.role === "tail_joist";
+      if (!tail || hasA) {
+        a = a.point(`${j.id} start`, at(x0, j.y));
+        rim0.push(`${j.id} start`);
+      }
+      if (!tail || hasB) {
+        a = a.point(`${j.id} end`, at(x1, j.y));
+        rim1.push(`${j.id} end`);
+      }
+      if (j.role !== "joist") {
+        if (hasA) a = a.point(`${j.id} at header 1`, at(hx0, j.y));
+        if (hasB) a = a.point(`${j.id} at header 2`, at(hx1, j.y));
+        if (hasA) headA.push(`${j.id} at header 1`);
+        if (hasB) headB.push(`${j.id} at header 2`);
+      }
+    }
+    rim0.push("corner 4");
+    rim1.push("corner 3");
+    const m = { size, grade, anchor: [0, -0.5] as const };
+    a = a.member("rim_joist", rim0, { ...m, priority: 20 }).member("rim_joist", rim1, { ...m, priority: 20 });
+    a = a.member("band_joist", ["corner 1", "corner 2"], { ...m, priority: 10 });
+    for (const j of js) {
+      if (j.role === "joist") a = a.member("joist", [`${j.id} start`, `${j.id} end`], { ...m, priority: 10 });
+      else if (j.role === "trimmer_joist") a = a.member("trimmer_joist", [`${j.id} start`, ...(hasA ? [`${j.id} at header 1`] : []), ...(hasB ? [`${j.id} at header 2`] : []), `${j.id} end`], { ...m, plies: 2, priority: 15 });
+      else {
+        if (hasA) a = a.member("tail_joist", [`${j.id} start`, `${j.id} at header 1`], { ...m, priority: 10 });
+        if (hasB) a = a.member("tail_joist", [`${j.id} at header 2`, `${j.id} end`], { ...m, priority: 10 });
+      }
+    }
+    a = a.member("band_joist", ["corner 4", "corner 3"], { ...m, priority: 10 });
+    if (hasA) a = a.member("floor_header", headA, { ...m, plies: 2, priority: 12 });
+    if (hasB) a = a.member("floor_header", headB, { ...m, plies: 2, priority: 12 });
+    const roles = new Set(js.map((j) => j.role));
+    for (const l of this.loads) {
+      for (const role of ["joist", "trimmer_joist", "tail_joist"] as const) if (roles.has(role)) a = a.lineLoad(l.kind, role, l.pressure * spacing);
+      a = a.lineLoad(l.kind, "band_joist", (l.pressure * spacing) / 2);
+    }
+    if (o) {
+      const [a0, a1, c0, c1] = [o.along, o.along + o.length, o.across, o.across + o.width];
+      a = a.point("opening 1", at(a0, c0)).point("opening 2", at(a1, c0)).point("opening 3", at(a1, c1)).point("opening 4", at(a0, c1)).hungFrom("floor_header", "trimmer_joist");
+    }
+    // (Its outer corners, for a deck to lie over; and about an opening, where the deck's pieces meet its sides.)
+    if (this.deck_ > 0) {
+      a = a.point("deck 1", at(0, 0)).point("deck 2", at(len, 0)).point("deck 3", at(len, wid)).point("deck 4", at(0, wid));
+      if (o) {
+        const [a0, a1, c0, c1] = [o.along, o.along + o.length, o.across, o.across + o.width];
+        a = a.point("deck a", at(a0, 0)).point("deck b", at(a1, 0)).point("deck c", at(a1, wid)).point("deck d", at(a0, wid));
+        a = a.point("deck e", at(a0, c0)).point("deck f", at(a1, c0)).point("deck g", at(a1, c1)).point("deck h", at(a0, c1));
+      }
+    }
+    return a.sitting().bearingOn(...this.bearsOn);
+  }
+  /**
+   * The same floor with nothing joining its joists: each joist, band joist
+   * and rim is a thing of its own, sat for itself on what is under it, as each
+   * truss of a roof is. For walls as built, whose tops are not in one plane:
+   * a floor that is one rigid thing cannot sit on all of them, and each of
+   * these can. Add them all: `.add(floor.loose())`. (It has no opening, no
+   * deck, and nothing can stand on it: it has no one top.)
+   */
+  loose(): Assembly[] {
+    if (this.opening_ || this.deck_ > 0) throw new Error(`floor ${this.name}: a loose floor has no opening and no deck`);
+    const { at, wid, b, size, spacing, grade, commons, x0, x1 } = this.layout();
+    const m = { size, grade, anchor: [0, -0.5] as const };
+    const one = (id: string, role: string, p: Point3, q: Point3, w: number) => {
+      let a = Assembly.named(`${this.name} ${id}`).point("start", p).point("end", q).member(role, ["start", "end"], m);
+      for (const l of this.loads) if (w > 0) a = a.lineLoad(l.kind, role, l.pressure * w);
+      return a.sitting().bearingOn(...this.bearsOn);
+    };
+    // (Rims and joists butt: a joist runs between the rims' inner faces, 2 mm short of each, as cut: a joist
+    // that slopes a little turns its square end toward the rim.)
+    const [j0, j1] = [x0 + b / 2 + mm(2), x1 - b / 2 - mm(2)];
+    return [
+      one("rim 1", "rim_joist", at(x0, 0), at(x0, wid), 0),
+      one("rim 2", "rim_joist", at(x1, 0), at(x1, wid), 0),
+      one("band 1", "band_joist", at(j0, b / 2), at(j1, b / 2), spacing / 2),
+      ...commons.map((y, k) => one(`joist ${k + 1}`, "joist", at(j0, y), at(j1, y), spacing)),
+      one("band 2", "band_joist", at(j0, wid - b / 2), at(j1, wid - b / 2), spacing / 2),
+    ];
+  }
+  toJSON() {
+    // (Free, and sat on what it bears on; on plan, where it is drawn, as a hint.)
+    const o = this.opening_;
+    const pieces = o ? [["deck 1", "deck a", "deck d", "deck 4"], ["deck b", "deck 2", "deck 3", "deck c"], ["deck a", "deck b", "deck f", "deck e"], ["deck h", "deck g", "deck c", "deck d"]] : [];
+    return { ...this.assembly().toJSON(), deck: this.deck_ > 0 ? { thickness: this.deck_, above: dressed(this.framing.joists[1]), pieces, layers: this.layers_ } : undefined };
+  }
+}
+
+// ----- rafter roofs ------------------------------------------------------------
+
+/**
+ * A roof of rafters: pairs of rafters from the walls' plates up to the
+ * ridge, where each pair meets, at a spacing, with a ceiling tie across each
+ * pair at the plates. Like a floor it is given on plan (a corner, the way its ridge runs,
+ * how long), with its span and pitch, and not its height: it sits on the
+ * plates it bears on.
+ *
+ *   const roof = RafterRoof.of({ span: ft(12), pitch: 6 / 12, rafters: [2, 8], grade: DFL.No2 }).named("Roof")
+ *     .from([ft(12), 0], { along: [0, 1], length: ft(16) })
+ *     .bearingOn(walls)
+ *     .load("snow", psf(25));
+ *
+ * The span is between the walls' outside lines, to the left of `along`; each
+ * rafter's foot is `seat` in from that line (1 3/4" by default: the middle of
+ * a 2x4 plate), cut level, so that it sits flat on the plate. Its head is cut
+ * plumb, against its pair's. The ties lie on the plates beside the rafters.
+ * It is one rigid thing, as a floor is.
+ *
+ * `farPitch`: the pitch of the far side (the side away from `corner`), where
+ * it is not the near side's: the ridge is then where the two meet, not in the
+ * middle (a saltbox). The steeper rafter is deeper, measured plumb, so it is
+ * let down at its foot (a deeper level cut) for the two tops to meet at the
+ * ridge.
+ *
+ * `ends`: what each end is (where it starts, where it stops): a `"gable"`
+ * (the default: a pair at the end) or a `"hip"`. At a hip the roof slopes
+ * down to the end wall too, at the same pitch: the ridge stops half a span
+ * short; a hip rafter runs up from each corner to the ridge's end, where the
+ * two are cut on the plane they meet in and the last pair stands against
+ * their points; and jack rafters run from the plates to the hips, each cut
+ * against its hip's side. The end wall is framed by jacks alone.
+ *
+ * *Not yet:* a ridge board (nothing would carry it in the load path as it
+ * is worked out); a birdsmouth, and a tail past the seat (a member cannot be
+ * notched); the ties are not fastened to the rafters, so their thrust is
+ * not taken; a hip is not backed (its top is square, a little under the
+ * planes); valleys.
+ */
+export class RafterRoof {
+  private constructor(
+    readonly name: string,
+    readonly o: { readonly span: Length; readonly pitch: number; readonly farPitch: number; readonly rafters: Nominal; readonly grade: Grade; readonly spacing: Length; readonly ties: Nominal; readonly seat: Length; readonly ends: readonly ["gable" | "hip", "gable" | "hip"] },
+    readonly rect: { readonly corner: Point; readonly along: Point; readonly length: Length } | undefined,
+    readonly bearsOn: readonly (Perimeter | Partition | Assembly)[],
+    readonly loads: readonly { readonly kind: LoadKind; readonly pressure: number }[],
+  ) {}
+  static of(o: { span: Length; pitch: number; farPitch?: number; rafters: Nominal; grade: Grade; spacing?: Length; ties?: Nominal; seat?: Length; ends?: readonly ["gable" | "hip", "gable" | "hip"] }): RafterRoof {
+    if (!(o.span > 0) || !(o.pitch > 0)) throw new Error("rafter roof: give a span and a pitch");
+    const ends = o.ends ?? ["gable", "gable"];
+    if (ends.includes("hip") && (o.farPitch ?? o.pitch) !== o.pitch) throw new Error("rafter roof: a roof with a hip has one pitch (its two sides and its hip ends alike)");
+    return new RafterRoof("Roof", { span: o.span, pitch: o.pitch, farPitch: o.farPitch ?? o.pitch, rafters: o.rafters, grade: o.grade, spacing: o.spacing ?? inch(24), ties: o.ties ?? [2, 6], seat: o.seat ?? inch(1.75), ends }, undefined, [], []);
+  }
+  named(name: string): RafterRoof {
+    return new RafterRoof(name, this.o, this.rect, this.bearsOn, this.loads);
+  }
+  /** Where it is on plan: from `corner`, its ridge runs `along` for `length`; its span is to the left of that. */
+  from(corner: Point, o: { along: Point; length: Length }): RafterRoof {
+    if (!(o.length > 0) || !(Math.hypot(o.along[0], o.along[1]) > 0)) throw new Error(`roof ${this.name}: give the way its ridge runs and how long it is`);
+    return new RafterRoof(this.name, this.o, { corner, along: o.along, length: o.length }, this.bearsOn, this.loads);
+  }
+  /** What it sits on: its ties and rafters rest on each cap plate of these that they cross or stop over. */
+  bearingOn(...ps: (Perimeter | Partition | Assembly)[]): RafterRoof {
+    return new RafterRoof(this.name, this.o, this.rect, [...this.bearsOn, ...ps], this.loads);
+  }
+  /** A load over its plan area (N/m², use `psf`), carried by the rafters. */
+  load(kind: LoadKind, pressure: number): RafterRoof {
+    return new RafterRoof(this.name, this.o, this.rect, this.bearsOn, [...this.loads, { kind, pressure }]);
+  }
+  /**
+   * Where each side's rafters have their feet (how far in from that side's wall line), and how far their lumber
+   * is let down from the line between foot and ridge. Both `seat` and nothing, where the sides are of one pitch.
+   * Where they are not, the steeper rafter is deeper, measured plumb, than the other: so that the two tops meet
+   * at the ridge it is let down by the difference (a deeper level cut at its foot), and its foot is set out so
+   * that it still bears in the middle of the plate.
+   */
+  private get sides(): { readonly near: { readonly foot: Length; readonly down: Length }; readonly far: { readonly foot: Length; readonly down: Length } } {
+    const { pitch, farPitch, seat, rafters } = this.o;
+    const plumb = (q: number) => dressed(rafters[1]) * Math.hypot(1, q);
+    const side = (q: number, other: number) => (q > other ? { foot: seat - (plumb(q) - plumb(other)) / q, down: plumb(q) - plumb(other) } : { foot: seat, down: 0 });
+    return { near: side(pitch, farPitch), far: side(farPitch, pitch) };
+  }
+  /** How far across the span the ridge is, from the near side (the middle, if both sides are of one pitch). */
+  get ridgeAt(): Length {
+    const { span, pitch, farPitch } = this.o;
+    const { near, far } = this.sides;
+    return (farPitch * (span - far.foot) + pitch * near.foot) / (pitch + farPitch);
+  }
+  /** How high the rafters' line is at the ridge, above the plates (their undersides, where the sides are of one pitch). */
+  get rise(): Length {
+    return (this.ridgeAt - this.sides.near.foot) * this.o.pitch;
+  }
+  /** What it is made of: a free assembly, sat on what it bears on. */
+  assembly(): Assembly {
+    const r = this.rect;
+    if (!r) throw new Error(`roof ${this.name}: give where it is with from(corner, { along, length })`);
+    const { span, pitch, farPitch, rafters, grade, spacing, ties, seat, ends } = this.o;
+    const n = Math.hypot(r.along[0], r.along[1]);
+    const x: Point = [r.along[0] / n, r.along[1] / n];
+    const y: Point = [-x[1], x[0]];
+    const at = (a: Length, c: Length, z: Length): Point3 => [r.corner[0] + x[0] * a + y[0] * c, r.corner[1] + x[1] * a + y[1] * c, z];
+    const b = dressed(rafters[0]);
+    const [mid, h, { near, far }] = [this.ridgeAt, this.rise, this.sides];
+    // (How far a side's lumber is let down, as where its line is in its depth: at its underside if not at all.)
+    const set = (q: number, down: Length) => -0.5 + down / (dressed(rafters[1]) * Math.hypot(1, q));
+    // Along the ridge: a pair at each end of it (at a gable, half a thickness in from the end; at a hip, half a
+    // span in, where the ridge stops), and pairs between at the spacing.
+    const [first, last] = [ends[0] === "hip" ? span / 2 : b / 2, ends[1] === "hip" ? r.length - span / 2 : r.length - b / 2];
+    if (last - first < (ends.includes("hip") ? 4 * b : 0)) throw new Error(`roof ${this.name}: too short for its hips: it has to be longer than its span, for a ridge between them`);
+    const base = ends[0] === "hip" ? first : 0;
+    const as: Length[] = [first];
+    for (let k = 1; base + k * spacing < last - b; k++) as.push(base + k * spacing);
+    as.push(last);
+    // The pair at a hip stands wholly on the ridge's side of where the ridge stops (its face there, not its
+    // middle): so that none of it is above the plane of the hip end. Which way a pair is set over: +1 along the ridge.
+    // (And clear of the hips' heads, which run that far past it: a hip's half thickness, on the skew.)
+    const over = 0.5 + Math.SQRT1_2;
+    const lean = (k: number): number => (k === 0 && ends[0] === "hip" ? over : k === as.length - 1 && ends[1] === "hip" ? -over : 0);
+    let a = Assembly.named(this.name);
+    as.forEach((s, k) => {
+      a = a.point(`left foot ${k + 1}`, at(s, near.foot, 0)).point(`right foot ${k + 1}`, at(s, span - far.foot, 0)).point(`ridge ${k + 1}`, at(s, mid, h));
+      // (The tie lies on the plates beside the pair: toward the roof's middle from it.)
+      const beside = s + (s < r.length / 2 ? 1 : -1) * (b + (lean(k) ? Math.abs(lean(k)) + 0.5 : 0) * b);
+      a = a.point(`left tie ${k + 1}`, at(beside, seat, 0)).point(`right tie ${k + 1}`, at(beside, span - seat, 0));
+    });
+    const rafter = { size: rafters, grade, anchor: [0, -0.5] as [number, number] };
+    as.forEach((_, k) => {
+      // (A rafter's own left is against the ridge's way for the left of a pair, and with it for the right.)
+      for (const [side, turn, depth] of [["left", 1, set(pitch, near.down)], ["right", -1, set(farPitch, far.down)]] as const) a = a.member("rafter", [`${side} foot ${k + 1}`, `ridge ${k + 1}`], { ...rafter, anchor: [turn * lean(k), depth], priority: 10, cut: ["level", "plumb"] });
+      a = a.member("ceiling_tie", [`left tie ${k + 1}`, `right tie ${k + 1}`], { size: ties, grade, anchor: [0, -0.5], cut: ["square", "square"] });
+    });
+    // A hip end: a hip from each corner, and the jacks either side of each hip. (The two hips are cut on the
+    // plane they meet in, under the ridge's line; a jack where it meets its hip's side. No rafter up the middle
+    // of the end: its top would stand above the roof's sides where it met the ridge, with no ridge board for
+    // it to stop against.)
+    const hip = (tag: string, ridge: string, A: (u: Length) => Length) => {
+      // (Jacks half a spacing either side of the middle of the end and of the last pair, then at the spacing.)
+      const us: Length[] = [];
+      for (let j = 1; span / 2 - (j - 0.5) * spacing > seat + 4 * b; j++) us.unshift(span / 2 - (j - 0.5) * spacing);
+      for (const [side, C] of [["left", (u: Length) => u], ["right", (u: Length) => span - u]] as const) {
+        const name = `${tag} ${side}`;
+        a = a.point(`${name} hip foot`, at(A(seat), C(seat), 0));
+        us.forEach((u, j) => {
+          a = a.point(`${name} hip ${j + 1}`, at(A(u), C(u), pitch * (u - seat))).point(`${name} side jack ${j + 1}`, at(A(u), C(seat), 0)).point(`${name} end jack ${j + 1}`, at(A(seat), C(u), 0));
+        });
+        a = a.member("hip_rafter", [`${name} hip foot`, ...us.map((_, j) => `${name} hip ${j + 1}`), ridge], { ...rafter, priority: 8, cut: ["level", [y[0], y[1], 0]] });
+        us.forEach((_, j) => {
+          for (const jack of ["side", "end"]) a = a.member("rafter", [`${name} ${jack} jack ${j + 1}`, `${name} hip ${j + 1}`], { ...rafter, cut: ["level", null] });
+        });
+      }
+    };
+    if (ends[0] === "hip") hip("start", "ridge 1", (u) => u);
+    if (ends[1] === "hip") hip("far", `ridge ${as.length}`, (u) => r.length - u);
+    // (Per length of rafter: what falls on its strip of the plan. Each side by its own pitch, where they differ:
+    // the pairs' rafters are its first members, left then right.)
+    const per = (q: number) => spacing / Math.hypot(1, q);
+    for (const l of this.loads) {
+      if (farPitch === pitch) a = a.lineLoad(l.kind, "rafter", l.pressure * per(pitch));
+      else as.forEach((_, k) => (a = a.lineLoad(l.kind, `rafter#${2 * k + 1}`, l.pressure * per(pitch)).lineLoad(l.kind, `rafter#${2 * k + 2}`, l.pressure * per(farPitch))));
+    }
+    return a.bearingWith("rafter", "hip_rafter", "ceiling_tie").sitting().bearingOn(...this.bearsOn);
+  }
+  toJSON() {
+    return this.assembly().toJSON();
+  }
+}
+
+// ----- roofs as surfaces --------------------------------------------------------
+
+/** An edge of a roof part: a gable, or an eave with its own pitch, overhang or height. */
+export type RoofEdge = "gable" | { readonly pitch?: number; readonly overhang?: Length; readonly height?: Length };
+
+/** How a part of a roof is given. */
+export interface RoofPartOptions {
+  /** Its pitch (rise over run: `pitch(6)` is 6 in 12), at every eave that does not give its own. */
+  readonly pitch: number;
+  /** How far it runs out past its eaves. */
+  readonly overhang?: Length;
+  /** How far it runs out past its gables. */
+  readonly rake?: Length;
+  /** Which edges are gables, by the wall they are over or by number (from 1, as drawn). Every other edge is an eave. */
+  readonly gables?: readonly (string | number)[];
+  /** An edge that differs: `{ Back: { pitch: pitch(3) } }`, `{ 2: "gable" }`. */
+  readonly edges?: Readonly<Record<string | number, RoofEdge>>;
+  /** What its eaves are over (a part given `over` walls is over those): an eave is as high as the plate under it. */
+  readonly on?: readonly (Perimeter | Partition | Assembly)[];
+  /** How far above the plate the roof's underside is, over the eave's line (no framing to say). */
+  readonly heel?: Length;
+  /** How high its eaves are, where nothing under them says (a dormer's). */
+  readonly height?: Length;
+  /**
+   * Edges moved outward by so much: `{ 4: ft(8) }`. A wing over its own walls
+   * is run on into the roof it meets, as far as that roof's ridge, so that the
+   * two overlap (and meet in valleys).
+   */
+  readonly reach?: Readonly<Record<string | number, Length>>;
+  /**
+   * What frames it, where that is made apart: a `TrussRoof` (of any shapes:
+   * custom ones, some trusses of another shape, trusses read off their
+   * layout), a `RafterRoof`, an `Assembly` of your own members, a `Floor`.
+   * The part's planes are then on its members' tops, and its loads are
+   * theirs. Several parts may be framed by the one thing (a sloped part on a
+   * truss's top chords and a flat part on its bottom chord's run past the
+   * heel). It is added to a building with the roof.
+   */
+  readonly framing?: TrussRoof | RafterRoof | Assembly | Floor;
+  /**
+   * Which of the framing's members carry this part, by role: its planes are
+   * their tops, and its loads go on them (rafters and top chords, if not
+   * said). `"bottom_chord"`: a flat part on a truss's bottom chord.
+   */
+  readonly carriedBy?: string | readonly string[];
+  /** What this part is covered with, where that is not what the roof is (see `Roof.covering`). */
+  readonly covering?: DeadLoad;
+  /** Framed with rafters: pairs at a spacing, a tie across each (see `RafterRoof`). */
+  readonly rafters?: { readonly size: Nominal; readonly grade: Grade; readonly spacing?: Length; readonly ties?: Nominal; readonly seat?: Length };
+  /**
+   * Framed with trusses (see `TrussRoof`): `shape` is the kind (`TrussShape.fink`,
+   * the default; `TrussShape.kingPost`, ...; for a part with one eave,
+   * `TrussShape.mono`), made to the part's span, pitch and overhang. A part
+   * not given `over` walls says `at` what node its first heel is.
+   */
+  readonly trusses?: {
+    readonly grade: Grade;
+    readonly shape?: (o: { span: Length; pitch: number; overhang: Length; panels: number }) => TrussShape;
+    readonly spacing?: Length;
+    readonly chord?: Nominal;
+    readonly web?: Nominal;
+    readonly at?: NodeHandle;
+  };
+}
+
+interface RoofPart {
+  readonly name: string;
+  readonly outline: readonly Point[];
+  readonly edges: readonly ({ readonly name?: string; readonly pitch: number; readonly overhang: Length; readonly height?: Length } | null)[];
+  readonly rake: Length;
+  readonly on: readonly (Perimeter | Partition | Assembly)[];
+  readonly heel: Length;
+  readonly framing?: TrussRoof | RafterRoof | Assembly | Floor;
+  /** More that frames it: a valley set, where it lies on a part before it. */
+  readonly more?: readonly TrussRoof[];
+  readonly carriedBy: readonly string[];
+  readonly layers?: readonly Layer[];
+  readonly loads: readonly AreaLoad[];
+}
+
+/**
+ * A roof, given as its surfaces. A roof is one or more parts. A part is an
+ * outline on plan, each edge of which is an eave (the roof rises inward from
+ * it, at a pitch) or a gable. Nothing else is given: the ridge, the hips and
+ * the valleys are where the planes meet.
+ *
+ *   Roof.named("Roof").over(walls, { pitch: pitch(6), gables: ["Left", "Right"] })   // a gable roof
+ *   Roof.named("Roof").over(walls, { pitch: pitch(6) })                              // every edge an eave: a hip roof
+ *   Roof.named("Roof").over(walls, { pitch: pitch(3), gables: ["Left", "Right", "Back"] })   // one eave: a shed
+ *   Roof.named("Roof").over(walls, { pitch: pitch(8), edges: { Back: { pitch: pitch(4) } }, gables: [...] })   // a saltbox
+ *
+ * Within a part the roof is the lowest of its planes. Where parts overlap,
+ * the higher is the roof: so a wing is another part run into the main roof
+ * (they meet in valleys), and a dormer a small part on a slope. A part's
+ * outline is convex; a roof that turns a corner is two parts.
+ *
+ *   Roof.named("Roof")
+ *     .part("Main", [[0, 0], [ft(30), 0], [ft(30), ft(20)], [0, ft(20)]], { pitch: pitch(6), gables: [2, 4], on: [walls] })
+ *     .part("Wing", [[ft(8), -ft(10)], [ft(20), -ft(10)], [ft(20), ft(10)], [ft(8), ft(10)]], { pitch: pitch(6), gables: [1, 3], on: [walls] })
+ *
+ * `over(walls, ...)` takes the part's outline from a perimeter, and names its
+ * edges by the walls. How high a plane is, is not given: it is on the tops of
+ * the part's framing where it has any that slopes that way, else as high as
+ * the cap plate of the wall under its eave (and `heel` above that); an eave
+ * with nothing under it is as high as the part's others.
+ *
+ * A part that is a rectangle is framed by saying with what: `rafters:
+ * { size: [2, 8], grade }` or `trusses: { grade }`. The framing is a
+ * `RafterRoof` or a `TrussRoof`, set out from the part (its span, its
+ * pitches, its overhang, where it is, what its ends are), bearing on what the
+ * part is on; add the roof to a building and its framing is added with it.
+ * What can be framed:
+ *
+ * - two eaves, opposite: rafters or trusses (a gable roof); rafters where the
+ *   two are of different pitches (a saltbox);
+ * - one eave: trusses, each a mono truss (a shed);
+ * - three eaves, or four: rafters, with a hip at each end that is an eave.
+ *
+ * A part that runs into an earlier one (a wing) is framed only as far as that
+ * one reaches: where they overlap, the earlier is framed through. Where both
+ * are trussed, the wing is carried on over the other by a valley set:
+ * trusses of the wing's own slopes, smaller and smaller, each with a level
+ * bottom chord lying on the other roof's top chords.
+ *
+ * Or a part is given its framing, made apart (`framing`): trusses of your own
+ * shapes, an assembly of your own members. Nothing of how those are given is
+ * lost: the roof only says what surface is on them, what it is covered with
+ * and what loads it. A part of no pitch is flat (`flat`): a level surface on
+ * the tops of the members that carry it (`carriedBy`).
+ *
+ *   const trusses = TrussRoof.of(shape, { at, spanDir, length, grade }).withShape([1], gable).bearingOn(walls);
+ *   const roof = Roof.named("Roof")
+ *     .part("Slope", outline, { pitch: pitch(4), gables: [2, 4], framing: trusses })
+ *     .flat("Flat", strip, { framing: trusses, carriedBy: "bottom_chord" })
+ *     .covering(layers("standing seam 24ga steel", "plywood 15/32"), { on: "Slope" })
+ *     .covering(layers("tpo 60 mil", "plywood 15/32"), { on: "Flat" })
+ *     .snow(roofSnow(site, { ce: 1.0, ct: 1.2 }));
+ *
+ * A load (`load`, `snow`, `dead`) is over the whole roof or over the parts
+ * named (`on`); it goes on the members that carry each part, over what of
+ * each is under the part, by the width of roof each carries. The weight of
+ * what a part is covered with is a dead load on it, without being said.
+ *
+ * The surfaces are written as a deck (sheets on the planes), and the roof is
+ * told how much it has of each kind of edge (ridge, hip, valley, eave, rake)
+ * and its area.
+ *
+ * *Not yet:* a wing of rafters over the roof it runs into (valley rafters and
+ * jacks): that stretch is its surfaces only; the last of a valley set, too
+ * short to cross two of the trusses under it; trusses at a hip; rafters for a
+ * shed (a taller wall under their heads).
+ */
+export class Roof {
+  private constructor(
+    readonly name: string,
+    readonly parts: readonly RoofPart[],
+    readonly deck_: Length,
+    /** What it is covered with, top first, where that is said. */
+    readonly layers_: readonly Layer[] = [],
+  ) {}
+  static named(name: string): Roof {
+    return new Roof(name, [], inch(0.5));
+  }
+  /** A part over a perimeter: its outline the perimeter's, its edges named by the walls. Called `name` (the roof's own name, if not given). */
+  over(walls: Perimeter, o: RoofPartOptions & { name?: string }): Roof {
+    const pts = [walls.start, ...walls.segments.map((g) => g.to)];
+    const names: (string | undefined)[] = walls.segments.map((g) => g.side?.name);
+    if (walls.closed) pts.pop();
+    else names.push(undefined);
+    return this.add(o.name ?? this.name, pts, names, { ...o, on: [walls, ...(o.on ?? [])] }, walls);
+  }
+  /** A part by its outline on plan (convex; edge 1 is from its first point to its second). */
+  part(name: string, outline: readonly Point[], o: RoofPartOptions): Roof {
+    return this.add(name, outline, outline.map(() => undefined), o, undefined);
+  }
+  /**
+   * A flat part, by its outline on plan: a level surface, on the tops of the
+   * members that carry it (its `framing`'s, of the roles `carriedBy`), or at a
+   * `height` given. Higher parts cover it where they overlap, as any part.
+   */
+  flat(name: string, outline: readonly Point[], o: Omit<RoofPartOptions, "pitch" | "gables" | "edges" | "rafters" | "trusses"> = {}): Roof {
+    return this.add(name, outline, outline.map(() => undefined), { ...o, pitch: 0, gables: outline.slice(1).map((_, k) => k + 2) }, undefined);
+  }
+  private add(name: string, outline: readonly Point[], names: readonly (string | undefined)[], o: RoofPartOptions, walls: Perimeter | undefined): Roof {
+    const n = outline.length;
+    if (n < 3) throw new Error(`roof ${this.name}: part ${name} needs an outline of three points or more`);
+    if (this.parts.some((p) => p.name === name)) throw new Error(`roof ${this.name}: two parts named ${name}`);
+    if (!(o.pitch >= 0)) throw new Error(`roof ${this.name}: part ${name} needs a pitch (none: flat)`);
+    // Which edge a key names: a wall's name, or a number from 1.
+    const edge = (key: string | number): number => {
+      const k = typeof key === "number" || /^\d+$/.test(key) ? Number(key) - 1 : names.indexOf(key);
+      if (!(k >= 0 && k < n)) throw new Error(`roof ${this.name}: part ${name} has no edge ${key} (${names.filter((x) => x).join(", ") || `1 to ${n}`})`);
+      return k;
+    };
+    const said: (RoofEdge | undefined)[] = outline.map(() => undefined);
+    for (const g of o.gables ?? []) said[edge(g)] = "gable";
+    for (const [key, e] of Object.entries(o.edges ?? {})) said[edge(key)] = e;
+    const edges = said.map((e, k) => (e === "gable" ? null : { name: names[k], pitch: e?.pitch ?? o.pitch, overhang: e?.overhang ?? o.overhang ?? 0, height: e?.height ?? o.height }));
+    const reach = outline.map(() => 0);
+    for (const [key, d] of Object.entries(o.reach ?? {})) reach[edge(key)] = d;
+    const base: RoofPart = { name, outline: reach.some((d) => d) ? grown(outline, reach) : outline, edges, rake: o.rake ?? 0, on: o.on ?? [], heel: o.heel ?? 0, carriedBy: [o.carriedBy ?? []].flat(), layers: o.covering && builtUp(o.covering).layers, loads: [] };
+    const [framing, ...more] = this.frame(base, o, walls, outline);
+    return new Roof(this.name, [...this.parts, { ...base, framing, more }], this.deck_, this.layers_);
+  }
+  /** A part's framing, set out from the part (`drawn`: its outline before any of its edges were moved). */
+  private frame(p: RoofPart, o: RoofPartOptions, walls: Perimeter | undefined, drawn: readonly Point[]): [RoofPart["framing"], ...TrussRoof[]] {
+    const what = `roof ${this.name}: part ${p.name}`;
+    if ([o.rafters, o.trusses, o.framing].filter((x) => x).length > 1) throw new Error(`${what} is framed with rafters, with trusses, or by framing made apart: one of them`);
+    if (o.framing) return [o.framing];
+    if (!o.rafters && !o.trusses) return [undefined];
+    const pt = (k: number): Point => p.outline[((k % 4) + 4) % 4];
+    const side = (k: number): Point => [pt(k + 1)[0] - pt(k)[0], pt(k + 1)[1] - pt(k)[1]];
+    const eave = (k: number) => p.edges[((k % 4) + 4) % 4];
+    const square = p.outline.length === 4 && [0, 1, 2, 3].every((k) => Math.abs(side(k)[0] * side(k + 1)[0] + side(k)[1] * side(k + 1)[1]) < 1e-6 * Math.hypot(...side(k)) * Math.hypot(...side(k + 1)));
+    if (!square) throw new Error(`${what}: only a part that is a rectangle is framed yet`);
+    // The eave its framing is set out along: one whose opposite is an eave too (of the longer two, where all four
+    // are); or its one eave.
+    const eaves = [0, 1, 2, 3].filter((k) => eave(k));
+    const paired = [0, 1].filter((k) => eave(k) && eave(k + 2));
+    const k = paired.length === 2 ? (Math.hypot(...side(0)) >= Math.hypot(...side(1)) ? 0 : 1) : (paired[0] ?? (eaves.length === 1 ? eaves[0] : -1));
+    if (k < 0) throw new Error(`${what}: two eaves that meet at a corner are not framed yet (its surfaces only)`);
+    // Set out from an end of that eave, so that it spans to the left of the way its ridge runs.
+    const [d, across] = [side(k), side(k + 1)];
+    const [whole, span] = [Math.hypot(...d), Math.hypot(...across)];
+    const inside = -d[1] * across[0] + d[0] * across[1] > 0;
+    const corner = inside ? k : k + 1;
+    const along: Point = inside ? [d[0] / whole, d[1] / whole] : [-d[0] / whole, -d[1] / whole];
+    const { pitch, overhang } = eave(k)!;
+    const far = eave(k + 2);
+    // What its two ends are (where it starts, where it stops): an eave there is a hip.
+    const ends = (inside ? [k - 1, k + 1] : [k + 1, k - 1]).map((e) => (eave(e) ? "hip" : "gable")) as ["gable" | "hip", "gable" | "hip"];
+    if (ends.includes("hip") && [k - 1, k + 1, k + 2].some((e) => eave(e) && eave(e)!.pitch !== pitch)) throw new Error(`${what}: a roof with a hip is framed where its eaves are all of one pitch`);
+    // Framed as far as the parts before it reach: where it runs into one of them, that one is framed through.
+    let [t0, t1] = [0, whole];
+    // (And which part it runs into, at which end: what a valley set would lie on.)
+    let into: { q: RoofPart; far: boolean } | undefined;
+    const alongOf = (r: Point) => (r[0] - pt(corner)[0]) * along[0] + (r[1] - pt(corner)[1]) * along[1];
+    for (const q of this.parts) {
+      const over = clipped(p.outline, grown(q.outline, q.edges.map((e) => (e ? e.overhang : q.rake))));
+      if (over.length < 3) continue;
+      const ts = over.map(alongOf);
+      const [lo, hi] = [Math.max(t0, Math.min(...ts)), Math.min(t1, Math.max(...ts))];
+      if (hi - lo < 1e-6) continue;
+      // (The longer of what is left, before it or beyond it.)
+      const far = lo - t0 >= t1 - hi;
+      [t0, t1] = far ? [t0, lo] : [hi, t1];
+      into = { q, far };
+    }
+    if ((t0 > 0 && ends[0] === "hip") || (t1 < whole && ends[1] === "hip")) throw new Error(`${what}: the end of it that runs into another part is a gable, not a hip`);
+    const length = t1 - t0;
+    if (!(length > span / 4)) throw new Error(`${what}: too little of it is clear of the parts before it to frame`);
+    const from: Point = [pt(corner)[0] + along[0] * t0, pt(corner)[1] + along[1] * t0];
+    if (o.rafters) {
+      const r = o.rafters;
+      if (!far) throw new Error(`${what}: a roof with one eave is framed with trusses (rafters would need a taller wall under their heads: not yet)`);
+      return [
+        RafterRoof.of({ span, pitch, farPitch: far.pitch, rafters: r.size, grade: r.grade, spacing: r.spacing, ties: r.ties, seat: r.seat, ends })
+          .named(`${p.name} rafters`)
+          .from(from, { along, length })
+          .bearingOn(...p.on),
+      ];
+    }
+    const t = o.trusses!;
+    if (ends.includes("hip")) throw new Error(`${what}: a hip is framed with rafters (trusses at a hip: not yet)`);
+    if (far && far.pitch !== pitch) throw new Error(`${what}: two pitches are framed with rafters (trusses of two pitches: not yet)`);
+    // (Set out from the walls' corner there, as the walls are drawn: so far along from it.)
+    const c = ((corner % 4) + 4) % 4;
+    const at = t.at ?? walls?.corner(c + 1);
+    if (!at) throw new Error(`${what}: say at what node its first truss's heel is (\`trusses: { at }\`), or give the part \`over\` walls`);
+    const start = t.at ? t0 : (from[0] - drawn[c][0]) * along[0] + (from[1] - drawn[c][1]) * along[1];
+    const shape: (o: { span: Length; pitch: number; overhang: Length; panels: number }) => TrussShape = t.shape ?? (far ? TrussShape.fink : TrussShape.mono);
+    const spanDir: Point = [-along[1], along[0]];
+    const trusses = TrussRoof.of(shape({ span, pitch, overhang, panels: 3 }), { name: `${p.name} trusses`, at, spanDir, length, spacing: t.spacing, grade: t.grade, chord: t.chord, web: t.web, start: Math.abs(start) > 1e-9 ? start : undefined }).bearingOn(...p.on);
+    // Where it runs into a part before it that is trussed too, across that part's trusses: a valley set on them.
+    // Trusses of this part's own planes, smaller and smaller, each with a level bottom chord that lies on the other
+    // part's top chords (at its uphill face: they slope), as far up as one still crosses two of them.
+    const main = into?.q.framing;
+    if (!far || !into || !(main instanceof TrussRoof)) return [trusses];
+    const crossing = main.spec.span_dir[0] * along[0] + main.spec.span_dir[1] * along[1];
+    if (Math.abs(Math.abs(crossing) - 1) > 1e-6) return [trusses];
+    // (Where the other part's wall line is, along this part's ridge, and its pitch up from there.)
+    const qs = into.q.outline.map(alongOf);
+    const wall = into.far ? Math.min(...qs) : Math.max(...qs);
+    const rises = into.far ? 1 : -1;
+    const inPitch = into.q.edges.find((e, k) => e && Math.abs(alongOf(into!.q.outline[k]) - wall) < 1e-6 && Math.abs(alongOf(into!.q.outline[(k + 1) % into!.q.outline.length]) - wall) < 1e-6)?.pitch;
+    if (!inPitch) return [trusses];
+    const [sp, thick, chord] = [t.spacing ?? inch(24), dressed(2), t.chord ?? ([2, 4] as Nominal)];
+    const onTop = dressed((main.spec.chord ?? [2, 4])[1]) * Math.hypot(1, inPitch);
+    // Stations on this part's own spacing, on from its last truss, each with how far in its heels are (where its
+    // top chords' line comes down to its bottom chord's underside).
+    const grid = (n: number) => t0 + n * sp;
+    const ns: number[] = [];
+    for (let n = Math.ceil((Math.min(t0, t1) - whole - t0) / sp); grid(n) < 2 * whole; n++) {
+      const inside = into.far ? grid(n) > Math.max(t1, wall) + thick : grid(n) < Math.min(t0, wall) - thick;
+      if (inside) ns.push(n);
+    }
+    const heel = (n: number, k: number, count: number) => {
+      // (Its lumber: to one side of its line at the set's two ends, about it between. Its uphill face.)
+      const [lo, hi] = k === 0 ? [0, thick] : k === count - 1 ? [-thick, 0] : [-thick / 2, thick / 2];
+      const up = rises * (grid(n) + (rises > 0 ? hi : lo) - wall);
+      return (inPitch * up + onTop) / pitch;
+    };
+    const fits = (list: number[]) => list.filter((n, k) => span - 2 * heel(n, k, list.length) > 2 * main.spec.spacing + inch(6));
+    let set = fits(ns);
+    set = fits(set);
+    if (set.length < 2) return [trusses];
+    const one = (n: number, k: number): TrussShape => {
+      const s = heel(n, k, set.length);
+      const rise = pitch * (span / 2 - s);
+      return TrussShape.custom({
+        name: `Valley truss ${k + 1}`,
+        span,
+        pitch,
+        points: { H0: [s, 0], H1: [span - s, 0], C: [span / 2, 0], P: [span / 2, rise] },
+        topChords: [["H0", "P"], ["H1", "P"]],
+        bottomChords: [["H0", "C", "H1"]],
+        webs: [["P", "C"]],
+      })
+        .sized("top_chord", chord)
+        .sized("bottom_chord", chord)
+        .sized("web", t.web ?? [2, 4]);
+    };
+    const first = grid(set[0]);
+    let valley = TrussRoof.of(one(set[0], 0), { name: `${p.name} valley trusses`, at, spanDir, length: (set.length - 1) * sp, spacing: sp, grade: t.grade, chord, web: t.web, start: start + (first - t0) });
+    set.slice(1).forEach((n, k) => (valley = valley.withShape([k + 2], one(n, k + 1))));
+    return [trusses, valley.bearingOn(main)];
+  }
+  /** How thick its deck is (half an inch, if not said). */
+  deck(thickness: Length): Roof {
+    return new Roof(this.name, this.parts, thickness, []);
+  }
+  /** The parts something is said of: those named, or every one (`framed`: every one that is framed). */
+  private those(on: string | readonly string[] | undefined, framed: boolean): Set<string> {
+    const names = on === undefined ? this.parts.filter((p) => !framed || p.framing).map((p) => p.name) : [on].flat();
+    for (const n of names) if (!this.parts.some((p) => p.name === n)) throw new Error(`roof ${this.name}: no part ${n} (${this.parts.map((p) => p.name).join(", ") || "none yet: say it after the parts"})`);
+    return new Set(names);
+  }
+  /**
+   * What it is covered with, top (weather side) first, down to its deck:
+   * `covering(layers("standing seam 24ga steel", "polystick mts", "plywood 15/32"))`
+   * (see `layers`; in place of `deck`). Each layer is a sheet on the roof's
+   * planes, one on another, of that material; their weight is a dead load on
+   * what carries each part (per area of its surface). `on`: the parts so
+   * covered (one name or several), where the roof is not covered alike all
+   * over: say it after those parts.
+   */
+  covering(d: DeadLoad, o: { on?: string | readonly string[] } = {}): Roof {
+    const made = builtUp(d);
+    if (o.on === undefined) return new Roof(this.name, this.parts, made.thickness, made.layers);
+    const on = this.those(o.on, false);
+    return new Roof(this.name, this.parts.map((p) => (on.has(p.name) ? { ...p, layers: made.layers } : p)), this.deck_, this.layers_);
+  }
+  /**
+   * A load over it, in pascals (use `psf`): per plan area (the default: snow,
+   * roof live load) or per area of its surface (`basis: "surface"`). `on`:
+   * the parts it is over (one name or several); every framed part, if not
+   * said. It goes on the members that carry each part. Say it after the parts.
+   */
+  load(kind: LoadKind, pressure: number, o: { on?: string | readonly string[]; basis?: "plan" | "surface"; label?: string } = {}): Roof {
+    const on = this.those(o.on, true);
+    if (!on.size) throw new Error(`roof ${this.name}: a load is carried by framing, and no part of it is framed`);
+    for (const p of this.parts) if (on.has(p.name) && !p.framing) throw new Error(`roof ${this.name}: part ${p.name} has nothing to carry a load: say what frames it`);
+    const load: AreaLoad = { kind, pressure, basis: o.basis, label: o.label };
+    return new Roof(this.name, this.parts.map((p) => (on.has(p.name) ? { ...p, loads: [...p.loads, load] } : p)), this.deck_, this.layers_);
+  }
+  /** Roof snow load on plan area, e.g. from `roofSnow(site, { ce: 1.0, ct: 1.2 })`. */
+  snow(d: DeadLoad, o: { on?: string | readonly string[] } = {}): Roof {
+    return this.load("snow", d.pressure, { ...o, basis: "plan", label: d.label });
+  }
+  /** A dead load per area of its surface (beside the weight of what it is covered with, which is not to be said). */
+  dead(d: DeadLoad, o: { on?: string | readonly string[] } = {}): Roof {
+    return this.load("dead", d.pressure, { ...o, basis: "surface", label: d.label });
+  }
+  private framing(part: string | undefined): RoofPart["framing"] {
+    const p = part === undefined ? this.parts.find((q) => q.framing) : this.parts.find((q) => q.name === part);
+    return p?.framing;
+  }
+  /** The trusses of a part (the first framed, if none is named): for drawing targets (`roof.trusses().truss(2)`). */
+  trusses(part?: string): TrussRoof {
+    const f = this.framing(part);
+    if (!(f instanceof TrussRoof)) throw new Error(`roof ${this.name}: ${part ?? "no part"} is not framed with trusses`);
+    return f;
+  }
+  /** The rafters of a part (the first framed, if none is named). */
+  rafters(part?: string): RafterRoof {
+    const f = this.framing(part);
+    if (!(f instanceof RafterRoof)) throw new Error(`roof ${this.name}: ${part ?? "no part"} is not framed with rafters`);
+    return f;
+  }
+  /** What it is, as items of a building: its framing (each thing once), then its surfaces (`Building.add` does this). */
+  expand(): Item[] {
+    const framing = this.parts.flatMap((p) => [...(p.framing ? [p.framing] : []), ...(p.more ?? [])]);
+    return [...framing.filter((f, k) => framing.findIndex((g) => g.name === f.name) === k), this];
+  }
+  toJSON() {
+    return {
+      type: "roof",
+      name: this.name,
+      deck: this.deck_,
+      layers: this.layers_,
+      parts: this.parts.map((p) => ({ name: p.name, outline: p.outline, edges: p.edges, rake: p.rake, framing: p.framing?.name, framing_more: (p.more ?? []).map((x) => x.name), on: p.on.map((x) => x.name), heel: p.heel, carried_by: p.carriedBy, layers: p.layers, loads: p.loads })),
+    };
+  }
+}
+
+// ----- stairs -----------------------------------------------------------------
+
+/**
+ * A straight flight of stairs: two stringers and the treads between them.
+ * It is given its rise (from the floor it starts on to the top of the floor
+ * it reaches) and its width between the stringers; the rise is divided into
+ * equal risers no taller than `maxRiser` (7 3/4" by default), each tread
+ * going `run` (10" by default). So a flight of n risers has n − 1 treads (the
+ * last step is the floor above) and goes (n − 1) × run on plan.
+ *
+ *   const stairs = Stairs.of({ rise: ft(8) + floor.top, width: inch(36), grade: DFL.No2 }).named("Stairs")
+ *     .from([ft(3), ft(2), 0], { toward: [0, 1] });
+ *   stairs.going   // how far it runs on plan: where its head is from its foot
+ *
+ * `from` is the middle of its foot (where the first riser stands, at the
+ * height of the floor it starts on) and the way it climbs. The stringers'
+ * feet are cut level, on that floor, and are its supports; their heads are
+ * cut plumb, where the top riser is: against the header or trimmer of the
+ * opening it comes up through. The treads are housed between the stringers
+ * (carried by them: drawn as hung).
+ *
+ * *Not yet:* its rise is given, not found: it does not follow the floor
+ * above if that moves, and nothing joins its head to that floor.
+ */
+export class Stairs {
+  private constructor(
+    readonly name: string,
+    readonly o: { readonly rise: Length; readonly width: Length; readonly grade: Grade; readonly run: Length; readonly maxRiser: Length; readonly stringers: Nominal; readonly treads: Nominal },
+    readonly foot: Point3,
+    readonly toward: Point,
+  ) {}
+  static of(o: { rise: Length; width: Length; grade: Grade; run?: Length; maxRiser?: Length; stringers?: Nominal; treads?: Nominal }): Stairs {
+    if (!(o.rise > 0) || !(o.width > 0)) throw new Error("stairs: give a rise and a width");
+    return new Stairs("Stairs", { rise: o.rise, width: o.width, grade: o.grade, run: o.run ?? inch(10), maxRiser: o.maxRiser ?? inch(7.75), stringers: o.stringers ?? [2, 12], treads: o.treads ?? [2, 10] }, [0, 0, 0], [1, 0]);
+  }
+  named(name: string): Stairs {
+    return new Stairs(name, this.o, this.foot, this.toward);
+  }
+  /** Where the middle of its foot is (at the height of the floor it starts on), and the way it climbs on plan. */
+  from(foot: Point3, o: { toward: Point }): Stairs {
+    if (!(Math.hypot(o.toward[0], o.toward[1]) > 0)) throw new Error(`stairs ${this.name}: give the way it climbs`);
+    return new Stairs(this.name, this.o, foot, o.toward);
+  }
+  /** How many risers it has. */
+  get risers(): number {
+    return Math.ceil(this.o.rise / this.o.maxRiser - 1e-9);
+  }
+  /** How tall each riser is. */
+  get riser(): Length {
+    return this.o.rise / this.risers;
+  }
+  /** How far it goes on plan, from its foot to its head (the face of its top riser). */
+  get going(): Length {
+    return (this.risers - 1) * this.o.run;
+  }
+  /** What it is made of: an assembly, where it is put. */
+  assembly(): Assembly {
+    const { width, grade, run, stringers, treads } = this.o;
+    const [n, h, t] = [this.risers, this.riser, dressed(stringers[0])];
+    if (n < 2) throw new Error(`stairs ${this.name}: one riser is a step, not a flight`);
+    // In its own frame: x the way it climbs, y to its left, z up, from the middle of its foot. The stringers' axes
+    // are along the line of the treads' back top edges (the pitch line), each tread's ends nodes of them.
+    const sides: [string, Length][] = [["left", width / 2 + t / 2], ["right", -(width / 2 + t / 2)]];
+    let a = Assembly.named(this.name);
+    for (const [side, y] of sides) {
+      a = a.point(`${side} foot`, [0, y, 0]);
+      for (let k = 1; k < n; k++) a = a.point(`${side} ${k}`, [k * run, y, k * h]);
+      a = a.member("stringer", [`${side} foot`, ...Array.from({ length: n - 1 }, (_, k) => `${side} ${k + 1}`)], { size: stringers, grade, priority: 10, cut: ["level", "plumb"] });
+    }
+    // (A tread's axis is its back top edge: it lies forward and down from it.)
+    for (let k = 1; k < n; k++) a = a.member("tread", [`right ${k}`, `left ${k}`], { size: treads, grade, depth: [-1, 0, 0], anchor: [-0.5, -0.5] });
+    const turn = (Math.atan2(this.toward[1], this.toward[0]) * 180) / Math.PI;
+    return a.hungFrom("stringer").supportedAt("left foot", "right foot").placed(Placement.at(this.foot, turn));
+  }
+  /** One of its points, as a node: `left foot`, `right foot`, or a tread's end (`left 3`). */
+  node(point: string): NodeHandle {
+    return this.assembly().node(point);
+  }
+  toJSON() {
+    return this.assembly().toJSON();
   }
 }
 
@@ -1372,7 +2667,8 @@ export interface Placeable<T> {
 
 /**
  * `count` copies of `item`, the i-th moved by `i × step` and named
- * `"<name> #<i+1>"`. Copies that land on shared points connect automatically.
+ * `"<name> #<i+1>"`. (Copies are not joined where they touch: say so, with
+ * `coincide` or a utility such as `bearingOn`.)
  */
 export function repeat<T extends Placeable<T>>(item: T, count: number, step: Point3): T[] {
   return Array.from({ length: count }, (_, i) => item.moved([step[0] * i, step[1] * i, step[2] * i]).named(`${item.name} #${i + 1}`));
@@ -1482,6 +2778,18 @@ export class MemberRef {
   /** The face whose outward normal is closest to a direction (see `facing`). */
   facing(dir: string | Point3, o: { in?: string } = {}): PlaneRef {
     return facing(this, dir, o);
+  }
+  /**
+   * A point on a face of the member, as a node: the face facing most nearly
+   * `dir` (a compass word, `up`, `down`, or a vector), in the middle across it,
+   * `at` along the member from its start (default: its middle). It moves with
+   * the member; in the model it is a node on that face.
+   */
+  node(dir: "north" | "south" | "east" | "west" | "up" | "down" | Point3, at?: Length): NodeHandle {
+    const words: Record<string, Point3> = { north: [0, 1, 0], south: [0, -1, 0], east: [1, 0, 0], west: [-1, 0, 0], up: [0, 0, 1], down: [0, 0, -1] };
+    const v = typeof dir === "string" ? words[dir] : dir;
+    if (!v) throw new Error(`${this.path}: no direction ${dir}`);
+    return new NodeHandle(`${this.path}:face ${v.join(",")}${at === undefined ? "" : `@${at}`}`);
   }
 }
 export const member = (path: string): MemberRef => new MemberRef(path);
@@ -1655,7 +2963,109 @@ export interface Info {
   readonly notes: readonly string[];
 }
 
-export type Item = Perimeter | TrussRoof | Assembly;
+/** A node: a named point of something, to relate to others. */
+export class NodeHandle {
+  constructor(readonly name: string) {}
+}
+
+/** A relation between nodes, added to a building like anything else. */
+export class Relation {
+  private constructor(readonly spec: Record<string, unknown>) {}
+  /**
+   * Two nodes are one: the same point, and joined there. With a `tolerance`, a
+   * reading instead: they were read to be one point (a face where the scan has
+   * it), to about that; measured, so it gives way to what must hold, and says
+   * by how much. (A point given along only some axes reads only those.)
+   */
+  static coincide(a: NodeHandle, b: NodeHandle, o: { tolerance?: Length } = {}): Relation {
+    return new Relation({ type: "coincide", a: a.name, b: b.name, tolerance: o.tolerance });
+  }
+  /** A reading with a tape: the two nodes are `distance` apart, to about `tolerance` (default 3 mm). */
+  static tape(a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation {
+    return new Relation({ type: "tape", a: a.name, b: b.name, distance, tolerance: o.tolerance ?? 0.003 });
+  }
+  /** A surveyed point: the node is here, along whichever of x, y, z are given, to about `tolerance` (default 3 mm). */
+  static survey(node: NodeHandle, at: { x?: Length; y?: Length; z?: Length }, o: { tolerance?: Length } = {}): Relation {
+    return new Relation({ type: "survey", node: node.name, ...at, tolerance: o.tolerance ?? 0.003 });
+  }
+  toJSON() {
+    return this.spec;
+  }
+}
+/** Two nodes are one: the same point, and joined there; or, with a `tolerance`, read to be one point. */
+export const coincide = (a: NodeHandle, b: NodeHandle, o: { tolerance?: Length } = {}): Relation => Relation.coincide(a, b, o);
+/** A reading with a tape between two nodes: measured, so it gives way to what must hold, and says by how much. */
+export const tape = (a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation => Relation.tape(a, b, distance, o);
+/** A surveyed point: measured, along whichever of x, y, z are given. */
+export const survey = (node: NodeHandle, at: { x?: Length; y?: Length; z?: Length }, o: { tolerance?: Length } = {}): Relation => Relation.survey(node, at, o);
+
+/**
+ * A frame with points in it: each point is a node (`Frame/point`). A
+ * scan's frame, placed where the scan is registered (or `free()`, placed by
+ * relations to its points), with references in it: move the frame, and they
+ * move. `Frame.world` is the building's own frame, fixed: its points are
+ * datums.
+ *
+ * A point may give only some of its coordinates (`{ x, y }`, from a
+ * georeference): along the others it is free (0 unless something says
+ * otherwise).
+ *
+ *   const scan = Frame.named("Scan").point("heel line", [3.2, 14.1, 2.44]);
+ *   TrussRoof.of(shape, { at: scan.node("heel line"), ... })
+ *   const mark = Frame.world.point("mark", [5, 3, ft(8)]);
+ *   coincide(walls.corner(1), mark.node("mark"))
+ */
+export class Frame {
+  private constructor(
+    readonly name: string,
+    readonly world: boolean,
+    readonly placement: Placement,
+    readonly free_: boolean,
+    readonly points: readonly { readonly name: string; readonly at: readonly (Length | null)[] }[],
+  ) {}
+  /** The building's own frame: fixed, its points datums (`World/name`). */
+  static readonly world = new Frame("World", true, Placement.identity, false, []);
+  /** A frame of its own (a scan's), where it is put (by default, the building's frame). */
+  static named(name: string): Frame {
+    return new Frame(name, false, Placement.identity, false, []);
+  }
+  /** Where the frame is, in the building's coordinates. */
+  placed(p: Placement): Frame {
+    if (this.world) throw new Error("the world frame is where it is");
+    return new Frame(this.name, false, p, this.free_, this.points);
+  }
+  /** Free: where it is put is only where it starts; relations to its points place it. */
+  free(): Frame {
+    if (this.world) throw new Error("the world frame is where it is");
+    return new Frame(this.name, false, this.placement, true, this.points);
+  }
+  /** A point of it, at `at` in it; or along only the coordinates given (`{ x, y }`). */
+  point(name: string, at: Point3 | { x?: Length; y?: Length; z?: Length }): Frame {
+    if (this.points.some((p) => p.name === name)) throw new Error(`frame ${this.name}: two points named ${name}`);
+    const xyz = Array.isArray(at) ? (at as readonly Length[]) : [(at as { x?: Length }).x ?? null, (at as { y?: Length }).y ?? null, (at as { z?: Length }).z ?? null];
+    return new Frame(this.name, this.world, this.placement, this.free_, [...this.points, { name, at: xyz }]);
+  }
+  /** A point of it, as a node. */
+  node(point: string): NodeHandle {
+    if (!this.points.some((p) => p.name === point)) throw new Error(`frame ${this.name} has no point ${point}`);
+    return new NodeHandle(`${this.name}/${point}`);
+  }
+  /**
+   * A point of it on a plane of it (through `at`, square to `normal`, in its
+   * coordinates), as a node: anywhere on the plane (where it was put, unless
+   * something says otherwise). Where a face was seen in a scan:
+   * `coincide(Frame.named("Scan").on(at, normal), member(path).node(normal, along), { tolerance })`.
+   * (It needs no point declared: the frame is found by its name.)
+   */
+  on(at: Point3, normal: Point3): NodeHandle {
+    return new NodeHandle(`${this.name}:plane ${at.join(",")} n ${normal.join(",")}`);
+  }
+  toJSON() {
+    return { type: "frame", name: this.name, world: this.world, placement: this.world ? undefined : this.placement, free: this.free_, points: this.points };
+  }
+}
+
+export type Item = Perimeter | Partition | Slab | Floor | Stairs | Roof | RafterRoof | TrussRoof | Assembly | Frame | Relation;
 
 /**
  * Where a building sits in the world: its origin, and the compass bearing of
@@ -1742,9 +3152,9 @@ export class Model {
   info(i: Partial<Info>): Model {
     return this.with({ info_: { ...this.info_, ...i } });
   }
-  /** Add items (arrays, e.g. from `repeat`, are flattened). */
+  /** Add items (arrays, e.g. from `repeat`, are flattened; a `Roof` brings its framing). */
   add(...items: (Item | readonly Item[])[]): Model {
-    return this.with({ items: [...this.items, ...items.flat()] });
+    return this.with({ items: [...this.items, ...(items.flat() as Item[]).flatMap((i) => (i instanceof Roof ? i.expand() : [i]))] });
   }
   /** Field measurements; `unknown`s are fitted to them when the model is run. */
   measure(...ms: (Measurement | readonly Measurement[])[]): Model {

@@ -25,6 +25,7 @@ pub fn all_issues(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<Issue>
     let mut issues = validate(model, topo);
     issues.extend(geom.issues.iter().cloned());
     issues.extend(geom.clash_issues());
+    issues.extend(geom.solid_clash_issues(&model));
     issues.extend(geom.bearing_issues(model));
     // A frame carries load through its joints: bearing paths are not its concern.
     if !model.standards.is_frame() {
@@ -188,7 +189,7 @@ impl Session {
             }
             "heat" => heat(b, i("sheet"), &s("mode"), &s("combo")),
             "mesh" => mesh(b),
-            "view3d" => view3d(b, n("az", 225.0), n("el", 30.0)),
+            "view3d" => view3d(b, n("az", 225.0), n("el", 30.0), &s("hide")),
             "ratios" => ratios(b, &s("mode"), &s("combo")),
             "deflected" => deflected(b, &s("combo")),
             "member" => member_detail(b, &s("path"), &s("combo"))?,
@@ -334,12 +335,20 @@ fn analysis_summary(b: &Built) -> Value {
     let checked = ratios.iter().flatten().count();
     let over = ratios.iter().flatten().filter(|(r, i)| *r > 1.0 && !a.checks[*i].indicative).count();
     let indicative_over = ratios.iter().flatten().filter(|(r, i)| *r > 1.0 && a.checks[*i].indicative).count();
-    let mut worst: Vec<(f64, usize)> = ratios.iter().flatten().copied().collect();
+    // (A check with nothing to carry it has no ratio: it is over, and listed first; the page is given a number.)
+    let mut worst: Vec<(f64, usize)> = ratios.iter().flatten().map(|&(r, i)| (if r.is_finite() { r } else { 999.0 }, i)).collect();
     worst.sort_by(|x, y| y.0.total_cmp(&x.0));
     let mut combos: Vec<String> = a.combos.iter().map(|c| c.name.clone()).collect();
     for c in &a.checks {
         if !combos.contains(&c.combination) {
             combos.push(c.combination.clone());
+        }
+    }
+    // What was not checked, by what it is: a pass is only of what was looked at.
+    let mut unchecked: std::collections::BTreeMap<String, usize> = Default::default();
+    for (m, r) in b.model.members.iter().zip(&ratios) {
+        if r.is_none() {
+            *unchecked.entry(m.role.replace('_', " ")).or_default() += 1;
         }
     }
     json!({
@@ -349,6 +358,8 @@ fn analysis_summary(b: &Built) -> Value {
         "displacement": max_displacement(b),
         "combos": combos,
         "checked": checked,
+        "members": b.model.members.len(),
+        "unchecked": unchecked.iter().map(|(role, n)| json!({ "role": role, "count": n })).collect::<Vec<_>>(),
         "over": over,
         "indicative_over": indicative_over,
         "max": worst.first().map(|w| w.0).unwrap_or(0.0),
@@ -496,46 +507,115 @@ fn deflected(b: &Built, combo: &str) -> Value {
 }
 
 /// Member solids for the 3D view: each member's boundary faces (outer loops,
-/// world metres rounded to 0.1 mm) with its path and label, and the
-/// sheathing and finish build-ups with the panels they lie on.
+/// world metres rounded to 0.1 mm) with its path and label.
 fn mesh(b: &Built) -> Value {
     let r = |v: f64| (v * 10_000.0).round() / 10_000.0;
+    // (Every part alike: members, then what they stand on.)
     let members: Vec<Value> = b
-        .model
-        .members
+        .geom
+        .parts(&b.model)
         .iter()
-        .map(|m| {
-            let g = b.geom.member(m.id);
-            let faces: Vec<Vec<[f64; 3]>> = g.faces().iter().map(|f| f.outer.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
-            json!({ "path": b.model.member_path(m.id), "label": short(&b.model, m.id), "role": m.role, "faces": faces })
+        .map(|p| {
+            let faces: Vec<Vec<[f64; 3]>> = p.faces.iter().map(|f| f.0.iter().map(|p| [r(p.x), r(p.y), r(p.z)]).collect()).collect();
+            let label = match p.kind {
+                topo_geom::PartKind::Member(id) => short(&b.model, id),
+                topo_geom::PartKind::Solid(k) => b.model.solids[k].name.clone(),
+            };
+            // (A solid says what it is of, and which edges of its faces are only seams in a sheet.)
+            let (material, seams) = match p.kind {
+                topo_geom::PartKind::Member(_) => (None, vec![]),
+                topo_geom::PartKind::Solid(k) => {
+                    let s = &b.model.solids[k];
+                    (Some(s.material.clone()), s.seam_edges().into_iter().map(|(a, c)| [[r(a.x), r(a.y), r(a.z)], [r(c.x), r(c.y), r(c.z)]]).collect())
+                }
+            };
+            // (A member that is not lumber says what it is made of, and whether its sides are one curved surface.)
+            let (made_of, smooth) = match p.kind {
+                topo_geom::PartKind::Member(id) => {
+                    let mem = b.model.member(id);
+                    let mat = b.model.material(mem.material);
+                    ((mat.family != "sawn_lumber").then(|| mat.family.clone()), b.model.section(mem.section).is_round())
+                }
+                topo_geom::PartKind::Solid(_) => (None, false),
+            };
+            json!({ "path": p.path, "label": label, "role": p.role, "material": material, "made_of": made_of, "smooth": smooth, "seams": seams, "faces": faces })
         })
         .collect();
-    let v3 = |p: topo_core::Vec3| [r(p.x), r(p.y), r(p.z)];
-    let surfaces: Vec<Value> = b
-        .model
-        .surfaces
-        .iter()
+    json!({ "version_name": b.model.info.name, "members": members, "structure": structure(b) })
+}
+
+/// The model's skeleton, to be drawn over it: its nodes and what each joins (the members it
+/// is on the axis of, and those it is on a face of, with the face and the two numbers that
+/// place it there), and the solves that placed parts of it.
+fn structure(b: &Built) -> Value {
+    let m = &b.model;
+    let v3 = |p: topo_core::Vec3| [p.x, p.y, p.z];
+    let mut on_axis: Vec<Vec<String>> = vec![vec![]; m.nodes.len()];
+    for mm in &m.members {
+        for n in &mm.path {
+            on_axis[n.idx()].push(m.member_path(mm.id));
+        }
+    }
+    let mut on_face: Vec<Vec<Value>> = vec![vec![]; m.nodes.len()];
+    for a in &m.attachments {
+        let f = m.face(a.member, a.face);
+        let corners: Vec<[f64; 3]> = [(0.0, -1.0), (f.length, -1.0), (f.length, 1.0), (0.0, 1.0)].into_iter().map(|(l, w)| v3(f.point(l, w * f.half_width))).collect();
+        let side = if f.normal.z > 0.5 {
+            "top"
+        } else if f.normal.z < -0.5 {
+            "underside"
+        } else {
+            "side"
+        };
+        on_face[a.node.idx()].push(json!({
+            "member": m.member_path(a.member), "face": a.face, "side": side,
+            "along": a.along, "across": a.across, "length": f.length, "half_width": f.half_width,
+            "corners": corners, "along_dir": v3(f.along), "across_dir": v3(f.across), "normal": v3(f.normal),
+        }));
+    }
+    let nodes: Vec<Value> = (m.nodes.iter())
+        .filter(|n| !on_axis[n.id.idx()].is_empty() || !on_face[n.id.idx()].is_empty())
+        .map(|n| json!({ "id": n.id.to_string(), "name": n.name, "pos": v3(n.pos), "on_axis": on_axis[n.id.idx()], "on_face": on_face[n.id.idx()], "support": m.supports.iter().any(|s| s.node == n.id) }))
+        .collect();
+    // (Positions as [x, y, z], as everywhere in what the page is given.)
+    let solves: Vec<Value> = (m.solves.iter())
         .map(|s| {
-            let panels: Vec<Value> = topo_geom::surface_panels(&b.model, &b.geom, s)
-                .into_iter()
-                .map(|p| json!({ "origin": v3(p.origin), "slope": v3(p.slope), "run": v3(p.run), "normal": v3(p.normal) }))
+            let variables: Vec<Value> = (s.variables.iter())
+                .map(|v| json!({ "name": v.name, "kind": v.kind, "at": v3(v.at), "value": v.value, "node": v.node, "freedoms": v.freedoms.iter().map(|f| json!({ "what": f.what, "dir": v3(f.dir), "turn": f.turn, "settled": f.settled })).collect::<Vec<_>>() }))
                 .collect();
-            json!({ "name": s.name, "region": s.region, "layers": s.layers, "panels": panels, "psf": s.psf(), "thickness": s.thickness() })
+            let constraints: Vec<Value> = (s.constraints.iter()).map(|c| json!({ "name": c.name, "tier": c.tier, "kind": c.kind, "gap": c.gap, "room": c.room, "points": c.points.iter().map(|p| v3(*p)).collect::<Vec<_>>(), "nodes": c.nodes, "touches": c.touches })).collect();
+            let nodes: Vec<Value> = (s.nodes.iter())
+                .map(|n| json!({ "name": n.name, "of": n.of, "kind": n.kind, "at": v3(n.at), "numbers": n.numbers.iter().map(|x| json!({ "name": x.name, "value": x.value, "dir": v3(x.dir), "bounds": x.bounds, "settled": x.settled })).collect::<Vec<_>>() }))
+                .collect();
+            json!({ "name": s.name, "nodes": nodes, "variables": variables, "constraints": constraints })
         })
         .collect();
-    json!({ "version_name": b.model.info.name, "members": members, "surfaces": surfaces })
+    json!({ "nodes": nodes, "solves": solves })
 }
 
 /// Exact hidden-line view of the whole model from a compass bearing `az`
 /// (degrees, the viewer's direction from the model) and elevation `el`:
 /// visible edge segments in view-plane coordinates (m), as
-/// `[member index, x0, y0, x1, y1]`. (The host times it.)
-fn view3d(b: &Built, az: f64, el: f64) -> Value {
+/// `[member index, x0, y0, x1, y1]`. (The host times it.) `hide`: what is not drawn, nor hides
+/// anything: the keys the page's tree of objects keeps (`model`, `g:` a group's path below the
+/// building, `m:` a part's whole path), one to a line.
+fn view3d(b: &Built, az: f64, el: f64, hide: &str) -> Value {
+    let hidden: Vec<&str> = hide.lines().filter(|l| !l.is_empty()).collect();
+    let shown = |path: &str| {
+        let steps: Vec<&str> = path.split('/').collect();
+        let groups = &steps[1.min(steps.len())..steps.len().saturating_sub(1)];
+        !hidden.iter().any(|h| *h == "model" || h.strip_prefix("m:") == Some(path) || h.strip_prefix("g:").is_some_and(|g| (1..=groups.len()).any(|k| groups[..k].join("/") == g)))
+    };
     let (a, e) = (az.to_radians(), el.clamp(-89.9, 89.9).to_radians());
     let toward = topo_core::Vec3::new(a.sin() * e.cos(), a.cos() * e.cos(), e.sin());
     let proj = topo_draw::hlr::Projector::new(toward, topo_core::Vec3::Z);
+    // (Members, then what they stand on: marked by where they are among the mesh's parts.)
     let geoms: Vec<&topo_geom::MemberGeom> = b.geom.members.iter().collect();
-    let segs = topo_draw::hlr::hidden_lines(&geoms, &proj);
+    let geoms: Vec<&topo_geom::MemberGeom> = geoms.into_iter().filter(|g| hidden.is_empty() || shown(&b.model.member_path(g.member))).collect();
+    let mut pieces = topo_draw::hlr::Piece::of_members(&geoms);
+    let n = b.model.members.len() as u32;
+    pieces.extend(b.model.solids.iter().enumerate().filter(|(_, s)| hidden.is_empty() || shown(&b.model.solid_path(s))).map(|(k, s)| topo_draw::hlr::Piece::of_solid(s, topo_core::MemberId(n + k as u32))));
+    let segs = topo_draw::hlr::hidden_lines_of(&pieces, &proj);
     let r = |v: f64| (v * 100_000.0).round() / 100_000.0;
     let visible: Vec<[f64; 5]> = segs.iter().filter(|s| !s.hidden).map(|s| [s.member.0 as f64, r(s.a.x), r(s.a.y), r(s.b.x), r(s.b.y)]).collect();
     json!({ "az": az, "el": el, "segments": visible })

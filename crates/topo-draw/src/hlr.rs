@@ -45,11 +45,36 @@ pub struct Seg {
     pub ply: usize,
 }
 
-/// One convex occluder: a single ply of a member.
+/// Something to draw, and to hide what is behind it: a ply of a member, or a solid (a slab, a
+/// curb). Its faces are drawn; what it hides is what is behind its convex envelope.
+pub struct Piece {
+    /// What its lines are marked as being of (for a solid: a number past the members').
+    pub member: MemberId,
+    pub ply: usize,
+    pub convex: ConvexSolid,
+    pub faces: Vec<topo_geom::Face>,
+    /// Edges of its faces that are not edges of the thing (a solid's seams): not drawn.
+    pub seams: Vec<(Vec3, Vec3)>,
+}
+
+impl Piece {
+    /// The plies of members.
+    pub fn of_members(members: &[&MemberGeom]) -> Vec<Piece> {
+        members.iter().flat_map(|g| (0..g.place.plies.len()).map(move |k| Piece { member: g.member, ply: k, convex: g.ply_convex(k), faces: g.ply_faces(k), seams: vec![] })).collect()
+    }
+    /// A solid, marked as `member`. (It hides what is behind the convex hull of its outline: a
+    /// slab with a notch in it hides a little more than it should, seen from below.)
+    pub fn of_solid(s: &topo_core::Solid, member: MemberId) -> Piece {
+        let faces: Vec<topo_geom::Face> = s.faces().into_iter().map(|f| topo_geom::Face { outer: f.outer, holes: vec![], normal: f.normal, smooth: false }).collect();
+        let seams = s.seam_edges();
+        Piece { member, ply: 0, convex: topo_geom::solid_convex(s), faces, seams }
+    }
+}
+
+/// One convex occluder.
 struct Item<'a> {
-    geom: &'a MemberGeom,
-    ply: usize,
-    convex: ConvexSolid,
+    piece: &'a Piece,
+    convex: &'a ConvexSolid,
     sil: Vec<Vec2>,
     bbox: BBox2,
     depth: f64,
@@ -117,7 +142,7 @@ fn subtract(intervals: &mut Vec<(f64, f64)>, cut: (f64, f64)) {
 
 /// Whether `j` occludes `i` (is in front of it) for this projection.
 fn in_front(i: &Item, j: &Item, proj: &Projector) -> bool {
-    match i.convex.separation(&j.convex, 1e-6, Some(proj.toward)) {
+    match i.convex.separation(j.convex, 1e-6, Some(proj.toward)) {
         Separation::Separated { axis, a_below } => {
             let s = axis.dot(proj.toward);
             if s > 1e-6 {
@@ -143,16 +168,20 @@ fn key(p: Vec2) -> (i64, i64) {
 
 /// Visible and hidden edge segments of `members` under `proj`.
 pub fn hidden_lines(members: &[&MemberGeom], proj: &Projector) -> Vec<Seg> {
-    let items: Vec<Item> = members
+    hidden_lines_of(&Piece::of_members(members), proj)
+}
+
+/// Visible and hidden edge segments of these pieces (members' plies, solids) under `proj`.
+pub fn hidden_lines_of(pieces: &[Piece], proj: &Projector) -> Vec<Seg> {
+    let items: Vec<Item> = pieces
         .iter()
-        .flat_map(|g| (0..g.place.plies.len()).map(move |k| (*g, k)))
-        .map(|(g, ply)| {
-            let convex = g.ply_convex(ply);
+        .map(|piece| {
+            let convex = &piece.convex;
             let pts: Vec<Vec2> = convex.verts.iter().map(|&v| proj.p(v)).collect();
             let sil = convex_hull(&pts);
             let bbox = BBox2::from_points(pts.iter().copied());
             let depth = proj.depth(convex.verts.iter().fold(Vec3::ZERO, |a, &v| a + v) / convex.verts.len() as f64);
-            Item { geom: g, ply, convex, sil, bbox, depth }
+            Item { piece, convex, sil, bbox, depth }
         })
         .collect();
 
@@ -183,7 +212,7 @@ pub fn hidden_lines(members: &[&MemberGeom], proj: &Projector) -> Vec<Seg> {
         // Edges between two visible facets of a curved surface are not drawn:
         // only its silhouette and its ends are.
         let mut smooth_count: BTreeMap<EdgeKey, usize> = BTreeMap::new();
-        for f in it.geom.ply_faces(it.ply) {
+        for f in &it.piece.faces {
             if f.normal.dot(proj.toward) <= 1e-9 {
                 continue;
             }
@@ -193,6 +222,9 @@ pub fn hidden_lines(members: &[&MemberGeom], proj: &Projector) -> Vec<Seg> {
                     let (a3, b3) = (ring[k], ring[(k + 1) % n]);
                     let (a, b) = (proj.p(a3), proj.p(b3));
                     if a.distance(b) < 1e-9 {
+                        continue;
+                    }
+                    if it.piece.seams.iter().any(|&(p, q)| (p.distance(a3) < 1e-9 && q.distance(b3) < 1e-9) || (p.distance(b3) < 1e-9 && q.distance(a3) < 1e-9)) {
                         continue;
                     }
                     let (ka, kb) = (key(a), key(b));
@@ -220,7 +252,7 @@ pub fn hidden_lines(members: &[&MemberGeom], proj: &Projector) -> Vec<Seg> {
                 }
             }
             let mut last = 0.0;
-            let (member, ply) = (it.geom.member, it.ply);
+            let (member, ply) = (it.piece.member, it.piece.ply);
             for &(s, e) in &vis {
                 if s > last + 1e-9 {
                     out.push(Seg { a: a.lerp(b, last), b: a.lerp(b, s), a3: a3.lerp(b3, last), b3: a3.lerp(b3, s), hidden: true, member, ply });

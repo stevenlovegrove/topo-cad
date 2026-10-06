@@ -271,7 +271,104 @@ impl DatumRef {
     }
 }
 
+/// How firmly a reading of a post holds it (a laser to a stud's face).
+pub const READING_TOLERANCE: f64 = 0.0254 / 16.0;
+
+/// A reading as a relation among the posts' centres along the wall (each by its place in the
+/// survey's items) and the wall's length: `Σ k x + len_k len = value`, to about `tolerance`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Relation {
+    pub what: String,
+    pub posts: Vec<(usize, f64)>,
+    pub len: f64,
+    pub value: f64,
+    pub tolerance: f64,
+}
+
+/// A datum surface as `Σ k x + len_k len + constant`, and the way measuring from it goes.
+struct Lin {
+    posts: Vec<(usize, f64)>,
+    len: f64,
+    constant: f64,
+    dir: f64,
+}
+
 impl Survey {
+    fn lin(&self, wall: &str, cx: &WallContext, d: &DatumRef) -> Result<Lin, String> {
+        let mut l = match &d.datum {
+            Datum::Corner { end, face } => {
+                let end = wall_end(end, cx.dir).map_err(|e| format!("{wall}: {e}"))?;
+                let k = if end == WallEnd::Start { 0 } else { 1 };
+                let len = k as f64;
+                let constant = match face {
+                    CornerFace::Outside => 0.0,
+                    // (The inside face at the end is as far in from the end corner as it is now.)
+                    CornerFace::Inside => cx.inside[k].ok_or_else(|| format!("{wall}: no wall meets its {} to measure from; use the outside corner or a member", if k == 0 { "start" } else { "end" }))? - len * cx.len,
+                };
+                Lin { posts: vec![], len, constant, dir: end.inward() }
+            }
+            Datum::Member { name, toward } => {
+                let i = self.items.iter().position(|it| matches!(it, SurveyItem::Post { name: Some(n), .. } if n == name)).ok_or_else(|| format!("{wall}: no member named {name} to measure from"))?;
+                let SurveyItem::Post { plies, .. } = &self.items[i] else { unreachable!() };
+                let s = if wall_end(toward, cx.dir).map_err(|e| format!("{wall}: {e}"))? == WallEnd::End { 1.0 } else { -1.0 };
+                Lin { posts: vec![(i, 1.0)], len: 0.0, constant: s * *plies as f64 * cx.ply / 2.0, dir: s }
+            }
+        };
+        l.constant += l.dir * d.offsets.iter().map(|o| o.distance).sum::<f64>();
+        Ok(l)
+    }
+
+    /// Every reading, and every check, as a relation among the posts and the wall's length.
+    pub fn relations(&self, wall: &str, cx: &WallContext) -> Result<Vec<Relation>, String> {
+        let mut out = vec![];
+        for (i, it) in self.items.iter().enumerate() {
+            let SurveyItem::Post { at, plies, name, role } = it else { continue };
+            let from = self.lin(wall, cx, &at.from)?;
+            let half = *plies as f64 * cx.ply / 2.0;
+            let hit = match at.hit {
+                Hit::Near => half,
+                Hit::Centre => 0.0,
+                Hit::Far => -half,
+            };
+            // x_i = datum + dir (distance + hit)
+            let mut posts = vec![(i, 1.0)];
+            posts.extend(from.posts.iter().map(|&(j, k)| (j, -k)));
+            let what = format!("{} read {} from {}", name.clone().unwrap_or_else(|| format!("{} (item {})", role.role().replace('_', " "), i + 1)), fmt_in(at.distance), at.from.describe());
+            out.push(Relation { what, posts, len: -from.len, value: from.constant + from.dir * (at.distance + hit), tolerance: READING_TOLERANCE });
+        }
+        for c in &self.checks {
+            let (a, b) = (self.lin(wall, cx, &c.from)?, self.lin(wall, cx, &c.to)?);
+            // dir (b - a) = distance
+            let mut posts: Vec<(usize, f64)> = b.posts.iter().map(|&(j, k)| (j, a.dir * k)).collect();
+            posts.extend(a.posts.iter().map(|&(j, k)| (j, -a.dir * k)));
+            out.push(Relation { what: format!("{} → {}, taped {}", c.from.describe(), c.to.describe(), fmt_in(c.distance)), posts, len: a.dir * (b.len - a.len), value: c.distance - a.dir * (b.constant - a.constant), tolerance: c.tolerance });
+        }
+        Ok(out)
+    }
+
+    /// Resolves every reading to a centre x along the wall (each post where its reading puts it,
+    /// from its datum; or, `at`, where a solve has put the posts, in the order the items list them).
+    pub fn resolve_at(&self, wall: &str, cx: &WallContext, at: Option<&[f64]>) -> Result<ResolvedSurvey, String> {
+        let mut r = self.resolve(wall, cx)?;
+        let Some(at) = at else { return Ok(r) };
+        let mut k = 0;
+        for it in r.items.iter_mut() {
+            if let ResolvedItem::Post(p) = it {
+                p.x = *at.get(k).ok_or_else(|| format!("{wall}: fewer posts solved than surveyed"))?;
+                k += 1;
+            }
+        }
+        // The checks, against the posts where they now are.
+        let xs: Vec<Option<f64>> = (0..self.items.len()).map(|i| r.items.iter().find_map(|it| if let ResolvedItem::Post(p) = it { (p.item == i).then_some(p.x) } else { None })).collect();
+        let value = |l: &Lin| l.posts.iter().map(|&(j, k)| k * xs[j].unwrap_or(0.0)).sum::<f64>() + l.len * cx.len + l.constant;
+        r.checks.clear();
+        for c in &self.checks {
+            let (a, b) = (self.lin(wall, cx, &c.from)?, self.lin(wall, cx, &c.to)?);
+            r.checks.push((format!("{} → {}", c.from.describe(), c.to.describe()), c.distance, a.dir * (value(&b) - value(&a)), c.tolerance));
+        }
+        Ok(r)
+    }
+
     /// Resolves every reading to a centre x along the wall.
     pub fn resolve(&self, wall: &str, cx: &WallContext) -> Result<ResolvedSurvey, String> {
         // Posts, resolved in dependency order (member datums need their member first).
@@ -435,6 +532,38 @@ mod tests {
         assert_eq!(xs(&r), vec![119.25, 104.0], "measured from the end");
         let (_, measured, model, _) = r.checks[0].clone();
         assert!((measured - model - 0.25 * IN).abs() < 1e-9);
+    }
+
+    #[test]
+    fn readings_are_relations_that_the_resolved_posts_meet() {
+        let end_in = Datum::Corner { end: "end".into(), face: CornerFace::Inside };
+        let s = Survey {
+            items: vec![
+                post(PostRole::Stud, start_in(), 0.0, Hit::Near),
+                SurveyItem::Post {
+                    role: PostRole::Stud,
+                    at: Reading { from: DatumRef { datum: start_in(), offsets: vec![Offset { distance: 0.5 * IN, note: "drywall".into() }] }, distance: 30.0 * IN, hit: Hit::Far },
+                    plies: 2,
+                    name: Some("D".into()),
+                },
+                post(PostRole::Stud, Datum::Member { name: "D".into(), toward: "end".into() }, 10.0, Hit::Near),
+                post(PostRole::Stud, end_in.clone(), 0.0, Hit::Near),
+            ],
+            checks: vec![SurveyCheck { from: DatumRef { datum: Datum::Member { name: "D".into(), toward: "end".into() }, offsets: vec![] }, to: DatumRef { datum: end_in, offsets: vec![] }, distance: 78.0 * IN, tolerance: 0.25 * IN }],
+        };
+        let c = cx();
+        let r = s.resolve("W", &c).unwrap();
+        let x: Vec<f64> = (0..s.items.len()).map(|i| r.items.iter().find_map(|it| if let ResolvedItem::Post(p) = it { (p.item == i).then_some(p.x) } else { None }).unwrap()).collect();
+        let rel = s.relations("W", &c).unwrap();
+        assert_eq!(rel.len(), 5);
+        for r in &rel[..4] {
+            let lhs: f64 = r.posts.iter().map(|&(j, k)| k * x[j]).sum::<f64>() + r.len * c.len;
+            assert!((lhs - r.value).abs() < 1e-12, "{r:?}: {lhs}");
+        }
+        // The check: from D's end-side face (36") to the end's inside face (114.5"): 78.5", taped 78".
+        let ch = &rel[4];
+        let lhs: f64 = ch.posts.iter().map(|&(j, k)| k * x[j]).sum::<f64>() + ch.len * c.len;
+        assert!((lhs - ch.value - 0.5 * IN).abs() < 1e-12, "{ch:?} {lhs}");
     }
 
     #[test]

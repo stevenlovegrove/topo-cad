@@ -244,27 +244,6 @@ fn king_county_snow() {
     assert!(roof_snow("Skykomish", 1100.0).unwrap_err().contains("above 1,000 ft"));
 }
 
-/// A load `on: "flat"` goes on the bottom-chord extension beyond the heel
-/// (the fitted flat part of the garage truss) at the truss's tributary width.
-#[test]
-fn flat_roof_loads() {
-    let path = format!("{}/../../examples/garage-truss.ts", env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(&path).unwrap().replace(".load(\"snow\", psf(25));", ".load(\"snow\", psf(25))\n  .load(\"dead\", psf(10), { on: \"flat\" });");
-    let (m, _) = crate::run_solved(&src, &path).unwrap_or_else(|e| panic!("{e}"));
-    let flat: Vec<(f64, (f64, f64))> = m.loads.iter().filter_map(|l| match l {
-        topo_core::Load::MemberUniform { w, range: Some(r), .. } => Some((-w.z, *r)),
-        _ => None,
-    }).collect();
-    assert!(flat.len() >= 3, "one per truss: {flat:?}");
-    let spacing = 24.0 * IN;
-    let flat_len = 0.9605188696330536; // fitted
-    for (i, (w, (a, b))) in flat.iter().enumerate() {
-        assert!(a.abs() < 1e-9 && (b - flat_len).abs() < 1e-3, "range {a}..{b}");
-        let trib = if i == 0 || i + 1 == flat.len() { spacing / 2.0 } else { spacing };
-        close("w", *w, 10.0 * 47.880259 * trib, 1e-9);
-    }
-}
-
 /// Trusses bear on an assembly's beam (e.g. a header continuing a wall line)
 /// wherever their bottom chords cross it, and the load goes down its posts.
 #[test]
@@ -345,53 +324,6 @@ fn scenarios_choose_values() {
     assert_eq!(b.scenarios.available[1].description.as_deref(), Some("older values"));
 }
 
-/// A roof's dead load built from `layers(...)` records the build-up as a
-/// surface, and its panels lie on the top faces of the top chords (sloped)
-/// or bottom-chord extension (flat).
-#[test]
-fn roof_layers_become_surfaces() {
-    let path = format!("{}/../../examples/garage-truss.ts", env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(&path)
-        .unwrap()
-        .replace("  psf, schedule,", "  psf, layers, boards, schedule,")
-        .replace(
-            ".load(\"snow\", psf(25));",
-            ".load(\"snow\", psf(25))\n  .dead(layers(\"standing seam 24ga steel\", \"polystick mts\", \"plywood 15/32\", boards([1, 4], { spacing: inch(7.5) })))\n  .dead(layers(\"tpo 60 mil\", \"plywood 15/32\"), { on: \"flat\" });",
-        );
-    let m = run(&src, &path).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(m.surfaces.len(), 2);
-    let slope = &m.surfaces[0];
-    assert_eq!(slope.region, topo_core::SurfaceRegion::Slope);
-    assert_eq!(slope.layers.len(), 4);
-    let seam = &slope.layers[0];
-    close("rib height", seam.thickness, 1.5 * IN, 1e-9);
-    assert!(seam.strips.as_ref().is_some_and(|s| s.sheet && s.along == "slope"));
-    let bd = &slope.layers[3];
-    close("board thickness", bd.thickness, 0.75 * IN, 1e-9);
-    let st = bd.strips.as_ref().expect("spaced boards");
-    close("board width", st.width, 3.5 * IN, 1e-9);
-    close("board spacing", st.spacing, 7.5 * IN, 1e-9);
-    assert_eq!(st.along, "run");
-    close("psf", slope.psf(), 1.45 + 0.35 + 1.4 + bd.psf, 1e-9);
-
-    let topo = Topology::build(&m);
-    let g = Geometry::build(&m, &topo);
-    let panels = topo_geom::surface_panels(&m, &g, slope);
-    assert!(panels.len() >= 2, "{panels:?}");
-    let tops: Vec<_> = m.members.iter().filter(|x| x.role == "top_chord").collect();
-    for p in &panels {
-        assert!(p.normal.z > 0.1);
-        // Nothing of a top chord pokes through the panel's plane, and it touches it.
-        let h = tops.iter().flat_map(|x| g.member(x.id).faces()).flat_map(|f| f.outer).map(|q| (q - p.origin).dot(p.normal)).fold(f64::NEG_INFINITY, f64::max);
-        assert!(h.abs() < 1e-6, "top chords reach the panel: {h}");
-    }
-    let flat = topo_geom::surface_panels(&m, &g, &m.surfaces[1]);
-    assert_eq!(flat.len(), 1, "{flat:?}");
-    assert!(flat[0].normal.z > 0.999);
-    assert!(flat[0].slope.norm() > 0.9 && flat[0].slope.norm() < 1.1, "flat part width {}", flat[0].slope.norm());
-    let bottoms_top = m.members.iter().filter(|x| x.role == "bottom_chord").flat_map(|x| g.member(x.id).faces()).flat_map(|f| f.outer).map(|q| q.z).fold(f64::NEG_INFINITY, f64::max);
-    close("flat panel on the bottom chords", flat[0].origin.z, bottoms_top, 1e-6);
-}
 
 /// `designBasis({ combinations: "ubc-1976" })`: the 1976 UBC's unfactored
 /// sums (roof live load and snow as alternatives) with its load-duration

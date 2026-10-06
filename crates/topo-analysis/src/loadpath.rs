@@ -27,13 +27,25 @@ pub struct SupportEdge {
 }
 
 /// All gravity support relations between members meeting at a junction or bonded face to face.
-/// * Bearing: A's underside is at or above B's top (A rests on B).
+/// * Bearing: A's underside is at or above B's top (A rests on B); or B ends butted up into A
+///   from below (a stud under a plate, sloping or not), or A ends butted down onto B.
 /// * Fastened: A ends against B's face (butt cut) without resting on it.
 pub fn support_graph(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<SupportEdge> {
     let tol = 1e-4;
     let boxes: Vec<_> = geom.members.iter().map(|g| g.bbox()).collect();
     let rests_on = |a: MemberId, b: MemberId| boxes[a.idx()].min.z >= boxes[b.idx()].max.z - tol;
+    // An end of a member at a junction, butted against another: which way it arrives (up, down, or across).
+    let butted = |a: &topo_core::MemberAtNode, b: MemberId| {
+        let g = geom.member(a.member);
+        let cut = if a.incidence == Incidence::Start { &g.start } else { &g.end };
+        a.incidence.is_end() && matches!(cut.kind, CutKind::Butt { against } if against == b)
+    };
     let mut out = vec![];
+    let mut push = |e: SupportEdge| {
+        if !out.contains(&e) {
+            out.push(e);
+        }
+    };
     for j in &topo.junctions {
         for a in &j.members {
             for b in &j.members {
@@ -41,26 +53,63 @@ pub fn support_graph(model: &Model, topo: &Topology, geom: &Geometry) -> Vec<Sup
                     continue;
                 }
                 let (ba, bb) = (&boxes[a.member.idx()], &boxes[b.member.idx()]);
-                let transfer = if rests_on(a.member, b.member) {
-                    Some(Transfer::Bearing)
-                } else if a.incidence.is_end() && ba.max.z > bb.min.z + tol {
+                let edge = |member, by, transfer| SupportEdge { member, by, node: Some(j.node), transfer };
+                if rests_on(a.member, b.member) {
+                    push(edge(a.member, b.member, Transfer::Bearing));
+                } else if butted(a, b.member) && a.dir.z > 0.5 {
+                    // A comes up into B from below and ends on it: B rests on A.
+                    push(edge(b.member, a.member, Transfer::Bearing));
+                } else if butted(a, b.member) && a.dir.z < -0.5 {
+                    // A comes down onto B and ends on it: A rests on B.
+                    push(edge(a.member, b.member, Transfer::Bearing));
+                } else if butted(a, b.member) && ba.max.z > bb.min.z + tol {
                     // (A entirely below B would be *supporting* B, e.g. a stud under a plate.)
-                    let g = geom.member(a.member);
-                    let cut = if a.incidence == Incidence::Start { &g.start } else { &g.end };
-                    matches!(cut.kind, CutKind::Butt { against } if against == b.member).then_some(Transfer::Fastened)
-                } else {
-                    None
-                };
-                if let Some(t) = transfer {
-                    out.push(SupportEdge { member: a.member, by: b.member, node: Some(j.node), transfer: t });
+                    push(edge(a.member, b.member, Transfer::Fastened));
                 }
             }
         }
     }
+    // A node on a member's face joins that member to those the node is on the axis of (and to
+    // others it is on the face of). The face says which rests on which: what is at a node on a
+    // member's upward face rests on the member there, and the member rests on what is at a node
+    // on its downward face.
+    // (Only what is beyond that face: where the node is also the end of plates level with the member, a
+    // tee's, those are beside it, not on it.)
+    let middle = |m: MemberId| {
+        let pts: Vec<topo_core::Vec3> = geom.member(m).faces().into_iter().flat_map(|f| f.outer).collect();
+        pts.iter().fold(topo_core::Vec3::ZERO, |a, p| a + *p) / pts.len().max(1) as f64
+    };
+    for at in &model.attachments {
+        let face = model.face(at.member, at.face);
+        let up = face.normal.z;
+        let others = topo.junction(at.node).members.iter().map(|m| m.member).chain(model.attached_at(at.node).map(|o| o.member)).filter(|&o| o != at.member);
+        for other in others {
+            if (middle(other) - face.origin).dot(face.normal) <= tol {
+                continue;
+            }
+            let (member, by) = if up > 0.5 {
+                (other, at.member)
+            } else if up < -0.5 {
+                (at.member, other)
+            } else {
+                continue;
+            };
+            push(SupportEdge { member, by, node: Some(at.node), transfer: Transfer::Bearing });
+        }
+    }
+    // Members bonded face to face: one rests on the other where it is above it, across their
+    // length (a cap plate on the plate under it, sloping or not; not the plies of a post, side by side).
+    let centre = |m: MemberId| {
+        let pts: Vec<topo_core::Vec3> = geom.member(m).faces().into_iter().flat_map(|f| f.outer).collect();
+        pts.iter().fold(topo_core::Vec3::ZERO, |a, p| a + *p) / pts.len().max(1) as f64
+    };
     for bond in &model.bonds {
         for (a, b) in [(bond.a, bond.b), (bond.b, bond.a)] {
-            if rests_on(a, b) {
-                out.push(SupportEdge { member: a, by: b, node: None, transfer: Transfer::Bearing });
+            let x = model.member_axes(b).x;
+            let d = centre(a) - centre(b);
+            let d = d - x * d.dot(x);
+            if rests_on(a, b) || (d.z > tol && d.z >= 0.7 * d.norm()) {
+                push(SupportEdge { member: a, by: b, node: None, transfer: Transfer::Bearing });
             }
         }
     }

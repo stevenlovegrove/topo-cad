@@ -1,6 +1,6 @@
 // Custom truss shapes and repeated custom topology.
 import {
-  Assembly, Building, DFL, ft, inch, intersect, Perimeter, pitch, psf, repeat, TrussRoof, TrussShape, Wall,
+  Assembly, Building, coincide, DFL, ft, inch, intersect, Perimeter, pitch, psf, repeat, TrussRoof, TrussShape, Wall,
 } from "topo-cad";
 
 const width = ft(20);
@@ -40,16 +40,16 @@ const edited = howe
   .named("Howe (edited)");
 void kink;
 
-const roof = TrussRoof.of(custom, { origin: [0, 0], spanDir: [0, 1], length: width, spacing: inch(24), grade: DFL.No2 })
+const roof = TrussRoof.of(custom, { at: walls.corner(1), spanDir: [0, 1], length: width, spacing: inch(24), grade: DFL.No2 })
   .bearingOn(walls)
   .load("dead", psf(20))
   .load("snow", psf(25));
 
 // A pergola bay as custom topology: one post and the beam to the next post
-// position. Repeating it makes the bays share points, so each beam lands on
-// the next bay's post; one more post closes the run. The beam outranks the
-// post, so it runs over the post top (bearing) rather than being nailed to
-// the post's side; beams meeting over a post are spliced there.
+// position. Repeated, each bay's beam end is made one node with the next
+// bay's post top (coincide); one more post closes the run. The beam outranks
+// the post, so it runs over the post top (bearing) rather than being nailed
+// to the post's side; beams meeting over a post are spliced there.
 const bayWidth = ft(8);
 const postHeight = ft(8);
 const bay = Assembly.named("Pergola bay")
@@ -65,7 +65,9 @@ const lastPost = Assembly.named("Pergola end post")
   .member("post", ["base", "top"], { size: [4, 4], grade: DFL.No2 })
   .supportedAt("base");
 const pergolaAt: readonly [number, number, number] = [0, -ft(10), 0];
-const pergola = [...repeat(bay.moved(pergolaAt), 3, [bayWidth, 0, 0]), lastPost.moved([3 * bayWidth, -ft(10), 0])];
+const bays = repeat(bay.moved(pergolaAt), 3, [bayWidth, 0, 0]);
+const endPost = lastPost.moved([3 * bayWidth, -ft(10), 0]);
+const pergola = [...bays, endPost, ...[...bays.slice(1), endPost].map((next, i) => coincide(bays[i].node("next"), next.node("top")))];
 
 export const alternatives = { custom, edited };
 

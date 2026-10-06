@@ -164,6 +164,31 @@ impl Model {
         for m in &mut self.members {
             m.depth_dir = m.depth_dir.map(|d| f.dir_to_world(d));
         }
+        // (A building is placed upright: a solid's outline turns on plan, and it rises with the frame.)
+        for x in &mut self.solids {
+            for p in &mut x.outline {
+                let w = f.to_world(crate::math::Vec3::new(p.x, p.y, 0.0));
+                *p = crate::math::Vec2::new(w.x, w.y);
+            }
+            for l in [&mut x.bottom, &mut x.top] {
+                let (a, s) = (f.to_world(crate::math::Vec3::new(l.at.x, l.at.y, 0.0)), f.dir_to_world(crate::math::Vec3::new(l.slope.x, l.slope.y, 0.0)));
+                (l.at, l.slope) = (crate::math::Vec2::new(a.x, a.y), crate::math::Vec2::new(s.x, s.y));
+                l.z += f.origin.z;
+            }
+        }
+        for s in &mut self.solves {
+            for n in &mut s.nodes {
+                n.at = f.to_world(n.at);
+                n.numbers.iter_mut().for_each(|x| x.dir = f.dir_to_world(x.dir));
+            }
+            for v in &mut s.variables {
+                v.at = f.to_world(v.at);
+                v.freedoms.iter_mut().for_each(|x| x.dir = f.dir_to_world(x.dir));
+            }
+            for c in &mut s.constraints {
+                c.points.iter_mut().for_each(|p| *p = f.to_world(*p));
+            }
+        }
         for j in &mut self.joints {
             for r in &mut j.rules {
                 if let JointRule::Plane { normal, .. } = r {
@@ -244,6 +269,7 @@ impl Model {
             for r in &mut j.rules {
                 *r = match r.clone() {
                     JointRule::Butt { member, against } => JointRule::Butt { member: m(member), against: m(against) },
+                    JointRule::ButtFace { member, against, face } => JointRule::ButtFace { member: m(member), against: m(against), face },
                     JointRule::Through { member } => JointRule::Through { member: m(member) },
                     JointRule::Square { member } => JointRule::Square { member: m(member) },
                     JointRule::Miter { a, b } => JointRule::Miter { a: m(a), b: m(b) },
@@ -261,6 +287,10 @@ impl Model {
         for b in other.bonds {
             self.bonds.push(crate::model::Bond { a: m(b.a), b: m(b.b), connection: c(b.connection) });
         }
+        self.solves.extend(other.solves);
+        for a in other.attachments {
+            self.attachments.push(crate::model::Attachment { node: n(a.node), member: m(a.member), ..a });
+        }
         for mut s in other.supports {
             s.node = n(s.node);
             self.supports.push(s);
@@ -270,9 +300,13 @@ impl Model {
             i.members = i.members.into_iter().map(m).collect();
             self.issues.push(i);
         }
-        for mut x in other.surfaces {
+        for mut x in other.buildups {
             x.group = g(x.group);
-            self.surfaces.push(x);
+            self.buildups.push(x);
+        }
+        for mut x in other.solids {
+            x.group = x.group.map(g);
+            self.solids.push(x);
         }
         for l in other.loads {
             self.loads.push(match l {

@@ -9,6 +9,7 @@ license.workspace = true
 serde.workspace = true
 topo-core.workspace = true
 topo-data.workspace = true
+topo-solve.workspace = true
 
 [dev-dependencies]
 topo-geom.workspace = true

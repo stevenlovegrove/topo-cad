@@ -139,7 +139,16 @@ impl<'a> Resolver<'a> {
         if let Some(spec) = self.model.joint(node) {
             for rule in &spec.rules {
                 match *rule {
+                    JointRule::ButtFace { member: mm, against, face } if mm == member.id => {
+                        let f = self.model.face(against, face);
+                        return EndCut { plane: Plane::new(f.origin, -f.normal), extra: vec![], also: vec![], kind: CutKind::Butt { against } };
+                    }
                     JointRule::Butt { member: mm, against } if mm == member.id => {
+                        // Where the node is on a face of the other, the end is cut on that face.
+                        if let Some(a) = self.model.attached_at(node).find(|a| a.member == against) {
+                            let f = self.model.face(against, a.face);
+                            return EndCut { plane: Plane::new(f.origin, -f.normal), extra: vec![], also: vec![], kind: CutKind::Butt { against } };
+                        }
                         return match self.envs[against.idx()].raycast(r0, d) {
                             Some(h) => EndCut { plane: self.envs[against.idx()].plane(h.enter, true), extra: vec![], also: vec![], kind: CutKind::Butt { against } },
                             None => {

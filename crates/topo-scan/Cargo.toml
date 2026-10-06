@@ -1,0 +1,24 @@
+[package]
+name = "topo-scan"
+description = "A model against a lidar scan: registration, per-member evidence, plane fits, sections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+topo-core.workspace = true
+topo-geom.workspace = true
+topo-script = { workspace = true, features = ["quickjs"] }
+anyhow = "1"
+rayon = "1.10"
+png = "0.17"
+# Pangolino draws 3D images for agents (feature `pango`). It is not published
+# yet, so it is used from its checkout by path; wgpu must be the version it uses.
+pango-render = { path = "/Users/stevenlovegrove/code/pangolino/pango-render", optional = true }
+wgpu = { version = "25", optional = true }
+pollster = { version = "0.4", optional = true }
+
+[features]
+pango = ["dep:pango-render", "dep:wgpu", "dep:pollster"]

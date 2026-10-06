@@ -1,0 +1,8 @@
+[package]
+name = "topo-solve"
+description = "Frames, and constraints between things in them: a small tiered solver that says what settled each freedom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

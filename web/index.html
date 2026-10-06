@@ -17,16 +17,49 @@
   #status { color: var(--muted); }
   #project { width: auto; max-width: 260px; font-size: 13px; }
   #status .ok { color: var(--ok); } #status .bad { color: var(--bad); }
-  nav { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
-  nav button { border: 1px solid var(--line); background: var(--bg); padding: 3px 9px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; }
-  nav button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   body { display: flex; flex-direction: column; }
   header { flex: none; }
   main { display: flex; flex: 1; min-height: 0; }
-  #viewer { flex: 1; position: relative; overflow: hidden; background: #e9e9e4; cursor: crosshair; }
+  /* Left: what the project has (drawings, files; with a scan: layers, views). */
+  #browser { width: 230px; flex: none; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); font-size: 12px; min-height: 0; }
+  #browserTabs { display: flex; gap: 2px; padding: 6px 6px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  #browserTabs button { border: 1px solid transparent; border-bottom: 0; background: none; padding: 4px 6px; border-radius: 5px 5px 0 0; cursor: pointer; font: inherit; color: var(--muted); margin-bottom: -1px; }
+  #browserTabs button.on { color: var(--ink); border-color: var(--line); background: var(--panel); font-weight: 600; }
+  #browserTabs button[hidden], .bpane[hidden] { display: none; }
+  .bpane { flex: 1; overflow-y: auto; padding: 6px; }
+  .bpane h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 4px 4px; font-weight: 600; }
+  .bpane ul { list-style: none; margin: 0; padding: 0; }
+  .bpane li { padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bpane li:hover { background: #f1f1ec; }
+  .bpane li.on { background: var(--ink); color: #fff; }
+  .bpane li.dirty::after { content: " ●"; color: var(--pick); }
+  .bpane li .muted { color: inherit; opacity: .65; }
+  /* Centre: panes side by side, each showing one kind of view. */
+  #centre { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #panes { flex: 1; display: flex; min-height: 0; }
+  .slot { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+  /* Panes side by side (row) or one over another (col), with a bar between to drag. */
+  .split { flex: 1; display: flex; min-width: 0; min-height: 0; }
+  .split.over { flex-direction: column; }
+  .gutter { flex: 0 0 5px; background: var(--line); cursor: col-resize; touch-action: none; }
+  .split.over > .gutter { cursor: row-resize; }
+  .gutter:hover, .gutter.on { background: var(--accent); }
+  /* While a pane is dragged by its bar: where it would land in the pane under the cursor. */
+  .slot .drop { position: absolute; inset: 0; z-index: 50; display: none; }
+  #panes.dragging .slot .drop { display: block; }
+  .slot .drop i { position: absolute; background: rgba(31,95,191,.25); border: 2px solid var(--accent); display: none; pointer-events: none; }
+  .slot.moving { opacity: .5; }
+  .slotbar { cursor: grab; }
+  .slotbar { display: flex; align-items: center; gap: 6px; padding: 3px 6px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; }
+  .slot.focus .slotbar { box-shadow: inset 0 -2px 0 var(--accent); }
+  .slotbar select { width: auto; font-size: 12px; padding: 1px 4px; }
+  .slotbar .sp { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slotbar button { border: 1px solid var(--line); background: var(--bg); border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; padding: 0 6px; line-height: 18px; }
+  .slotbody { flex: 1; position: relative; overflow: hidden; background: #e9e9e4; min-height: 0; }
+  #sheetPane { position: absolute; inset: 0; cursor: crosshair; }
   #sheet { width: 100%; height: 100%; }
   #sheet svg { width: 100%; height: 100%; display: block; }
-  #tip { position: absolute; pointer-events: none; background: rgba(27,27,27,.88); color: #fff; padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
+  #tip { position: fixed; z-index: 50; pointer-events: none; background: rgba(27,27,27,.88); color: #fff; padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; display: none; }
   #hint { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.8); padding: 2px 6px; border-radius: 4px; }
   aside { width: 420px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 4px 14px 20px; }
   #paneTabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 2px; background: var(--panel); border-bottom: 1px solid var(--line); margin: 0 -14px 4px; padding: 8px 14px 0; }
@@ -68,10 +101,7 @@
   #banner .warn { background: #fff4d6; padding: 8px; border-radius: 6px; margin-top: 10px; font-size: 12px; }
   ul#issues { padding-left: 16px; margin: 0; font-size: 12px; }
   .muted { color: var(--muted); }
-  nav button.script { margin-left: 8px; font-family: ui-monospace, monospace; }
-  nav button.script.dirty::after { content: " ●"; color: var(--pick); }
   #script { position: absolute; inset: 0; display: flex; flex-direction: column; background: #fbfbf8; cursor: auto; }
-  #script[hidden], #hint[hidden], #view3d[hidden] { display: none; }
   #view3d { position: absolute; inset: 0; background: #f7f7f3; cursor: grab; }
   #view3d.dragging { cursor: grabbing; }
   #canvas3d { width: 100%; height: 100%; display: block; }
@@ -82,14 +112,13 @@
   #compass .hot.up.cur .bg { fill: rgba(255,255,255,.01); } #compass .hot.up.cur text { fill: #1d4ed8; }
   #compass .link { pointer-events: all; cursor: pointer; fill: #1f5fbf; }
   #compass .link:hover { text-decoration: underline; }
-  #layers3d { position: absolute; right: 12px; bottom: 34px; width: 290px; max-height: calc(100% - 250px); overflow: auto; background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 11px; }
-  #layers3d .hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; }
-  #layers3d .surf { margin-top: 6px; font-weight: 600; }
-  #layers3d .lyr { display: grid; grid-template-columns: 16px 12px 1fr auto; gap: 5px; align-items: center; padding: 1px 0; }
-  #layers3d .sw { width: 12px; height: 12px; border: 1px solid #888; border-radius: 2px; }
-  #layers3d .lyr span.n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #layers3d .lyr span.v { color: var(--muted); font-variant-numeric: tabular-nums; }
-  #deflect3d { position: absolute; left: 10px; top: 10px; background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; font-size: 12px; display: flex; gap: 10px; align-items: center; }
+  #struct3d { position: absolute; left: 12px; top: 12px; width: 230px; background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 11px; user-select: none; }
+  #struct3d .hdr { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+  #struct3d label { display: flex; gap: 5px; align-items: center; padding: 1px 0; }
+  #struct3d .key { width: 14px; text-align: center; font-size: 12px; }
+  #struct3d .tiers { display: grid; grid-template-columns: 1fr 1fr; margin-top: 3px; border-top: 1px solid var(--line); padding-top: 3px; }
+  #struct3d .sw { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  #deflect3d { position: absolute; left: 12px; bottom: 34px; background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; font-size: 12px; display: flex; gap: 10px; align-items: center; }
   #deflect3d[hidden] { display: none; }
   #deflect3d input[type=range] { width: 110px; vertical-align: middle; }
   #hint3d { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; background: rgba(255,255,255,.85); padding: 2px 6px; border-radius: 4px; }
@@ -110,9 +139,9 @@
   @media (max-width: 900px) {
     main { flex-direction: column; height: auto; flex: none; }
     body { display: block; }
-    #viewer { flex: none; height: 70vh; }
+    #browser { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    #centre { flex: none; height: 70vh; }
     aside { width: auto; border-left: 0; border-top: 1px solid var(--line); }
-    nav { margin-left: 0; }
   }
   #structure .sum { font-size: 13px; margin-top: 6px; }
   .case { border-bottom: 1px solid var(--line); padding: 5px 0; font-size: 12px; }
@@ -140,6 +169,170 @@
   .chk .note { color: var(--muted); font-style: italic; margin-top: 2px; }
   .badge { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; background: #fff4d6; color: #8a5a00; margin-left: 4px; }
   svg.chart { width: 100%; height: 78px; display: block; margin-top: 4px; }
+  /* ----- the scan workspace (app/scan.js; only with the service) ----- */
+  #histNav { margin-left: auto; display: flex; gap: 2px; }
+  #histNav button { border: 1px solid var(--line); background: var(--bg); border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; padding: 1px 8px; }
+  #histNav button:disabled { opacity: .35; cursor: default; }
+  #people { display: flex; gap: 5px; align-items: center; }
+  .who { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 4px; border-radius: 5px; background: var(--who); color: #fff; font-size: 12px; font-weight: 700; vertical-align: middle; }
+  .who.small { min-width: 16px; height: 16px; font-size: 10px; border-radius: 4px; padding: 0 3px; }
+  .who.agent { border-radius: 11px; gap: 2px; padding: 0 6px 0 5px; box-shadow: 0 0 0 1.5px var(--panel), 0 0 0 3px var(--who); }
+  .who.agent.small { padding: 0 4px 0 3px; box-shadow: none; }
+  .who .bot { flex: none; }
+  .who.small .bot { width: 9px; height: 9px; }
+  .person { position: relative; display: inline-flex; cursor: pointer; }
+  .person.chatting { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+  .person .bell { position: absolute; left: -6px; top: -7px; width: 15px; height: 15px; border-radius: 50%; background: #d62828; color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 1.5px var(--panel); }
+  #people { gap: 9px; margin-left: 6px; }
+  #chatPanel { position: fixed; top: 46px; right: 12px; z-index: 90; width: 340px; max-height: min(70vh, 560px); display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.25); font-size: 13px; }
+  #chatPanel .chead { display: flex; align-items: center; justify-content: space-between; padding: 7px 9px; border-bottom: 1px solid var(--line); }
+  #chatPanel .cx { border: 0; background: none; font-size: 17px; cursor: pointer; color: var(--muted); }
+  #chatPanel .cnote { padding: 0 10px; font-size: 12px; } #chatPanel .cnote:not(:empty) { padding: 5px 10px; background: #fff8e1; }
+  #chatPanel .clist { flex: 1; overflow: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-height: 80px; }
+  #chatPanel .cmsg { max-width: 86%; padding: 5px 8px; border-radius: 9px; background: #f0f0ec; align-self: flex-start; }
+  #chatPanel .cmsg.mine { align-self: flex-end; background: #dfeaff; }
+  #chatPanel .cmsg .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #chatPanel .cmsg .muted { font-size: 10.5px; }
+  #chatPanel textarea { margin: 0 8px 8px; resize: none; font: inherit; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; }
+  .person.me { cursor: pointer; outline: 2px solid var(--ink); outline-offset: 1px; border-radius: 6px; }
+  .person i { position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--panel); background: #b9b9b2; }
+  .person.here i { background: var(--ok); } .person.working i { background: #f4a100; } .person.waiting i { background: var(--ok); } .person.away { opacity: .55; }
+  .glpane { position: absolute; inset: 0; background: #16171b; }
+  .glhost { position: absolute; inset: 0; cursor: crosshair; }
+  .glchip { position: absolute; left: 8px; bottom: 8px; max-width: 340px; background: rgba(255,255,255,.95); border-radius: 6px; padding: 6px 8px; font-size: 12px; line-height: 1.35; }
+  .glchip[hidden], .diffbar[hidden] { display: none; }
+  .glchip .row { margin-top: 5px; gap: 4px; }
+  .glchip button, .diffbar button, .bpane button, .entry button { border: 1px solid var(--line); background: #fff; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; padding: 1px 7px; }
+  .ev { font-weight: 600; } .ev.supported { color: var(--ok); } .ev.contradicted { color: var(--bad); } .ev.unseen { color: var(--muted); }
+  /* (Its top is set under the view's toolbar, however many rows that has wrapped to: see placeDiffbar.) */
+  .diffbar { position: absolute; left: 50%; top: 42px; transform: translateX(-50%); z-index: 2; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; align-items: center; max-width: calc(100% - 16px); box-sizing: border-box; background: rgba(255,255,255,.95); border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+  .diffbar span { white-space: nowrap; }
+  .diffbar { border: 2px solid var(--accent); }
+  .diffbar .pname { font-weight: 600; color: var(--accent); text-decoration: none; }
+  .diffbar .pname:hover { text-decoration: underline; }
+  .diffbar .pstate { color: #555; }
+  .diffbar .pstate.applied { color: #1a7f37; font-weight: 600; }
+  .diffbar .pnote { flex-basis: 100%; white-space: normal; color: #8a4b00; font-size: 11.5px; max-width: 520px; text-align: center; }
+  .diffbar button.go { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .diffbar button:disabled { opacity: .45; cursor: default; }
+  .diffbar button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  /* An issue's pin: a dot at its place, its label up and to the right on a leader. */
+  .pin { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+  .pin .dot { position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--pin); box-shadow: 0 0 0 1.5px #fff; }
+  .pin .lead { position: absolute; left: 0; top: 0; width: 78px; height: 1px; background: rgba(255,255,255,.85); transform-origin: 0 0; transform: rotate(-50deg); }
+  .pin .tag { position: absolute; left: 48px; top: -70px; pointer-events: auto; cursor: pointer; background: var(--pin); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 9px; white-space: nowrap; box-shadow: 0 0 0 1px rgba(0,0,0,.45); }
+  .pin.on .tag { outline: 2px solid #fff; } .pin.on { z-index: 2; } .pin.dim { opacity: .5; }
+  .bpane label.f { display: flex; flex-direction: column; gap: 2px; margin: 6px 4px; color: var(--muted); }
+  .bpane label.c, aside label.c { display: flex; flex-direction: row; align-items: center; gap: 5px; margin: 3px 4px; font-size: 12px; color: var(--ink); cursor: pointer; }
+  .bpane .row2 { display: flex; gap: 4px; margin: 4px; flex-wrap: wrap; }
+  .bpane .row2 input { width: 0; flex: 1; font: inherit; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; }
+  .bpane .muted { padding: 0 4px; line-height: 1.4; }
+  .bpane li .x { float: right; opacity: .5; padding: 0 3px; } .bpane li .x:hover { opacity: 1; }
+  #issuePanel { margin-top: 8px; font-size: 13px; }
+  .ibar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .ibar select { width: auto; font-size: 12px; padding: 2px 4px; }
+  .draft { margin-top: 8px; } .draft .muted { font-size: 11px; margin-top: 3px; }
+  ul.ilist { list-style: none; padding: 0; margin: 8px 0 0; }
+  ul.ilist li { display: grid; grid-template-columns: 8px 1fr; gap: 2px 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  ul.ilist li:hover { background: #f3f3ee; } ul.ilist li.done .t { color: var(--muted); text-decoration: line-through; }
+  ul.ilist li.mine { background: #fff4d6; } ul.ilist li.none { cursor: default; display: block; }
+  ul.ilist .meta, .board .meta { grid-column: 2; display: flex; gap: 6px; align-items: center; font-size: 11px; }
+  .pri { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; } .pri.p1 { background: #d62828; } .pri.p2 { background: var(--accent); } .pri.p3 { background: #b9b9b2; }
+  .chip.waiting { background: #ffe1a8; color: #7a4b00; } .chip.doing { background: #dbe7ff; color: #173e80; } .chip.open { background: #eee; color: #444; } .chip.done { background: #dff1e3; color: var(--ok); }
+  .cat { color: var(--muted); }
+  .ihead { margin: 10px 0 6px; font-size: 14px; } .ihead .muted { font-size: 11px; margin-top: 2px; } #iTitle { cursor: text; }
+  .entry { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .entry .text { white-space: pre-wrap; margin-top: 2px; }
+  .entry.tool { font-size: 11px; color: var(--muted); border-bottom: 0; padding: 2px 0; } .entry.tool code { display: inline; }
+  .entry.card { border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; margin: 6px 0; }
+  .entry.card .k { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 3px; }
+  .entry.proposal { border-left: 4px solid var(--accent); } .entry.proposal.on { background: #f2f6ff; outline: 2px solid var(--accent); outline-offset: -1px; }
+  .entry.proposal.applied { border-left-color: var(--ok); } .entry.proposal.rejected, .entry.proposal.reverted { border-left-color: #b9b9b2; }
+  .entry .tally { font-size: 12px; margin-top: 2px; } .entry .row { margin-top: 6px; gap: 4px; }
+  .entry button.go { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.viewlink { margin-top: 4px; color: var(--accent); border-color: var(--accent) !important; }
+  .add { color: var(--ok); } .del { color: var(--bad); } .hunk { color: #7b2cbf; }
+  pre.difftext { margin: 6px 0 0; padding: 6px; background: #f7f7f3; border-radius: 4px; font: 11px/1.45 ui-monospace, Menlo, monospace; overflow-x: auto; max-height: 300px; }
+  pre.difftext[hidden] { display: none; }
+  .composer { position: sticky; bottom: -20px; background: var(--panel); padding: 8px 0 12px; }
+  .composer textarea { width: 100%; font: inherit; padding: 5px 6px; border: 1px solid var(--line); border-radius: 4px; resize: vertical; }
+  .composer .row { justify-content: space-between; margin-top: 4px; }
+  .board { position: absolute; inset: 0; display: flex; gap: 8px; padding: 8px; background: var(--bg); overflow: auto; cursor: auto; }
+  .board .col { flex: 1; min-width: 150px; display: flex; flex-direction: column; background: #ecece7; border-radius: 6px; padding: 6px; }
+  .board .col.over { outline: 2px dashed var(--accent); }
+  .board h4 { margin: 2px 4px 6px; font-size: 12px; }
+  .board .cards { flex: 1; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+  .board .card { background: #fff; border-radius: 5px; padding: 6px 8px; font-size: 12px; cursor: grab; border-left: 4px solid var(--accent); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+  .board .card.p1 { border-left-color: #d62828; } .board .card.p3 { border-left-color: #b9b9b2; }
+  .board .card.on { outline: 2px solid var(--ink); } .board .card.mine { background: #fff4d6; } .board .card.drag { opacity: .4; }
+  .board .meta { margin-top: 4px; }
+  #scanStatus { color: var(--muted); font-size: 12px; }
+  /* The tree of objects: an eye (shown or not) apart from the row (selected or not). */
+  .tree { user-select: none; }
+  .trow { display: flex; align-items: center; gap: 4px; padding: 2px 4px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .trow:hover { background: #f1f1ec; } .trow.on { background: var(--ink); color: #fff; }
+  .trow.off .tn { opacity: .45; }
+  .trow[data-kind=top] { font-weight: 600; margin-top: 4px; }
+  .trow .tw { width: 10px; flex: none; font-size: 10px; color: var(--muted); } .trow.on .tw { color: #ccc; }
+  .trow .eye { flex: none; display: inline-flex; color: var(--muted); padding: 1px; border-radius: 3px; } .trow .eye:hover { background: rgba(0,0,0,.12); color: var(--ink); }
+  .trow.on .eye { color: #ddd; } .trow.on .eye:hover { color: #fff; background: rgba(255,255,255,.2); }
+  .trow .tn { overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 48px; }
+  .trow .muted { margin-left: auto; padding: 0 0 0 6px; font-size: 11px; font-weight: 400; flex: 0 100 auto; overflow: hidden; text-overflow: ellipsis; } .trow.on .muted { color: #ccc; }
+  .trow .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: transparent; }
+  .trow .dot.supported { background: #3aa655; } .trow .dot.contradicted { background: #e0492f; } .trow .dot.unseen { background: #b9b9b2; }
+  /* A scan view's own controls and compass. */
+  .gltools { position: absolute; left: 8px; top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: calc(100% - 110px); color: #e9e9e4; font-size: 12px; }
+  .gltools select, .gltools input { font: inherit; font-size: 12px; background: rgba(22,23,27,.8); color: #fff; border: 1px solid rgba(255,255,255,.3); border-radius: 4px; padding: 2px 4px; width: auto; height: 24px; }
+  .gltools input[type=number] { width: 52px; }
+  .gltools input[type=checkbox] { height: auto; vertical-align: middle; margin: 6px 4px 0 0; }
+  .gltools input[type=range] { width: 120px; padding: 0; border: 0; background: none; vertical-align: middle; margin: 0 0 6px 6px; }
+  .gltools .grp { display: inline-flex; border: 1px solid rgba(255,255,255,.3); border-radius: 5px; overflow: hidden; background: rgba(22,23,27,.8); }
+  .gltools .grp input { border: 0; border-radius: 0; height: 22px; }
+  .gltools button { border: 0; background: none; color: #e9e9e4; font: inherit; font-size: 12px; min-width: 24px; height: 22px; padding: 0 5px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .gltools button + button, .gltools input + button, .gltools button + input { border-left: 1px solid rgba(255,255,255,.2); }
+  .gltools button:hover { background: rgba(255,255,255,.16); } .gltools button.on { background: #e9e9e4; color: #16171b; }
+  .gltools details.more { position: relative; } .gltools details.more summary { list-style: none; cursor: pointer; padding: 0 6px; border: 1px solid rgba(255,255,255,.3); border-radius: 5px; background: rgba(22,23,27,.8); height: 24px; line-height: 20px; }
+  .gltools details.more > div { position: absolute; top: 28px; left: 0; white-space: nowrap; background: rgba(22,23,27,.92); border: 1px solid rgba(255,255,255,.3); border-radius: 5px; padding: 6px 8px; z-index: 3; }
+  .glcompass { position: absolute; right: 8px; top: 8px; width: 92px; height: 92px; }
+  .glcompass .hot { cursor: pointer; } .glcompass .hit { fill: transparent; } .glcompass .hot:hover .hit { fill: rgba(110,168,255,.45); }
+  .glcompass text { font-family: sans-serif; pointer-events: none; }
+  #inspector .head.evidence table { margin-top: 4px; } #inspector .head.evidence .muted { margin-top: 4px; }
+  .glchip .cardhead { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+  .glchip .cardbtns { display: inline-flex; gap: 2px; flex: none; }
+  .glchip .cardbtns button { border: 0; background: none; width: 22px; height: 22px; border-radius: 4px; font-size: 15px; line-height: 1; padding: 0; color: var(--muted); cursor: pointer; }
+  .glchip .cardbtns button:hover { background: #ecece7; color: var(--ink); }
+  .ctxmenu .head { padding: 3px 9px 2px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .glchip details pre { max-height: 220px; overflow: auto; font: 10.5px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; margin: 4px 0 0; }
+  .glchip summary { cursor: pointer; color: var(--accent); }
+  .selname { display: inline-block; min-width: 54px; padding: 0 4px; border-bottom: 1px dashed #999; outline: none; cursor: text; font-weight: 600; }
+  .selname:empty::before { content: attr(data-ph); color: var(--muted); font-weight: 400; font-style: italic; }
+  .selname:focus { border-bottom: 1px solid var(--accent); background: #fffbe6; }
+  .ctxmenu { position: fixed; z-index: 100; min-width: 220px; max-width: 360px; background: #fff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 22px rgba(0,0,0,.25); padding: 4px; font-size: 12.5px; }
+  .ctxmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 4px 9px; border-radius: 4px; font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctxmenu button:hover { background: #eef3fd; } .ctxmenu button.danger { color: var(--bad); }
+  .ctxmenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  /* Handles over a scan view: a slab's faces, middle and turn; a polyline's points and lengths. */
+  .hdl { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: grab; touch-action: none; user-select: none; box-sizing: border-box; }
+  .hdl:active { cursor: grabbing; }
+  .hdl.face { width: 12px; height: 12px; background: #ff9628; border: 1.5px solid #16171b; border-radius: 2px; }
+  .hdl.face.thin { background: #ffe0b8; }
+  .hdl.mid { width: 14px; height: 14px; border-radius: 50%; background: #16171b; border: 2.5px solid #ff9628; }
+  .hdl.yaw { width: 20px; height: 20px; border-radius: 50%; background: #16171b; color: #ff9628; border: 1px solid #ff9628; font: 700 13px/18px sans-serif; text-align: center; }
+  .hdl.node { width: 11px; height: 11px; border-radius: 50%; background: #e6ff7a; border: 1.5px solid #16171b; }
+  .hdl.seg { font: 10.5px/1.3 system-ui, sans-serif; color: #f0ffc0; background: rgba(22,23,27,.82); border: 1px solid rgba(214,255,90,.55); border-radius: 8px; padding: 0 5px; white-space: nowrap; }
+  .hdl:hover { box-shadow: 0 0 0 2px rgba(255,255,255,.7); }
+  .hdl.seen { min-width: 12px; height: 12px; border-radius: 6px; background: #ff3cdc; border: 1.5px solid #16171b; font: 10.5px/9px system-ui, sans-serif; color: #fff; padding: 0 3px; white-space: nowrap; }
+  .seennote { position: fixed; right: 16px; bottom: 16px; max-width: min(560px, calc(100vw - 32px)); max-height: 50vh; overflow: auto; z-index: 50; background: rgba(22,23,27,.95); color: #eee; border: 1px solid #ff3cdc; border-radius: 6px; padding: 8px 10px; font: 12px/1.35 system-ui, sans-serif; }
+  .seennote.warn { border-color: #ffb020; }
+  .seennote.error { border-color: #e04040; }
+  .seennote pre { margin: 0 0 6px; white-space: pre-wrap; font: 11.5px/1.35 ui-monospace, monospace; }
+  .seennote .row { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+  .glchip .dims input { width: 54px; font: inherit; font-size: 12px; padding: 0 2px; border: 1px solid var(--line); border-radius: 3px; }
+  .draft .where { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin: 6px 0 3px; font-size: 12px; }
+  .draft .where button { border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  .draft .where button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  a.ref { color: var(--accent); text-decoration: none; background: #eef3fd; border-radius: 3px; padding: 0 3px; } a.ref.sel { background: #fff4c2; color: #6b4e00; }
+  .composer .row button[data-ref] { border: 1px solid var(--line); background: #fff4c2; border-radius: 10px; padding: 1px 8px; font: inherit; font-size: 12px; cursor: pointer; }
   .tk-k { color: #8a2be2; } .tk-s { color: #1e7b3a; } .tk-c { color: #8b8b84; font-style: italic; } .tk-n { color: #b35900; } .tk-f { color: #1f5fbf; }
 </style>
 </head>
@@ -149,14 +342,30 @@
   <select id="project" title="Open a project"></select>
   <b id="title">topo-cad</b>
   <span id="status">loading…</span>
-  <nav id="tabs"></nav>
 </header>
 <main>
-  <div id="viewer">
-    <div id="sheet"></div>
-    <div id="tip"></div>
-    <div id="hint">scroll to zoom · drag to pan · double-click to fit</div>
-    <div id="script" hidden>
+  <nav id="browser">
+    <div id="browserTabs">
+      <button data-b="drawings" class="on">Drawings</button>
+      <button data-b="files">Files</button>
+    </div>
+    <div class="bpane" data-b="drawings">
+      <ul id="sheetList"></ul>
+      <h4>Model</h4>
+      <ul><li id="open3d" title="Orbit the model in 3D: exact hidden lines, as the sheets draw them">3D, exact lines</li></ul>
+    </div>
+    <div class="bpane" data-b="files" hidden><ul id="fileList"></ul></div>
+  </nav>
+  <div id="centre">
+    <div id="panes"></div>
+  </div>
+  <!-- The views, one of each: shown in a pane, or parked here. -->
+  <div id="parked" hidden>
+    <div id="sheetPane">
+      <div id="sheet"></div>
+      <div id="hint">scroll to zoom · drag to pan · double-click to fit</div>
+    </div>
+    <div id="script">
       <div id="scriptBar">
         <span id="files"></span>
         <button class="act primary" id="btnSaveSrc" title="Save (⌘S / Ctrl+S)">Save</button>
@@ -165,14 +374,26 @@
       </div>
       <div id="editor"><pre id="gutter"></pre><div id="code"><pre id="srchl"></pre><textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div></div>
     </div>
-    <div id="view3d" hidden>
+    <div id="view3d">
       <canvas id="canvas3d"></canvas>
       <svg id="compass" viewBox="-60 -60 120 152"></svg>
-      <div id="layers3d" hidden>
-        <div class="hdr"><b id="layersToggle" style="cursor:pointer" title="Collapse or expand">▾ Roof layers</b><label><input type="checkbox" id="layersOn" checked> show</label></div>
-        <div id="layersBody">
-          <div class="muted">Stepped back from the end nearest you: framing, then each layer from the bottom up. Untick to hide a layer.</div>
-          <div id="layersList"></div>
+      <div id="struct3d" hidden>
+        <div class="hdr"><b id="structToggle" style="cursor:pointer" title="Collapse or expand">▾ Skeleton</b><label><input type="checkbox" data-k="on"> show</label></div>
+        <div id="structBody">
+          <label title="Nodes on members' axes: where members meet, and their ends"><input type="checkbox" data-k="axis"><span class="key" style="color:#555">●</span>Nodes on axes <span class="muted" id="skelAxisN"></span></label>
+          <label title="Nodes on a member's face: bearing points. Hover one for the face and the two numbers that place it there"><input type="checkbox" data-k="face"><span class="key" style="color:#ea580c">◆</span>Bearing points, on faces <span class="muted" id="skelFaceN"></span></label>
+          <label title="The solve's nodes: named points, fixed in something or free on a line or a face of it. Hover one for what it is a point of and its numbers, with their bounds"><input type="checkbox" data-k="snodes"><span class="key" style="color:#0f766e">○</span>Solve nodes <span class="muted" id="skelSolveN"></span></label>
+          <label title="What a solve had to find: rigid things free to move, and numbers. Hover one for its freedoms and what settled each"><input type="checkbox" data-k="vars"><span class="key">▣</span>Free variables <span class="muted" id="skelVarN"></span></label>
+          <label title="What the solve was asked to hold. Hover one for what it holds together and how far off it is"><input type="checkbox" data-k="cons"><span class="key">◯</span>Constraints <span class="muted" id="skelConN"></span></label>
+          <div class="muted" style="margin-top:3px">Settled by / tier:</div>
+          <div class="tiers">
+            <label title="Must hold: connections, datums"><input type="checkbox" data-k="hard"><span class="sw" style="background:#1d4ed8"></span>hard</label>
+            <label title="Things come to rest, as low as the hard constraints let them, on what holds them up"><input type="checkbox" data-k="weight"><span class="sw" style="background:#b45309"></span>weight</label>
+            <label title="Should hold, to a tolerance: readings"><input type="checkbox" data-k="measured"><span class="sw" style="background:#7c3aed"></span>measured</label>
+            <label title="A generator's hint: decides only what nothing above does"><input type="checkbox" data-k="hint"><span class="sw" style="background:#15803d"></span>hint</label>
+            <label title="A hint that gives way to the hints (a stud's place in its wall's layout, to the wall's corners)"><input type="checkbox" data-k="fallback"><span class="sw" style="background:#65a30d"></span>fallback</label>
+            <label title="Nothing settles it: it stays where it was put"><input type="checkbox" data-k="open"><span class="sw" style="background:#dc2626"></span>open</label>
+          </div>
         </div>
       </div>
       <div id="deflect3d" hidden>
@@ -183,6 +404,7 @@
       <div id="hint3d">drag to orbit · shift/right-drag to pan · scroll to zoom · click a member for its checks · double-click to fit</div>
     </div>
   </div>
+  <div id="tip"></div>
   <aside>
     <div id="banner"></div>
     <div id="msg"></div>
@@ -271,6 +493,9 @@
 </main>
 <script type="module">
 import { api, storage } from "./app/router.js";
+import { service } from "./app/service.js";
+import { initModel3d } from "./app/model3d.js";
+import * as objects from "./app/objects.js";
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -321,13 +546,20 @@ async function poll() {
       if (state && s.file !== state.file) resetForProject();
       state = s;
       // A model that fails before any sheet exists opens on its script.
-      if (s.error && !(s.sheets || []).length && view === "sheet" && !svg) view = "script";
+      if (s.error && !(s.sheets || []).length && shown("sheet") && !shown("script") && !svg) { slots[slots.indexOf("sheet")] = "script"; layoutPanes(); }
       renderPanel();
-      if (view === "script") { $("script").hidden = false; await loadSources(false); }
-      if (view === "3d") await load3d();
+      await loadSources(false);
+      renderTabs();
+      if (shown("3d")) await load3d();
+      // (The tree of objects lists the model's parts whether or not a view of them is open.)
+      if (shown("shaded")) await shaded.load(); else await shaded.sync();
       if (!s.error) await loadSheet();
     }
-  } catch (e) { $("status").textContent = "server not reachable"; }
+  } catch (e) {
+    // (Said for what it is: the service not answering, or something of the page's own failing.)
+    console.error("poll:", e);
+    $("status").textContent = e instanceof TypeError && /fetch|network/i.test(e.message) ? "server not reachable" : `page error: ${e?.message ?? e}`;
+  }
   setTimeout(poll, 1000);
 }
 
@@ -379,6 +611,8 @@ function renderPanel() {
     tr.innerHTML = `<td>${esc(r[0])}</td><td class=num>${esc(r[1])}</td><td class="num ${r[2] === "NOT DETERMINED" ? "undet" : ""}">${esc(r[2])}</td>`;
     ut.appendChild(tr);
   });
+  // With a scan workspace, the model's checks are a category of its issues (app/scan.js).
+  if (!$("issues")) { window.dispatchEvent(new Event("topo-checks")); return; }
   $("issues").innerHTML = s.issues.length ? s.issues.map((i) => `<li>${esc(i)}</li>`).join("") : "<li class=muted>none</li>";
   const c = $("issueCount"), sev = (w) => s.issues.filter((i) => String(i).includes(`[${w}]`)).length;
   c.textContent = s.issues.length || "";
@@ -430,22 +664,25 @@ function renderStructure() {
       L.combos.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.factors.map(([n, f]) => `<span class="chip">${f === 1 ? "" : f + "×"}${esc(n)}</span>`).join("")}</td>${cd ? `<td class=num title="${esc(c.cd_why)}">${c.cd.toFixed(2)}</td>` : ""}</tr>`).join("");
   }
   $("asce").textContent = a.standard || `NDS 2018 ASD · ${a.combinations || "ASCE " + a.asce7}`;
-  const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : `<b class="ok">all within capacity</b>`;
+  // (A pass is of what was checked: said so where some members were not, with which.)
+  const all = !a.members || a.checked >= a.members;
+  const over = a.over ? `<b class="bad">${a.over} over capacity</b>` : !a.checked ? `<b class="bad">nothing checked</b>` : `<b class="ok">${all ? "all" : "those"} within capacity</b>`;
+  const left = all ? "" : ` · <span class="muted" title="${esc((a.unchecked || []).map((u) => `${u.count} ${u.role}`).join(", "))}: no load reaches them, or no check applies">${a.members - a.checked} not checked</span>`;
   const ind = a.indicative_over ? ` · <span class="muted" title="Members designed by others (e.g. manufactured trusses): checked for information only">${a.indicative_over} indicative over 1.0</span>` : "";
-  $("strSummary").innerHTML = `${a.checked} members checked · ${over}${ind} · max ratio ${a.max.toFixed(2)}` +
+  $("strSummary").innerHTML = `${a.checked}${all ? "" : ` of ${a.members}`} members checked${left} · ${over}${ind} · max ratio ${Number.isFinite(a.max) ? a.max.toFixed(2) : "none"}` +
     (a.unverified ? `<span class="badge" title="Some reference values are not yet verified against their source">unverified data</span>` : "") +
     (a.displacement ? `<div style="margin-top:4px">Largest displacement ${a.displacement.mm.toFixed(2)} mm <span class="muted">at ${esc(a.displacement.member)} (${esc(a.displacement.combination)})</span></div>` : "") +
     (a.issues.length ? `<div class="muted" style="margin-top:4px">${a.issues.map(esc).join("<br>")}</div>` : "");
   const sel = $("heatCombo"), prev = sel.value;
   sel.innerHTML = `<option value="">governing (all)</option>` + a.combos.map((c) => `<option>${esc(c)}</option>`).join("");
   if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
-  $("worst").innerHTML = a.worst.map((w) => `<li data-path="${esc(w.path)}"><span class="ratio" style="color:${heatColor(w.ratio)}">${w.ratio.toFixed(2)}</span><span>${esc(w.label)} <span class="muted">— ${esc(w.title)} (${esc(w.combination)})${w.indicative ? " · indicative" : ""}</span></span></li>`).join("");
+  $("worst").innerHTML = a.worst.map((w) => `<li data-path="${esc(w.path)}"><span class="ratio" style="color:${heatColor(w.ratio ?? 99)}">${Number.isFinite(w.ratio) ? w.ratio.toFixed(2) : "n/a"}</span><span>${esc(w.label)} <span class="muted">— ${esc(w.title)} (${esc(w.combination)})${w.indicative ? " · indicative" : ""}</span></span></li>`).join("");
   for (const li of $("worst").children) li.onclick = () => inspect(li.dataset.path);
   if (inspected) inspect(inspected, true);
 }
 
 async function loadHeat() {
-  if (view === "3d") { await loadRatios3d(); draw3d(); }
+  if (shown("3d")) { await loadRatios3d(); draw3d(); }
   const mode = $("heatMode").value;
   heatData = !svg || !state || state.error ? [] : await api(`/api/heat/${sheet}?mode=${mode === "off" ? "utilization" : mode}&combo=${encodeURIComponent($("heatCombo").value)}`);
   drawHeat();
@@ -473,7 +710,7 @@ function drawHeat() {
 
 $("heatMode").addEventListener("change", loadHeat);
 $("scenario").addEventListener("change", async (e) => { await api("/api/scenario", { path: e.target.value }); });
-$("heatCombo").addEventListener("change", () => { loadHeat(); if (inspected) inspect(inspected, true); });
+$("heatCombo").addEventListener("change", () => { loadHeat(); if (inspected) inspect(inspected, true); if (shown("shaded")) shaded.load(); });
 
 function chart(t, v, title, unit, color, down) {
   if (!v.length || v.every((x) => Math.abs(x) < 5e-4)) return "";  // nothing but rounding noise
@@ -558,7 +795,7 @@ async function load3d(force) {
     });
     center3d = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
     if (!cam.scale) fit3d();
-    renderLayersLegend();
+    renderSkeletonPanel();
   }
   await loadRatios3d();
   draw3d();
@@ -616,22 +853,214 @@ function fit3d() {
 // face edge (no hidden-line removal); once it settles, the server's exact
 // hidden-line render for that direction (the same one the sheets use).
 let exact3d = null, inflight3d = false;
-function exactValid() { return exact3d && Math.abs(exact3d.az - cam.az) < 1e-9 && Math.abs(exact3d.el - cam.el) < 1e-9 && exact3d.version === state.version; }
+// (What the tree of objects has hidden is not drawn, and hides nothing: the engine is told.)
+const hidden3d = () => [...objects.hidden].filter((k) => k === "model" || k.startsWith("g:") || k.startsWith("m:")).sort().join("\n");
+function exactValid() { return exact3d && Math.abs(exact3d.az - cam.az) < 1e-9 && Math.abs(exact3d.el - cam.el) < 1e-9 && exact3d.version === state.version && exact3d.hide === hidden3d(); }
 async function requestExact() {
   if (inflight3d || !state || state.error) return;
-  const az = cam.az, el = cam.el, version = state.version;
+  const az = cam.az, el = cam.el, version = state.version, hide = hidden3d();
   inflight3d = true;
   try {
-    const r = await api(`/api/view3d?az=${az}&el=${el}`);
-    if (!r.error) exact3d = { az, el, version, segs: r.segments, ms: r.ms };
+    const r = await api(`/api/view3d?az=${az}&el=${el}&hide=${encodeURIComponent(hide)}`);
+    if (!r.error) exact3d = { az, el, version, hide, segs: r.segments, ms: r.ms };
   } finally { inflight3d = false; }
   // Draw it if the camera is still there; otherwise chase the camera.
   if (exactValid()) draw3d(); else if (!drag3dActive) requestExact(); else draw3d();
 }
 let drag3dActive = false;
 
+// ----- The skeleton: nodes, bearing points, free variables, constraints -----
+// Drawn over the model. A node is on members' axes (in their paths) or on a
+// member's face (two numbers within the face, the face following the member).
+// A solve's unknowns are rigid things free to move and numbers; each freedom
+// is coloured by what settled it.
+const SKEL_KEY = "topo.skeleton";
+const TIER_COLOUR = { hard: "#1d4ed8", weight: "#b45309", measured: "#7c3aed", hint: "#15803d", fallback: "#65a30d", open: "#dc2626" };
+let skel = { on: true, axis: true, face: true, snodes: true, vars: true, cons: true, hard: true, weight: true, measured: true, hint: true, fallback: true, open: true };
+try { Object.assign(skel, JSON.parse(localStorage.getItem(SKEL_KEY) || "{}")); } catch (_) {}
+let skelItems = [], hoverSkel = null;
+const worstOf = (v) => ["open", "fallback", "hint", "measured", "weight", "hard"].find((k) => v.freedoms.some((f) => f.settled === k)) || "hard";
+const mm = (x) => `${(x * 1000).toFixed(1)} mm`;
+
+function renderSkeletonPanel() {
+  const S = mesh3d && mesh3d.structure;
+  $("struct3d").hidden = !S;
+  if (!S) return;
+  for (const c of $("struct3d").querySelectorAll("input[data-k]")) c.checked = !!skel[c.dataset.k];
+  const vars = S.solves.reduce((n, x) => n + x.variables.filter((v) => !v.node).length, 0), cons = S.solves.reduce((n, x) => n + x.constraints.length, 0);
+  $("skelAxisN").textContent = `(${S.nodes.filter((n) => !n.on_face.length).length})`;
+  $("skelFaceN").textContent = `(${S.nodes.filter((n) => n.on_face.length).length})`;
+  $("skelSolveN").textContent = `(${S.solves.reduce((n, x) => n + x.nodes.length, 0)})`;
+  $("skelVarN").textContent = `(${vars})`;
+  $("skelConN").textContent = `(${cons})`;
+}
+
+function nodeTip(n) {
+  const lines = [`${n.on_face.length ? "Bearing point" : "Node"} ${n.id}${n.name ? ` "${n.name}"` : ""}${n.support ? " · on the foundation" : ""}`];
+  if (n.on_axis.length) lines.push("on the axis of (in the path of):", ...n.on_axis.map((m) => `   ${m}`));
+  for (const a of n.on_face) {
+    lines.push(`on the ${a.side} face of:`, `   ${a.member}`,
+      `   ${a.along.toFixed(3)} m along (0 … ${a.length.toFixed(3)})`,
+      `   ${a.across >= 0 ? "+" : ""}${a.across.toFixed(3)} m across (± ${a.half_width.toFixed(3)})`,
+      "   2 free numbers, bounded by the face; the face's plane follows the member");
+  }
+  return lines.join("\n");
+}
+function variableTip(v, solve) {
+  const lines = [v.kind === "scalar" ? `${v.name}` : `${v.name}: a rigid thing, ${v.kind} (${v.freedoms.length} freedom${v.freedoms.length === 1 ? "" : "s"})`];
+  if (v.kind === "scalar") lines.push(`a number: ${v.value.toFixed(4)} · ${v.freedoms[0].settled === "open" ? "open (nothing settles it)" : `settled by ${v.freedoms[0].settled}`}`);
+  else for (const f of v.freedoms) lines.push(`   ${f.settled === "open" ? "open   " : f.settled.padEnd(7)} ${f.what}`);
+  const held = solve.constraints.filter((c) => c.touches.includes(v.name));
+  if (held.length) lines.push("constraints on it:", ...held.map((c) => `   ${c.tier.padEnd(7)} ${c.name}${c.gap > 1e-7 ? ` (off by ${c.points.length ? mm(c.gap) : c.gap.toFixed(4)})` : ""}`));
+  lines.push(`in: ${solve.name}`);
+  return lines.join("\n");
+}
+function solveNodeTip(n, solve) {
+  const what = { "fixed": "fixed in", "on a line": "on a line of", "on a face": "on a face of", "free": "free in" }[n.kind] || n.kind;
+  const lines = [`${n.name}`, `a node, ${what} ${n.of}${n.numbers.length ? ` (${n.numbers.length} number${n.numbers.length === 1 ? "" : "s"})` : " (no numbers of its own)"}`];
+  for (const x of n.numbers) {
+    lines.push(`   ${x.name}`, `   = ${x.value.toFixed(4)} m${x.bounds ? `, kept between ${x.bounds[0].toFixed(3)} and ${x.bounds[1].toFixed(3)}` : ", unbounded"} · ${x.settled === "open" ? "open" : `settled by ${x.settled}`}`);
+  }
+  const held = solve.constraints.filter((c) => (c.nodes || []).includes(n.name));
+  if (held.length) lines.push("constraints on it:", ...held.map((c) => `   ${c.tier.padEnd(7)} ${c.name}`));
+  lines.push(`in: ${solve.name}`);
+  return lines.join("\n");
+}
+function constraintTip(c, solve) {
+  const how = c.gap > 1e-7 ? `off by ${c.points.length ? mm(c.gap) : c.gap.toFixed(4)}` : c.room == null ? "holds" : c.room > 1e-7 ? `clear by ${mm(c.room)} (one-sided: not touching)` : "touching (one-sided)";
+  return [`${c.name}`, `${c.tier} · ${c.kind} · ${how}`, ...((c.nodes || []).length ? ["between the nodes:", ...c.nodes.map((t) => `   ${t}`)] : []), "depends on:", ...c.touches.map((t) => `   ${t}`), `in: ${solve.name}`].join("\n");
+}
+
+function drawSkeleton(g, P, r, u) {
+  skelItems = [];
+  const S = mesh3d.structure;
+  if (!S || !skel.on) return;
+  const dir2 = (d) => [dot3(d, r), -dot3(d, u)];
+  g.save();
+  g.font = "11px ui-sans-serif, system-ui, sans-serif";
+  g.lineCap = "round";
+  // An arrow of a fixed length on screen along a direction in the model (a ring if it points at the viewer).
+  const arrow = (p, d, len, colour, label, opts = {}) => {
+    const [dx, dy] = dir2(d), n = Math.hypot(dx, dy);
+    g.strokeStyle = g.fillStyle = colour; g.lineWidth = opts.width || 1.8;
+    g.setLineDash(opts.dash || []);
+    let tip = p;
+    if (n < 0.12) { g.beginPath(); g.arc(p[0], p[1], 6, 0, 7); g.stroke(); g.beginPath(); g.arc(p[0], p[1], 1.6, 0, 7); g.fill(); tip = [p[0] + 6, p[1]]; }
+    else {
+      const ux = dx / n, uy = dy / n, e = [p[0] + ux * len, p[1] + uy * len], s0 = opts.both ? [p[0] - ux * len, p[1] - uy * len] : p;
+      g.beginPath(); g.moveTo(s0[0], s0[1]); g.lineTo(e[0], e[1]); g.stroke();
+      g.setLineDash([]);
+      for (const [q, sgn] of opts.both ? [[e, 1], [s0, -1]] : [[e, 1]]) {
+        g.beginPath(); g.moveTo(q[0] - sgn * (ux * 7 - uy * 3.5), q[1] - sgn * (uy * 7 + ux * 3.5)); g.lineTo(q[0], q[1]); g.lineTo(q[0] - sgn * (ux * 7 + uy * 3.5), q[1] - sgn * (uy * 7 - ux * 3.5)); g.stroke();
+      }
+      tip = e;
+    }
+    g.setLineDash([]);
+    if (label) { g.fillStyle = "rgba(255,255,255,.85)"; const w = g.measureText(label).width; g.fillRect(tip[0] + 5, tip[1] - 13, w + 4, 14); g.fillStyle = colour; g.fillText(label, tip[0] + 7, tip[1] - 2); }
+  };
+  // Nodes (drawn last, over the rest: a bearing point is often where a constraint holds).
+  const drawNodes = () => { for (const n of S.nodes) {
+    const face = n.on_face.length > 0;
+    if (face ? !skel.face : !skel.axis) continue;
+    const p = P(n.pos), key = `n:${n.id}`, hot = hoverSkel === key;
+    if (hot) for (const a of n.on_face) {
+      // The face it is on (the box its two numbers are free in), and the two ways it may move there.
+      g.beginPath(); a.corners.forEach((c, k) => { const q = P(c); k ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]); }); g.closePath();
+      g.fillStyle = "rgba(234,88,12,.14)"; g.fill(); g.strokeStyle = "#ea580c"; g.lineWidth = 1.2; g.setLineDash([4, 3]); g.stroke(); g.setLineDash([]);
+      arrow(p, a.along_dir, 40, "#c2410c", "along", { both: true });
+      arrow(p, a.across_dir, 22, "#c2410c", "across", { both: true });
+      arrow(p, a.normal, 30, "#6b7280", a.side, { dash: [2, 3], width: 1.2 });
+    }
+    if (face) {
+      const k = hot ? 7 : 5;
+      g.beginPath(); g.moveTo(p[0], p[1] - k); g.lineTo(p[0] + k, p[1]); g.lineTo(p[0], p[1] + k); g.lineTo(p[0] - k, p[1]); g.closePath();
+      g.fillStyle = "#ea580c"; g.fill(); g.strokeStyle = "#fff"; g.lineWidth = 1; g.stroke();
+    } else {
+      g.beginPath(); g.arc(p[0], p[1], hot ? 4.5 : n.on_axis.length > 1 ? 2.6 : 1.8, 0, 7);
+      g.fillStyle = hot ? "#111" : n.on_axis.length > 1 ? "#444" : "#999"; g.fill();
+    }
+    skelItems.push({ x: p[0], y: p[1], key, tip: () => nodeTip(n), rank: face ? 1 : 3 });
+  } };
+  // Solves: constraints (rings where they hold points together), then variables.
+  S.solves.forEach((solve, si) => {
+    const hotVar = hoverSkel && hoverSkel.startsWith(`v:${si}:`) ? solve.variables[+hoverSkel.split(":")[2]] : null;
+    if (skel.cons) solve.constraints.forEach((c, ci) => {
+      if (!skel[c.tier] || !c.points.length) return;
+      const key = `c:${si}:${ci}`, hot = hoverSkel === key || (hotVar && c.touches.includes(hotVar.name));
+      const a = P(c.points[0]), b = P(c.points[c.points.length - 1]);
+      // (A one-sided one that is not touching is faint and dotted: it is there, and not acting.)
+      const clear = c.room != null && c.room > 1e-7;
+      g.strokeStyle = TIER_COLOUR[c.tier]; g.lineWidth = hot ? 2.4 : 1.2; g.setLineDash(c.tier === "hint" || c.tier === "fallback" ? [3, 3] : clear ? [1, 3] : []);
+      g.globalAlpha = clear && !hot ? 0.45 : 1;
+      if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 3) { g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); }
+      const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      g.beginPath(); g.arc(mid[0], mid[1], hot ? 10 : 8, 0, 7); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+      if (hotVar && hot) { const q = P(hotVar.at); g.globalAlpha = 0.5; g.beginPath(); g.moveTo(q[0], q[1]); g.lineTo(mid[0], mid[1]); g.stroke(); g.globalAlpha = 1; }
+      skelItems.push({ x: mid[0], y: mid[1], key, tip: () => constraintTip(c, solve), rank: 2, ring: 8 });
+    });
+    if (skel.snodes) solve.nodes.forEach((n, ni) => {
+      const settled = n.numbers.length ? (["open", "fallback", "hint", "measured", "weight", "hard"].find((k) => n.numbers.some((x) => x.settled === k)) || "hard") : null;
+      if (settled && !skel[settled]) return;
+      const key = `s:${si}:${ni}`, hot = hoverSkel === key, p = P(n.at), col = "#0f766e";
+      if (hot) for (const x of n.numbers) {
+        // Its number: the range it is kept in, as a bar along its direction through the node, and the direction.
+        if (x.bounds) {
+          const a = P(n.at.map((v, k) => v + x.dir[k] * (x.bounds[0] - x.value))), b = P(n.at.map((v, k) => v + x.dir[k] * (x.bounds[1] - x.value)));
+          g.strokeStyle = "rgba(15,118,110,.45)"; g.lineWidth = 5; g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+          for (const q of [a, b]) { g.fillStyle = col; g.fillRect(q[0] - 1.5, q[1] - 5, 3, 10); }
+        }
+        arrow(p, x.dir, 30, TIER_COLOUR[x.settled], x.settled, { both: true });
+      }
+      g.beginPath(); g.arc(p[0], p[1], hot ? 5.5 : 3.6, 0, 7);
+      g.fillStyle = n.numbers.length ? "#fff" : col; g.fill();
+      g.strokeStyle = n.numbers.length ? TIER_COLOUR[settled] : col; g.lineWidth = hot ? 2.4 : 1.6; g.stroke();
+      skelItems.push({ x: p[0], y: p[1], key, tip: () => solveNodeTip(n, solve), rank: 1 });
+    });
+    if (skel.vars) solve.variables.forEach((v, vi) => {
+      // (A number that is one of a node's is shown with its node.)
+      if (v.node && skel.snodes) return;
+      const w = worstOf(v);
+      if (!v.freedoms.some((f) => skel[f.settled])) return;
+      const key = `v:${si}:${vi}`, hot = hoverSkel === key, p = P(v.at), col = TIER_COLOUR[w];
+      if (hot) v.freedoms.forEach((f) => {
+        // Each freedom, as the way it lets the thing move: along a direction, or (dashed) about an axis.
+        // (Labelled by its axis; the tip has it in words.)
+        const axis = f.what.split(" ").pop();
+        const label = `${f.turn ? "↻" : ""}${/^[xyz]$/.test(axis) ? axis : f.what}`;
+        if (v.kind === "scalar") arrow(p, f.dir, 30, TIER_COLOUR[f.settled], `${v.value.toFixed(4)} · ${f.settled}`, { both: true });
+        else arrow(p, f.dir, f.turn ? 58 : 34, TIER_COLOUR[f.settled], label, f.turn ? { dash: [5, 4], width: 1.4 } : {});
+      });
+      g.strokeStyle = col; g.fillStyle = "#fff"; g.lineWidth = hot ? 2.6 : 1.8;
+      if (v.kind === "scalar") {
+        // A number: a small bar along the way it moves its point.
+        const [dx, dy] = dir2(v.freedoms[0].dir), n = Math.hypot(dx, dy) || 1, k = 7;
+        g.beginPath(); g.moveTo(p[0] - dx / n * k, p[1] - dy / n * k); g.lineTo(p[0] + dx / n * k, p[1] + dy / n * k); g.stroke();
+        g.beginPath(); g.arc(p[0], p[1], 2.6, 0, 7); g.fillStyle = col; g.fill();
+      } else {
+        // A rigid thing free to move: a square at its origin.
+        g.beginPath(); g.rect(p[0] - 5.5, p[1] - 5.5, 11, 11); g.fill(); g.stroke();
+        g.fillStyle = col; g.fillRect(p[0] - 2, p[1] - 2, 4, 4);
+      }
+      skelItems.push({ x: p[0], y: p[1], key, tip: () => variableTip(v, solve), rank: 0 });
+    });
+  });
+  drawNodes();
+  g.restore();
+}
+/// The skeleton item under the cursor: the nearest, preferring variables, then bearing points, constraints, nodes.
+function pickSkel(x, y) {
+  let best = null;
+  for (const it of skelItems) {
+    const d = Math.hypot(it.x - x, it.y - y), reach = it.ring ? it.ring + 4 : 9;
+    if (d > reach) continue;
+    const score = it.rank * 100 + (it.ring ? Math.abs(d - it.ring) : d);
+    if (!best || score < best.score) best = { ...it, score };
+  }
+  return best;
+}
+
 function draw3d() {
-  if (view !== "3d" || !mesh3d) return;
+  if (!shown("3d") || !mesh3d) return;
   const { c, w, h, dpr } = canvasSize();
   const g = c.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -641,9 +1070,6 @@ function draw3d() {
   const X = (sx) => w / 2 + cam.pan[0] + (sx - cr) * cam.scale;
   const Y = (sy) => h / 2 + cam.pan[1] - (sy - cu) * cam.scale;
   const P = (p) => [X(dot3(p, r)), Y(dot3(p, u))];
-  const layerDraws = layers3dOn() ? layerPolys(t) : [];
-  covers3d = [];
-  paintLayers(g, P, layerDraws.filter((d) => !d.over));
   const heatOn = $("heatMode").value !== "off";
   const colour = (m) => { const rt = ratios3d[m.path]; return heatOn ? (rt ? heatColor(rt.ratio) : "#9a9a92") : "#222"; };
   g.lineCap = "round";
@@ -659,7 +1085,6 @@ function draw3d() {
       g.strokeStyle = colour(m); g.lineWidth = heatOn ? 1.6 : 0.8;
       g.beginPath(); g.moveTo(seg[1], seg[2]); g.lineTo(seg[3], seg[4]); g.stroke();
     }
-    paintLayers(g, P, layerDraws.filter((d) => d.over), true);
     for (const seg of special) {
       const m = mesh3d.members[seg[0]];
       g.strokeStyle = m.path === hover3d ? "#1f5fbf" : heatOn ? colour(m) : "#000";
@@ -673,16 +1098,17 @@ function draw3d() {
     g.globalAlpha = 0.35;
     for (const f of faces3d) {
       const m = mesh3d.members[f.mi];
+      if (!objects.memberVisible(m.path)) continue;
       g.strokeStyle = colour(m);
       g.beginPath();
       f.pts.forEach((p, k) => { const x = X(dot3(p, r)), y = Y(dot3(p, u)); k ? g.lineTo(x, y) : g.moveTo(x, y); });
       g.closePath(); g.stroke();
     }
     g.globalAlpha = 1;
-    paintLayers(g, P, layerDraws.filter((d) => d.over), true);
     $("hint3d").textContent = "preview (hidden lines not removed) — release to render exactly";
     if (!drag3dActive) requestExact();
   }
+  drawSkeleton(g, P, r, u);
   drawDeflected(g, P);
   drawCompass(r, u, t);
 }
@@ -739,119 +1165,10 @@ function drawCompass(r, u, t) {
   svgc.innerHTML = html;
 }
 
-// ----- roof layers in 3D ---------------------------------------------------
-let covers3d = [];
-const hiddenLayers = new Set();
-const layerKey = (s, i) => `${s.name}|${i}`;
-function layers3dOn() { return mesh3d && mesh3d.surfaces && mesh3d.surfaces.length && $("layersOn").checked; }
-function layerColour(name) {
-  const n = name.toLowerCase();
-  if (/standing|steel|metal/.test(n)) return "#9fb3c6";
-  if (/tpo/.test(n)) return "#efefe9";
-  if (/underlayment|polystick|felt|membrane/.test(n)) return "#50555e";
-  if (/plywood|osb|wsp/.test(n)) return "#dfc088";
-  if (/board/.test(n)) return "#b98a52";
-  if (/shingle/.test(n)) return "#707070";
-  if (/gypsum/.test(n)) return "#f3f1ea";
-  return "#c9c9c0";
-}
-function shade(hex, k) {
-  const v = parseInt(hex.slice(1), 16);
-  const c = [v >> 16, (v >> 8) & 255, v & 255].map((x) => Math.round(Math.max(0, Math.min(255, x * k))));
-  return `rgb(${c.join(",")})`;
-}
-function renderLayersLegend() {
-  const S = (mesh3d && mesh3d.surfaces) || [];
-  $("layers3d").hidden = !S.length;
-  const fmtIn = (m) => { const i = m / 0.0254; return i >= 0.1 ? `${i.toFixed(i < 1 ? 3 : 2).replace(/0+$/, "").replace(/\.$/, "")}"` : `${(i * 1000).toFixed(0)} mil`; };
-  $("layersList").innerHTML = S.map((s) => `<div class="surf">${esc(s.name)} <span class="muted" style="font-weight:400">${fmtIn(s.thickness)}, ${s.psf.toFixed(2)} psf</span></div>` +
-    s.layers.map((l, i) => `<label class="lyr" title="${esc(l.name)}${l.verified ? "" : " (unverified)"}"><input type="checkbox" data-layer="${esc(layerKey(s, i))}" ${hiddenLayers.has(layerKey(s, i)) ? "" : "checked"}><span class="sw" style="background:${layerColour(l.name)}"></span><span class="n">${esc(l.name)}</span><span class="v">${fmtIn(l.thickness)} · ${l.psf.toFixed(2)}${l.verified ? "" : "*"}</span></label>`).join("")).join("");
-  for (const b of $("layersList").querySelectorAll("input[data-layer]")) {
-    b.onchange = () => { if (b.checked) hiddenLayers.delete(b.dataset.layer); else hiddenLayers.add(b.dataset.layer); draw3d(); };
-  }
-}
-/// Filled polygons for every shown layer: stepped back along the ridge from
-/// the end facing the viewer; `over` when seen from above (drawn over the
-/// framing), in back-to-front order.
-function layerPolys(t) {
-  const add = (...vs) => vs.reduce((a, [v, k]) => [a[0] + v[0] * k, a[1] + v[1] * k, a[2] + v[2] * k], [0, 0, 0]);
-  const panels = [];
-  for (const s of mesh3d.surfaces) {
-    const shown = s.layers.map((l, i) => ({ l, i })).filter(({ i }) => !hiddenLayers.has(layerKey(s, i)));
-    for (const pn of s.panels) {
-      const c = add([pn.origin, 1], [pn.slope, 0.5], [pn.run, 0.5]);
-      panels.push({ s, pn, shown, depth: dot3(c, t), over: dot3(pn.normal, t) >= 0 });
-    }
-  }
-  panels.sort((a, b) => a.depth - b.depth);
-  const out = [];
-  for (const { s, pn, shown, over } of panels) {
-    const runLen = Math.hypot(...pn.run), slopeLen = Math.hypot(...pn.slope);
-    const atEnd = dot3(pn.run, t) > 0;  // the r = 1 end faces the viewer
-    const L = shown.length, step = Math.min(0.12, 0.5 / Math.max(L, 1));
-    // Base of each layer: the thickness of every layer below it (shown or not).
-    const base = s.layers.map((_, i) => s.layers.slice(i + 1).reduce((a, l) => a + l.thickness, 0));
-    const pt = (sp, rp, z) => add([pn.origin, 1], [pn.slope, sp], [pn.run, rp], [pn.normal, z]);
-    const quad = (s0, s1, r0, r1, z) => [pt(s0, r0, z), pt(s1, r0, z), pt(s1, r1, z), pt(s0, r1, z)];
-    // A face across the layer's thickness along a panel edge.
-    const edge = (a0, a1, b0, b1, z0, z1) => [pt(a0, b0, z0), pt(a1, b1, z0), pt(a1, b1, z1), pt(a0, b0, z1)];
-    const sd = dot3(pn.slope, t) > 0, rd = dot3(pn.run, t) > 0;  // which strip sides face the viewer
-    [...shown].reverse().forEach(({ l, i }, j) => {
-      const [r0, r1] = atEnd ? [0, 1 - (j + 1) * step] : [(j + 1) * step, 1];
-      if (r1 <= r0) return;
-      const z0 = base[i], z1 = base[i] + l.thickness, col = layerColour(l.name);
-      const st = l.strips;
-      const push = (pts, fill, cover) => out.push({ pts, fill, over, cover });
-      if (!st || st.sheet) {
-        const zs = st ? Math.min(z1, z0 + 0.0008) : z1;
-        push(quad(0, 1, r0, r1, zs), col, true);
-        push(atEnd ? edge(0, 1, r1, r1, z0, zs) : edge(0, 1, r0, r0, z0, zs), shade(col, 0.7), false);
-      }
-      if (st) {
-        const [len, along] = st.along === "run" ? [slopeLen, "s"] : [runLen, "r"];
-        for (let c = st.width / 2; c < len; c += st.spacing) {
-          const a0 = Math.max(0, (c - st.width / 2) / len), a1 = Math.min(1, (c + st.width / 2) / len);
-          if (along === "s") {
-            push(edge(sd ? a1 : a0, sd ? a1 : a0, r0, r1, z0, z1), shade(col, 0.72), false);
-            push(quad(a0, a1, r0, r1, z1), col, true);
-          } else {
-            if (a1 < r0 || a0 > r1) continue;
-            const b0 = Math.max(a0, r0), b1 = Math.min(a1, r1), side = rd ? b1 : b0;
-            push([pt(0, side, z0), pt(1, side, z0), pt(1, side, z1), pt(0, side, z1)], shade(col, 0.72), false);
-            push(quad(0, 1, b0, b1, z1), shade(col, 1.06), true);
-          }
-        }
-      }
-    });
-  }
-  return out;
-}
-function paintLayers(g, P, draws, cover) {
-  for (const d of draws) {
-    const q = d.pts.map(P);
-    g.beginPath(); q.forEach(([x, y], k) => k ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath();
-    g.fillStyle = d.fill; g.fill();
-    g.strokeStyle = "rgba(0,0,0,.35)"; g.lineWidth = 0.5; g.stroke();
-    if (cover && d.cover) covers3d.push(q);
-  }
-}
-function coveredAt(x, y) {
-  for (const q of covers3d) {
-    let inside = false;
-    for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
-      const [xi, yi] = q[i], [xj, yj] = q[j];
-      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-    }
-    if (inside) return true;
-  }
-  return false;
-}
-
 /// The member whose visible edge is nearest the cursor (within 7 px).
 function pick3d(x, y) {
   let best = null, bd = 7;
   for (const [mi, x0, y0, x1, y1] of drawn3d) {
-    if (covers3d.length && coveredAt((x0 + x1) / 2, (y0 + y1) / 2)) continue;
     const dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
     const k = l2 > 0 ? Math.max(0, Math.min(1, ((x - x0) * dx + (y - y0) * dy) / l2)) : 0;
     const d = Math.hypot(x - (x0 + k * dx), y - (y0 + k * dy));
@@ -865,7 +1182,7 @@ function pick3d(x, y) {
   let drag = null;
   el.addEventListener("contextmenu", (e) => e.preventDefault());
   el.addEventListener("mousedown", (e) => {
-    if (e.target.closest("#compass .hot, #compass .link") || e.target.closest("#layers3d") || e.target.closest("#deflect3d")) return;
+    if (e.target.closest("#compass .hot, #compass .link") || e.target.closest("#struct3d") || e.target.closest("#deflect3d")) return;
     drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2, moved: false, az: cam.az, elv: cam.el, p: cam.pan.slice() };
     drag3dActive = !drag.pan;
     el.classList.add("dragging");
@@ -874,7 +1191,7 @@ function pick3d(x, y) {
     if (!drag) return;
     const d = drag; drag = null; el.classList.remove("dragging");
     if (drag3dActive) { drag3dActive = false; draw3d(); }
-    if (!d.moved && view === "3d") {
+    if (!d.moved && shown("3d") && e.target.closest("#view3d")) {
       const rect = $("canvas3d").getBoundingClientRect();
       const m = pick3d(e.clientX - rect.left, e.clientY - rect.top);
       if (m) inspect(m.path).then(draw3d);
@@ -890,18 +1207,30 @@ function pick3d(x, y) {
       draw3d();
       return;
     }
+    const tip = $("tip");
+    const sk = e.target.closest("#struct3d") ? null : pickSkel(e.clientX - rect.left, e.clientY - rect.top);
+    if (sk) {
+      tip.textContent = sk.tip(); tip.style.whiteSpace = "pre"; tip.style.display = "block";
+      // Beside the cursor, kept on the page.
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      tip.style.left = `${Math.max(4, Math.min(e.clientX + 16, window.innerWidth - tw - 6))}px`;
+      tip.style.top = `${e.clientY + 16 + th > window.innerHeight - 6 ? Math.max(4, e.clientY - th - 12) : e.clientY + 16}px`;
+      if (hoverSkel !== sk.key || hover3d) { hoverSkel = sk.key; hover3d = null; draw3d(); }
+      return;
+    }
+    tip.style.whiteSpace = "nowrap";
+    if (hoverSkel) { hoverSkel = null; draw3d(); }
     const m = pick3d(e.clientX - rect.left, e.clientY - rect.top);
     const path = m ? m.path : null;
-    const tip = $("tip");
     if (m) {
       const rt = ratios3d[m.path];
       tip.textContent = `${m.label}` + (rt ? ` · ${rt.ratio.toFixed(2)} ${rt.title.toLowerCase()} (${rt.combination})` : "") + " — click for checks";
       tip.style.display = "block";
-      tip.style.left = `${e.clientX - rect.left + 14}px`; tip.style.top = `${e.clientY - rect.top + 14}px`;
+      tip.style.left = `${e.clientX + 14}px`; tip.style.top = `${e.clientY + 14}px`;
     } else tip.style.display = "none";
     if (path !== hover3d) { hover3d = path; draw3d(); }
   });
-  el.addEventListener("mouseleave", () => { $("tip").style.display = "none"; if (hover3d) { hover3d = null; draw3d(); } });
+  el.addEventListener("mouseleave", () => { $("tip").style.display = "none"; if (hover3d || hoverSkel) { hover3d = null; hoverSkel = null; draw3d(); } });
   el.addEventListener("wheel", (e) => {
     e.preventDefault();
     const rect = $("canvas3d").getBoundingClientRect();
@@ -912,12 +1241,17 @@ function pick3d(x, y) {
     cam.scale *= f;
     draw3d();
   }, { passive: false });
-  el.addEventListener("dblclick", (e) => { if (!e.target.closest("#compass .hot, #compass .link") && !e.target.closest("#layers3d")) { fit3d(); draw3d(); } });
-  el.addEventListener("wheel", (e) => { if (e.target.closest("#layers3d")) e.stopPropagation(); }, { capture: true });
-  $("layersOn").onchange = () => draw3d();
+  el.addEventListener("dblclick", (e) => { if (!e.target.closest("#compass .hot, #compass .link") && !e.target.closest("#struct3d")) { fit3d(); draw3d(); } });
+  $("struct3d").addEventListener("change", (e) => {
+    const k = e.target.dataset.k;
+    if (!k) return;
+    skel[k] = e.target.checked;
+    try { localStorage.setItem(SKEL_KEY, JSON.stringify(skel)); } catch (_) {}
+    draw3d();
+  });
+  $("structToggle").onclick = () => { const b = $("structBody"); b.hidden = !b.hidden; $("structToggle").textContent = (b.hidden ? "▸" : "▾") + " Skeleton"; };
   $("deflectOn").onchange = () => draw3d();
   $("deflectScale").oninput = () => draw3d();
-  $("layersToggle").onclick = () => { const b = $("layersBody"); b.hidden = !b.hidden; $("layersToggle").textContent = (b.hidden ? "▸" : "▾") + " Roof layers"; };
   const copyView = async () => {
     const { t } = basis3d();
     const code = `iso(undefined, { from: [${t.map((x) => x.toFixed(3)).join(", ")}] })`;
@@ -978,47 +1312,287 @@ function resetForProject() {
   sheet = 0; viewBox = null; svg = null; selected = null; overlays = [];
   picks = []; choice = []; hover = null; mode = null;
   files = []; current = 0; srcVersion = -1;
-  inspected = null; heatData = []; $("inspector").innerHTML = "";
+  inspected = null; heatData = []; $("inspector").innerHTML = `<div class="muted empty">Click a member in a drawing, a 3D view or the object tree to see its diagrams and checks.</div>`;
   mesh3d = null; meshVersion = -1; cam.scale = 0; faces3d = [];
   $("sheet").innerHTML = "";
   if (typeof cancel === "function") cancel();
 }
 
-// ----- tabs: sheets (from the script's .sheets(...)) and the script itself --
-let view = "sheet";   // "sheet" | "script"
-function renderTabs() {
-  const tabs = $("tabs");
-  tabs.innerHTML = "";
-  (state.sheets || []).forEach((sh, i) => {
-    const b = document.createElement("button");
-    b.textContent = sh.number;
-    b.title = sh.title;
-    if (view === "sheet" && i === sheet) b.className = "on";
-    b.onclick = () => { sheet = i; viewBox = null; showView("sheet"); loadSheet(); };
-    tabs.appendChild(b);
-  });
-  const b3 = document.createElement("button");
-  b3.textContent = "3D";
-  b3.title = "Orbit the model in 3D";
-  b3.className = "script" + (view === "3d" ? " on" : "");
-  b3.onclick = () => showView("3d");
-  tabs.appendChild(b3);
-  const b = document.createElement("button");
-  b.textContent = "Script";
-  b.title = "The model's TypeScript (edit and save to rebuild)";
-  b.className = "script" + (view === "script" ? " on" : "") + (files.some((f) => f.text !== f.saved) ? " dirty" : "");
-  b.onclick = () => showView("script");
-  tabs.appendChild(b);
+// ----- panes: the centre shows one or more views side by side ---------------
+// There is one of each kind of view; a pane (slot) shows one of them, the
+// rest are parked. Other modules add kinds with `registerPane`.
+const PANES = {
+  sheet: { label: "Drawing", el: "sheetPane" },
+  "3d": { label: "3D, exact lines", el: "view3d", shown: () => load3d() },
+  script: { label: "Script", el: "script" },
+};
+let slots = ["sheet"], focus = 0;
+try {
+  const s = JSON.parse(localStorage.getItem("topo.panes") || "null");
+  if (Array.isArray(s) && s.length && s.every((k) => typeof k === "string")) slots = s.slice(0, 3);
+} catch (_) {}
+const shown = (kind) => slots.includes(kind);
+// What was open last time: kinds added later (by other modules) take their place back.
+const wanted = slots.slice();
+
+// How the panes are arranged: a tree whose leaves ({ kind }) are panes and
+// whose other nodes ({ dir: "row" | "col", children, sizes }) put theirs side
+// by side or one over another, in those proportions. `slots` is its leaves
+// in order; code that only says which kinds are open changes `slots`, and
+// `layoutPanes` makes the tree agree.
+let tree = null, dragKind = null;
+try {
+  const ok = (n) => n && (typeof n.kind === "string" || ((n.dir === "row" || n.dir === "col") && Array.isArray(n.children) && n.children.length && Array.isArray(n.sizes) && n.sizes.length === n.children.length && n.sizes.every((x) => x > 0) && n.children.every(ok)));
+  const t = JSON.parse(localStorage.getItem("topo.layout") || "null");
+  const leaves = (n) => (n.kind ? [n.kind] : n.children.flatMap(leaves));
+  if (ok(t) && leaves(t).slice().sort().join() === slots.slice().sort().join()) tree = t;
+} catch (_) {}
+const treeLeaves = (n) => (!n ? [] : n.kind ? [n.kind] : n.children.flatMap(treeLeaves));
+function findLeaf(n, kind, parent = null) {
+  if (!n) return null;
+  if (n.kind) return n.kind === kind ? { node: n, parent } : null;
+  for (const c of n.children) { const r = findLeaf(c, kind, n); if (r) return r; }
+  return null;
+}
+/// A split left with one pane is that pane.
+function pruned(n) {
+  if (n.kind) return n;
+  const kids = [], sizes = [];
+  n.children.forEach((c, i) => { const p = pruned(c); if (p) { kids.push(p); sizes.push(n.sizes[i]); } });
+  if (kids.length < 2) return kids[0] ?? null;
+  n.children = kids; n.sizes = sizes;
+  return n;
+}
+function removeLeaf(kind) {
+  const f = findLeaf(tree, kind);
+  if (!f) return;
+  if (!f.parent) { tree = null; return; }
+  const i = f.parent.children.indexOf(f.node);
+  f.parent.children.splice(i, 1); f.parent.sizes.splice(i, 1);
+  tree = pruned(tree);
+}
+/// Puts a pane on a side ("left", "right", "top", "bottom") of another (`target`; none: of them all).
+/// It takes half of the target's room, or (`even`) a share like the others beside it.
+function insertLeaf(kind, target, side, even) {
+  const leaf = { kind }, dir = side === "left" || side === "right" ? "row" : "col", after = side === "right" || side === "bottom";
+  if (!tree) { tree = leaf; return; }
+  const f = target ? findLeaf(tree, target) : null, p = f?.parent;
+  if (f && p?.dir === dir) {
+    const i = p.children.indexOf(f.node), s = even ? p.sizes.reduce((a, b) => a + b, 0) / p.sizes.length : p.sizes[i] / 2;
+    if (!even) p.sizes[i] = s;
+    p.children.splice(i + (after ? 1 : 0), 0, leaf); p.sizes.splice(i + (after ? 1 : 0), 0, s);
+    return;
+  }
+  if (!f && tree.dir === dir) {
+    const s = tree.sizes.reduce((a, b) => a + b, 0) / tree.sizes.length;
+    after ? (tree.children.push(leaf), tree.sizes.push(s)) : (tree.children.unshift(leaf), tree.sizes.unshift(s));
+    return;
+  }
+  const old = f ? f.node : tree, split = { dir, children: after ? [old, leaf] : [leaf, old], sizes: [1, 1] };
+  if (p) p.children[p.children.indexOf(old)] = split; else tree = split;
+}
+const saveLayout = () => { try { localStorage.setItem("topo.panes", JSON.stringify(slots)); localStorage.setItem("topo.layout", JSON.stringify(tree)); } catch (_) {} };
+
+function registerPane(kind, def) {
+  PANES[kind] = def;
+  if (wanted.includes(kind) && !shown(kind)) {
+    slots.splice(Math.min(wanted.indexOf(kind), slots.length), 0, kind);
+    // (The stand-in shown while it was not yet known.)
+    if (!wanted.includes("sheet") && slots.length > 1) slots = slots.filter((k) => k !== "sheet");
+  }
+  layoutPanes();
 }
 
-function showView(v) {
-  view = v;
-  $("script").hidden = v !== "script";
-  $("view3d").hidden = v !== "3d";
-  $("hint").hidden = v !== "sheet";
-  if (v === "script") loadSources(false);
-  if (v === "3d") load3d();
+function layoutPanes() {
+  // Kinds not (yet) known are dropped; one pane at least.
+  const focusKind = slots[focus];
+  slots = slots.filter((k, i) => PANES[k] && slots.indexOf(k) === i);
+  if (!slots.length) slots = ["sheet"];
+  // The tree is made to agree with the kinds open: one that took another's place has it;
+  // one closed goes; one new stands to the right of the one before it. (A kind open last
+  // time and not known yet keeps its place for when it is.)
+  const have = treeLeaves(tree);
+  const gone = have.filter((k) => !slots.includes(k) && (PANES[k] || !wanted.includes(k))), added = slots.filter((k) => !have.includes(k));
+  while (gone.length && added.length) findLeaf(tree, gone.shift()).node.kind = added.shift();
+  for (const k of gone) removeLeaf(k);
+  for (const k of added) { const i = slots.indexOf(k); insertLeaf(k, slots[i - 1] ?? null, i ? "right" : "left", true); }
+  slots = treeLeaves(tree).filter((k) => PANES[k]);
+  focus = Math.max(0, slots.indexOf(focusKind));
+  saveLayout();
+  const panes = $("panes");
+  for (const def of Object.values(PANES)) $("parked").appendChild($(def.el));
+  panes.innerHTML = "";
+  const resized = () => window.dispatchEvent(new Event("resize"));
+  const slotOf = (kind) => {
+    const i = slots.indexOf(kind);
+    const slot = document.createElement("div");
+    slot.className = "slot" + (i === focus && slots.length > 1 ? " focus" : "");
+    const bar = document.createElement("div");
+    bar.className = "slotbar";
+    // The bar is what a pane is dragged by: onto a side of another pane to stand there, onto its middle to change places.
+    if (slots.length > 1) {
+      bar.draggable = true;
+      bar.title = "Drag onto another pane: its left, right, top or bottom to split it, its middle to swap";
+      bar.ondragstart = (e) => {
+        e.dataTransfer.setData("text/topo-pane", kind);
+        e.dataTransfer.effectAllowed = "move";
+        dragKind = kind;
+        // (After the drag has begun: changing the page under it would end it.)
+        setTimeout(() => { panes.classList.add("dragging"); slot.classList.add("moving"); }, 0);
+      };
+      bar.ondragend = () => { dragKind = null; panes.classList.remove("dragging"); slot.classList.remove("moving"); };
+    }
+    const drop = document.createElement("div"), hint = document.createElement("i");
+    drop.className = "drop";
+    drop.appendChild(hint);
+    const zoneAt = (e) => {
+      const r = drop.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+      if (Math.abs(x - 0.5) < 0.2 && Math.abs(y - 0.5) < 0.2) return "swap";
+      const d = { left: x, right: 1 - x, top: y, bottom: 1 - y };
+      return Object.keys(d).reduce((a, b) => (d[b] < d[a] ? b : a));
+    };
+    drop.ondragover = (e) => {
+      if (!dragKind || dragKind === kind) return;
+      e.preventDefault();
+      const z = zoneAt(e);
+      Object.assign(hint.style, { display: "block", left: z === "right" ? "50%" : z === "swap" ? "30%" : "0", top: z === "bottom" ? "50%" : z === "swap" ? "30%" : "0", width: z === "left" || z === "right" ? "50%" : z === "swap" ? "40%" : "100%", height: z === "top" || z === "bottom" ? "50%" : z === "swap" ? "40%" : "100%" });
+    };
+    drop.ondragleave = () => { hint.style.display = "none"; };
+    drop.ondrop = (e) => {
+      if (!dragKind || dragKind === kind) return;
+      e.preventDefault();
+      const z = zoneAt(e), moved = dragKind;
+      dragKind = null;
+      panes.classList.remove("dragging");
+      if (z === "swap") { const a = findLeaf(tree, moved).node, b = findLeaf(tree, kind).node; [a.kind, b.kind] = [b.kind, a.kind]; }
+      else { removeLeaf(moved); insertLeaf(moved, kind, z); }
+      slots = treeLeaves(tree).filter((k) => PANES[k]);
+      focus = slots.indexOf(moved);
+      layoutPanes(); renderTabs();
+    };
+    const sel = document.createElement("select");
+    sel.title = "What this pane shows";
+    sel.innerHTML = Object.entries(PANES).map(([k, d]) => `<option value="${k}" ${k === kind ? "selected" : ""}>${esc(d.label)}</option>`).join("");
+    sel.onchange = () => { focus = i; showView(sel.value); };
+    bar.appendChild(sel);
+    const sp = document.createElement("span");
+    sp.className = "sp";
+    sp.id = `slotinfo-${kind}`;
+    bar.appendChild(sp);
+    if (slots.length < 3) {
+      const b = document.createElement("button");
+      b.textContent = "Split";
+      b.title = "Add a pane beside this one";
+      b.onclick = () => {
+        const next = Object.keys(PANES).find((k) => !shown(k));
+        if (!next) return;
+        slots.splice(i + 1, 0, next);
+        focus = i + 1;
+        layoutPanes(); PANES[next].shown?.(); renderTabs();
+      };
+      bar.appendChild(b);
+    }
+    if (slots.length > 1) {
+      const b = document.createElement("button");
+      b.textContent = "×";
+      b.title = "Close this pane";
+      b.onclick = () => { slots.splice(i, 1); focus = Math.max(0, Math.min(focus, slots.length - 1)); layoutPanes(); renderTabs(); };
+      bar.appendChild(b);
+    }
+    const body = document.createElement("div");
+    body.className = "slotbody";
+    body.appendChild($(PANES[kind].el));
+    slot.addEventListener("mousedown", () => {
+      if (focus === i) return;
+      focus = i;
+      for (const s of panes.querySelectorAll(".slot")) s.classList.toggle("focus", s === slot);
+    }, true);
+    slot.append(bar, body, drop);
+    return slot;
+  };
+  // The bar between two panes: dragged, it gives one what it takes from the other.
+  const gutterOf = (n, ia, ib, a, b) => {
+    const g = document.createElement("div");
+    g.className = "gutter";
+    g.title = "Drag to resize; double-click to make them equal";
+    const set = (fa) => {
+      const total = n.sizes[ia] + n.sizes[ib];
+      n.sizes[ia] = fa * total; n.sizes[ib] = (1 - fa) * total;
+      a.style.flex = `${n.sizes[ia]} 1 0`; b.style.flex = `${n.sizes[ib]} 1 0`;
+      resized();
+    };
+    g.onpointerdown = (e) => {
+      e.preventDefault();
+      g.setPointerCapture(e.pointerId);
+      g.classList.add("on");
+      const row = n.dir === "row", ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const from = row ? ra.left : ra.top, span = (row ? rb.right : rb.bottom) - from - (row ? g.offsetWidth : g.offsetHeight);
+      g.onpointermove = (m) => set(Math.max(0.08, Math.min(0.92, ((row ? m.clientX : m.clientY) - from) / Math.max(1, span))));
+      g.onpointerup = () => { g.onpointermove = g.onpointerup = null; g.classList.remove("on"); saveLayout(); };
+    };
+    g.ondblclick = () => { set(0.5); saveLayout(); };
+    return g;
+  };
+  const build = (n) => {
+    if (n.kind) return PANES[n.kind] ? slotOf(n.kind) : null;
+    const kids = n.children.map((c, i) => [build(c), i]).filter(([e]) => e);
+    if (kids.length < 2) return kids[0]?.[0] ?? null;
+    const box = document.createElement("div");
+    box.className = `split ${n.dir === "col" ? "over" : "beside"}`;
+    kids.forEach(([e, i], j) => {
+      if (j) box.appendChild(gutterOf(n, kids[j - 1][1], i, kids[j - 1][0], e));
+      e.style.flex = `${n.sizes[i]} 1 0`;
+      box.appendChild(e);
+    });
+    return box;
+  };
+  const top = build(tree);
+  top.style.flex = "1 1 0";
+  panes.appendChild(top);
+  // Panes changed size.
+  resized();
+}
+
+/// Shows a kind of view: where it already is, or in the focused pane.
+function showView(kind) {
+  if (shown(kind)) focus = slots.indexOf(kind);
+  else slots[focus] = kind;
+  layoutPanes();
+  PANES[kind].shown?.();
   renderTabs();
+}
+
+// ----- the browser: the project's drawings and files --------------------------
+function renderTabs() {
+  const sl = $("sheetList");
+  sl.innerHTML = "";
+  ((state && state.sheets) || []).forEach((sh, i) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<b>${esc(sh.number)}</b> <span class="muted">${esc(sh.title || "")}</span>`;
+    li.title = `${sh.number} ${sh.title || ""}`;
+    if (shown("sheet") && i === sheet) li.className = "on";
+    li.onclick = () => { sheet = i; viewBox = null; showView("sheet"); loadSheet(); };
+    sl.appendChild(li);
+  });
+  $("open3d").className = shown("3d") ? "on" : "";
+  const fl = $("fileList");
+  fl.innerHTML = "";
+  files.forEach((f, i) => {
+    const li = document.createElement("li");
+    li.textContent = f.name;
+    li.title = f.path;
+    li.className = (shown("script") && i === current ? "on" : "") + (f.text !== f.saved ? " dirty" : "");
+    li.onclick = () => { current = i; showView("script"); renderEditor(); };
+    fl.appendChild(li);
+  });
+  const info = $("slotinfo-sheet");
+  if (info && state && state.sheets && state.sheets[sheet]) info.textContent = `${state.sheets[sheet].number} ${state.sheets[sheet].title || ""}`;
+}
+$("open3d").onclick = () => showView("3d");
+for (const b of document.querySelectorAll("#browserTabs button")) b.onclick = () => showBrowser(b.dataset.b);
+function showBrowser(name) {
+  for (const b of document.querySelectorAll("#browserTabs button")) b.classList.toggle("on", b.dataset.b === name);
+  for (const p of document.querySelectorAll(".bpane")) p.hidden = p.dataset.b !== name;
 }
 
 // ----- script view -----------------------------------------------------------
@@ -1083,11 +1657,12 @@ function errorLine(f) {
   const m = state.error.match(new RegExp(base + ":(\\d+)")) || (current === 0 && state.error.match(/line (\d+)/));
   return m ? Number(m[1]) : 0;
 }
-function markErrorLine() { if (view === "script" && files.length) paintEditor(); }
+function markErrorLine() { if (shown("script") && files.length) paintEditor(); }
 
 async function loadSources(force) {
   if (!force && srcVersion === state.version && files.length) { renderEditor(); return; }
   const r = await api("/api/sources");
+  if (!r.files) return;
   const byPath = new Map(files.map((f) => [f.path, f]));
   files = r.files.map((f) => {
     const old = byPath.get(f.path);
@@ -1265,7 +1840,7 @@ $("sheet").addEventListener("wheel", (e) => {
 $("sheet").addEventListener("mousedown", (e) => { if (svg) drag = { x: e.clientX, y: e.clientY, vb: viewBox.slice(), moved: false }; });
 window.addEventListener("mouseup", (e) => {
   const d = drag; drag = null;
-  if (d && !d.moved && svg && e.target.closest("#viewer")) onClick(e);
+  if (d && !d.moved && svg && e.target.closest("#sheetPane")) onClick(e);
 });
 $("sheet").addEventListener("dblclick", () => { viewBox = fitViews(); svg.setAttribute("viewBox", viewBox.join(" ")); drawOverlays(); drawPicks(); });
 $("sheet").addEventListener("mousemove", (e) => {
@@ -1304,12 +1879,12 @@ async function sendPick() {
       label = `${hover.member_label}` + (h ? ` · ${h.ratio.toFixed(2)} ${h.title.toLowerCase()} (${h.combination})` : "") + " — click for checks";
     }
     tip.textContent = label;
-    const r = $("viewer").getBoundingClientRect();
+    const r = $("sheetPane").getBoundingClientRect();
     tip.style.display = "block";
-    // Keep the tooltip inside the viewer.
-    const left = Math.min(q.x - r.left + 14, r.width - tip.offsetWidth - 6);
-    const top = q.y - r.top + 14 + tip.offsetHeight > r.height ? q.y - r.top - tip.offsetHeight - 10 : q.y - r.top + 14;
-    tip.style.left = `${Math.max(4, left)}px`; tip.style.top = `${top}px`;
+    // Keep the tooltip inside the drawing.
+    const left = Math.min(q.x + 14, r.right - tip.offsetWidth - 6);
+    const top = q.y + 14 + tip.offsetHeight > r.bottom ? q.y - tip.offsetHeight - 10 : q.y + 14;
+    tip.style.left = `${Math.max(r.left + 4, left)}px`; tip.style.top = `${top}px`;
   } else tip.style.display = "none";
   drawPicks();
   if (queued) sendPick();
@@ -1430,8 +2005,33 @@ function msg(text, isErr) {
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
 
+layoutPanes();
+// The model shaded, in WebGL: with or without a scan.
+// The tree of objects is the page's: the model's parts, and a scan's objects when a scan workspace is served.
+objects.mount({ tabs: $("browserTabs"), panes: $("browser"), showBrowser });
+objects.on("visibility", () => draw3d());
+const shaded = initModel3d({ registerPane, api, inspect, shown, showBrowser, parked: $("parked"), version: () => (state && !state.error ? state.version : null), scan: () => !!globalThis.__topoScan, deflects: () => !!(state && state.analysis && state.analysis.displacement), combination: () => $("heatCombo").value });
 // Storage first (its change handler lists the projects), then keep the view in step.
 await storage.boot();
+// A scan workspace, if this site serves one: its model opens, and the scan's panes,
+// issues and people are added. Without it the app is as it is.
+if (await service.probe()) {
+  globalThis.__topoWho = service.whoQuery();
+  if (service.entry) { await api("/api/open", { path: service.entry }); await loadProjects(); }
+  const { initScan } = await import("./app/scan.js");
+  await initScan({
+    registerPane, showView, shown, showTab, showBrowser, inspect,
+    slots: () => slots.slice(),
+    setSlots: (s) => { slots = s.slice(); layoutPanes(); for (const k of slots) PANES[k]?.shown?.(); renderTabs(); },
+    openBeside: (kind) => { if (slots.length < 3) { slots.push(kind); focus = slots.length - 1; layoutPanes(); PANES[kind].shown?.(); renderTabs(); } else showView(kind); },
+    checks: () => (state && !state.error && state.issues) || [],
+    setStatus: (text) => {
+      let e = $("scanStatus");
+      if (!e) { e = document.createElement("span"); e.id = "scanStatus"; $("status").after(e); }
+      e.textContent = text ? `· ${text}` : "";
+    },
+  });
+}
 poll();
 </script>
 </body>

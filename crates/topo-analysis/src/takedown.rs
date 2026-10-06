@@ -355,7 +355,7 @@ fn sample_points(len: f64, keys: &[f64]) -> Vec<f64> {
 /// (`Standards::analysis`). Both give forces along every member per load case.
 pub fn takedown(model: &Model, topo: &Topology, geom: &Geometry) -> Takedown {
     if model.standards.is_frame() {
-        return crate::frame::frame(model, geom);
+        return crate::frame::frame(model, topo, geom);
     }
     let nm = model.members.len();
     let cases: Vec<LoadCaseId> = model.load_cases.iter().map(|c| c.id).collect();

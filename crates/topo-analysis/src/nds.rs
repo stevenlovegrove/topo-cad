@@ -545,6 +545,15 @@ fn nail_checks(cx: &Ctx, out: &mut Vec<Check>, issues: &mut Vec<Issue>) {
             out.push(c);
             continue;
         };
+        // Carried by hardware (a hanger, a connector plate), not by nails: its capacity is its maker's, and is not
+        // checked here; that is said, once for each kind.
+        if conn.fasteners.is_empty() && !conn.hardware.is_empty() {
+            let what = format!("{}: carried by hardware ({}); its capacity is the manufacturer's, and is not checked", conn.name, conn.hardware.iter().map(|h| h.kind.as_str()).collect::<Vec<_>>().join(", "));
+            if !issues.iter().any(|i| i.code == "hardware-not-checked" && i.message == what) {
+                issues.push(Issue::new(Severity::Info, "hardware-not-checked", what));
+            }
+            continue;
+        }
         let mut capacity = 0.0;
         let mut ok = cx.cd_verified;
         let mut notes = vec![];

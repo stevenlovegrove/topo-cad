@@ -45,6 +45,11 @@ pub fn clamped(name: &str) -> Connection {
     made(name, "clamp", Fixity::Rigid, None)
 }
 
+/// Joined so as to carry moment, by a means the script has not said.
+pub fn unspecified() -> Connection {
+    made("Joined (means not said)", "joined", Fixity::Rigid, Some("Say how: a weld, a braze, a connector"))
+}
+
 /// A pivot: carries force, no bending moment.
 pub fn pinned(name: &str) -> Connection {
     made(name, "pivot", Fixity::Pinned, None)

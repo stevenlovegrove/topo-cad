@@ -73,9 +73,14 @@ impl Opening {
 #[derive(Clone, Debug)]
 pub struct Wall {
     pub name: String,
+    /// Where it starts and ends: on its line, at the bottom of its bottom plate (the two need not
+    /// be at one height: the bottom plate then slopes).
     pub start: Vec3,
     pub end: Vec3,
+    /// To the top of the double top plate, above its bottom, at its start.
     pub height: f64,
+    /// The same at its end, if it is not `height` (the top then slopes: a rake wall).
+    pub height_end: Option<f64>,
     /// Stud nominal size, e.g. (2, 4).
     pub stud: (u32, u32),
     pub material: MaterialId,
@@ -86,6 +91,10 @@ pub struct Wall {
     /// others follow at `spacing` either way); each further one sets out the stretch between openings it is in.
     /// Empty: the layout runs from the start (studs at spacing, 2·spacing, …).
     pub layout_from: Vec<f64>,
+    /// As built, where the studs are not on one grid: these studs' centres along the wall from its start,
+    /// exactly. Between the first and last of them there are no others; beyond them the layout carries on at
+    /// `spacing` from the outermost. (Then `layout_from` is not used.)
+    pub studs_at: Vec<f64>,
     /// Interior on the left of the start→end direction (CCW plan loops).
     pub interior_left: bool,
     pub justify: Justify,
@@ -102,6 +111,30 @@ pub struct Wall {
     /// Inside faces of the walls met at the start and end, as x along this
     /// wall; set by the perimeter (datums for surveys).
     pub corner_inside: [Option<f64>; 2],
+    /// The common studs' centres, exactly, as solved (one for each of `common_studs`, in order):
+    /// built there instead of where the layout puts them.
+    /// Where a solve has put a surveyed wall's posts (centres along it, in the order its survey
+    /// lists them); none: where their readings put them.
+    pub survey_solved: Option<Vec<f64>>,
+    pub studs_solved: Option<Vec<f64>>,
+    /// A curb under it (concrete, as wide as its plates), under each stretch of its bottom plate:
+    /// from the surface it stands on (a slab's top) up to its own top (where the wall's bottom is).
+    pub curb: Option<(Level, Level)>,
+    /// How much what it stands on rises across it, per metre toward its inside (a slab laid to
+    /// fall across the wall): its bottom plate lies on that, turned about its own length, and
+    /// its studs, plumb, are cut to it.
+    pub base_cross: f64,
+}
+
+/// Why a common stud is where it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StudFrom {
+    /// At an end of the wall (against the wall it meets): fixed.
+    End,
+    /// Where the layout rule puts it: a hint.
+    Layout,
+    /// Where it was read to be (`studs_at`): a reading.
+    Read,
 }
 
 /// Handles to the generated members.
@@ -115,6 +148,8 @@ pub struct WallParts {
     pub cap_plates: Vec<MemberId>,
     pub studs: Vec<MemberId>,
     pub headers: Vec<MemberId>,
+    /// Whether it stands on a curb.
+    pub curbed: bool,
 }
 
 impl WallParts {
@@ -176,20 +211,26 @@ impl Wall {
             start,
             end,
             height,
+            height_end: None,
             stud: (2, 4),
             material,
             header_material: None,
             spacing: inch(16.0),
             layout_from: vec![],
+            studs_at: vec![],
             interior_left: true,
             justify: Justify::Exterior,
             openings: vec![],
             start_inset: 0.0,
             end_inset: 0.0,
+            survey_solved: None,
             cap_breaks: vec![],
             parent: None,
             survey: None,
             corner_inside: [None, None],
+            studs_solved: None,
+            curb: None,
+            base_cross: 0.0,
         }
     }
     /// A wall with no position yet, to be placed by a `Perimeter` (or `between`).
@@ -214,6 +255,12 @@ impl Wall {
     /// wall's start: the first for the wall, each further one for the stretch between openings it is in.
     pub fn layout_from(mut self, xs: &[f64]) -> Wall {
         self.layout_from = xs.to_vec();
+        self
+    }
+    /// Puts studs exactly at `xs` (centres along the wall from its start, as measured), where they are not on
+    /// one grid. Beyond the outermost of them the layout carries on at the spacing.
+    pub fn studs_at(mut self, xs: &[f64]) -> Wall {
+        self.studs_at = xs.to_vec();
         self
     }
     pub fn justify(mut self, j: Justify) -> Wall {
@@ -264,24 +311,32 @@ impl Wall {
         }
     }
 
-    fn build_generated(&self, m: &mut Model) -> WallParts {
-        let len = self.start.distance(self.end);
-        let doors: Vec<(f64, f64)> = self
-            .openings
-            .iter()
-            .filter(|o| o.kind == OpeningKind::Door)
-            .map(|o| (o.center - o.width / 2.0, o.center + o.width / 2.0))
-            .collect();
-        let mut f = Framing::new(self, m, &doors);
-        let (h, b, ht) = (f.h, f.b, f.ht);
+    /// Its length on plan (along its line), from start to end.
+    pub fn length(&self) -> f64 {
+        Vec2::new(self.end.x - self.start.x, self.end.y - self.start.y).norm()
+    }
 
-        // Openings (flush headers resolved against the wall height first).
-        let openings: Vec<Opening> = self
-            .openings
+    /// The bottom of the bottom plate, `x` along the wall, above the bottom at its start.
+    pub fn base_at(&self, x: f64) -> f64 {
+        (self.end.z - self.start.z) * x / self.length()
+    }
+
+    /// The top of the double top plate, `x` along the wall, above the bottom at its start.
+    pub fn top_at(&self, x: f64) -> f64 {
+        let h1 = self.height_end.unwrap_or(self.height);
+        self.base_at(x) + self.height + (h1 - self.height) * x / self.length()
+    }
+
+    /// The openings, with flush headers resolved against the wall height (under the lower end of
+    /// the top plate over them, where it slopes).
+    fn resolved_openings(&self) -> Vec<Opening> {
+        let b = inch(dressed_in(self.stud.0));
+        self.openings
             .iter()
             .map(|o| {
                 let mut o = o.clone();
                 if o.header_flush {
+                    let h = self.top_at(o.center - o.width / 2.0).min(self.top_at(o.center + o.width / 2.0));
                     o.head = h - 2.0 * b - inch(dressed_in(o.header.2));
                     if o.kind == OpeningKind::Door {
                         o.height = o.head;
@@ -289,8 +344,12 @@ impl Wall {
                 }
                 o
             })
-            .collect();
-        let mut blocked: Vec<(f64, f64)> = vec![];
+            .collect()
+    }
+
+    /// Where the layout puts studs along the wall (sorted): by the layout rules, or `studs_at`.
+    fn layout(&self, openings: &[Opening]) -> Vec<f64> {
+        let len = self.length();
         let grid = |from: f64, lo: f64, hi: f64| -> Vec<f64> {
             let from = from.rem_euclid(self.spacing);
             (0..).map(|k| from + k as f64 * self.spacing).take_while(|&x| x < hi).filter(|&x| x > lo + 1e-9).collect()
@@ -303,13 +362,68 @@ impl Wall {
             layout.retain(|&x| x <= lo || x >= hi);
             layout.extend(grid(a, lo, hi));
         }
+        // Studs given one by one: those, and the spacing carried on outward from the outermost.
+        if !self.studs_at.is_empty() {
+            let (lo, hi) = self.studs_at.iter().fold((f64::MAX, f64::MIN), |(l, h), &x| (l.min(x), h.max(x)));
+            layout = self.studs_at.iter().copied().filter(|&x| x > 1e-9 && x < len).collect();
+            layout.extend((1..).map(|k| lo - k as f64 * self.spacing).take_while(|&x| x > 1e-9));
+            layout.extend((1..).map(|k| hi + k as f64 * self.spacing).take_while(|&x| x < len));
+        }
         layout.sort_by(|a, b| a.total_cmp(b));
+        layout
+    }
+
+    /// Where the openings' posts block common studs (from the outside of one king to the other).
+    fn blocked(&self, openings: &[Opening]) -> Vec<(f64, f64)> {
+        let b = inch(dressed_in(self.stud.0));
+        openings
+            .iter()
+            .map(|o| {
+                let (x0, x1) = (o.center - o.width / 2.0, o.center + o.width / 2.0);
+                let nj = o.jacks as f64;
+                (x0 - (nj + 0.5) * b - b, x1 + (nj + 0.5) * b + b)
+            })
+            .collect()
+    }
+
+    /// The common (full-height, not king) studs, in order along the wall: each one's centre as
+    /// the layout puts it, and why it is there. The wall's numbers, for a solve: built as
+    /// `stud#1`, `stud#2`, … in this order. (Not for a surveyed wall: it is framed as surveyed.)
+    pub fn common_studs(&self) -> Vec<(f64, StudFrom)> {
+        let len = self.length();
+        let b = inch(dressed_in(self.stud.0));
+        let openings = self.resolved_openings();
+        let layout = self.layout(&openings);
+        let blocked = self.blocked(&openings);
+        let first = self.start_inset + 0.5 * b;
+        let last = len - self.end_inset - 0.5 * b;
+        let read = |x: f64| self.studs_at.iter().any(|&r| (r - x).abs() < 1e-9);
+        let mut xs = vec![(first, StudFrom::End)];
+        xs.extend(layout.iter().copied().filter(|&x| x - first >= b && last - x >= b).map(|x| (x, if read(x) { StudFrom::Read } else { StudFrom::Layout })));
+        xs.push((last, StudFrom::End));
+        xs.retain(|&(x, _)| !blocked.iter().any(|&(a, bx)| x > a && x < bx));
+        xs
+    }
+
+    fn build_generated(&self, m: &mut Model) -> WallParts {
+        let len = self.length();
+        let doors: Vec<(f64, f64)> = self
+            .openings
+            .iter()
+            .filter(|o| o.kind == OpeningKind::Door)
+            .map(|o| (o.center - o.width / 2.0, o.center + o.width / 2.0))
+            .collect();
+        let mut f = Framing::new(self, m, &doors);
+        let (h, b, ht) = (f.h, f.b, f.ht);
+
+        // Openings (flush headers resolved against the wall height first).
+        let openings = self.resolved_openings();
+        let layout = self.layout(&openings);
         for o in &openings {
             let (x0, x1) = (o.center - o.width / 2.0, o.center + o.width / 2.0);
             let nj = o.jacks as f64;
             // Posts each side, innermost first: jacks then the king.
             let (xk0, xk1) = (x0 - (nj + 0.5) * b, x1 + (nj + 0.5) * b);
-            blocked.push((xk0 - b, xk1 + b));
             let king0 = f.full(m, xk0, "king_stud", None).unwrap();
             let king1 = f.full(m, xk1, "king_stud", None).unwrap();
             let header = f.header(m, o, xk0, xk1, king0, king1);
@@ -330,18 +444,15 @@ impl Wall {
             }
         }
 
-        // Common studs: end studs plus layout positions clear of openings.
-        let first = self.start_inset + 0.5 * b;
-        let last = len - self.end_inset - 0.5 * b;
-        let mut xs = vec![first];
-        xs.extend(layout.iter().copied().filter(|&x| x - first >= b && last - x >= b));
-        xs.push(last);
+        // Common studs: end studs plus layout positions clear of openings (or where they were solved to be).
+        let xs: Vec<f64> = match &self.studs_solved {
+            Some(xs) => xs.clone(),
+            None => self.common_studs().into_iter().map(|(x, _)| x).collect(),
+        };
         for x in xs {
-            if blocked.iter().any(|&(a, bx)| x > a && x < bx) {
-                continue;
-            }
             f.full(m, x, "stud", None).unwrap();
         }
+        let _ = len;
         let _ = ht;
         let (g, parts) = (f.g, f.parts);
         self.annotate(m, g, len, h, &openings);
@@ -351,11 +462,11 @@ impl Wall {
     /// Builds the wall exactly as surveyed: each post where it was measured,
     /// openings between the posts either side of them.
     fn build_surveyed(&self, m: &mut Model, survey: &Survey) -> Result<WallParts, String> {
-        let len = self.start.distance(self.end);
+        let len = self.length();
         let b = inch(dressed_in(self.stud.0));
         let d = (self.end - self.start) / len;
         let cx = WallContext { len, ply: b, inside: self.corner_inside, dir: [d.x, d.y] };
-        let r = survey.resolve(&self.name, &cx)?;
+        let r = survey.resolve_at(&self.name, &cx, self.survey_solved.as_deref())?;
         let (h, t) = (self.height, self.thickness());
         let _ = t;
         let items = &r.items;
@@ -638,6 +749,10 @@ impl Wall {
 /// off them.
 struct Framing {
     frame: Frame,
+    /// Its length on plan; how much its bottom rises from start to end; its height at each end.
+    len: f64,
+    rise: f64,
+    tops: (f64, f64),
     g: GroupId,
     parts: WallParts,
     segs: Vec<(f64, f64, MemberId)>,
@@ -662,8 +777,9 @@ struct Framing {
 impl Framing {
     /// Group, sections, connections and plates; `doors` interrupt the bottom plate.
     fn new(w: &Wall, m: &mut Model, doors: &[(f64, f64)]) -> Framing {
-        let len = w.start.distance(w.end);
-        let dir = (w.end - w.start) / len;
+        let len = w.length();
+        // (Its line on plan: x along it, z up. Where its bottom slopes, `bottom` says how high it is.)
+        let dir = v3(w.end.x - w.start.x, w.end.y - w.start.y, 0.0) / len;
         let inward = if w.interior_left { Vec3::Z.cross(dir) } else { dir.cross(Vec3::Z) };
         let frame = Frame { origin: w.start, x: dir, y: inward, z: Vec3::Z };
         let (h, b, t) = (w.height, inch(dressed_in(w.stud.0)), w.thickness());
@@ -680,6 +796,9 @@ impl Framing {
         let hdr_mat = w.header_material.unwrap_or(mat);
         let mut f = Framing {
             frame,
+            len,
+            rise: w.end.z - w.start.z,
+            tops: (w.height, w.height_end.unwrap_or(w.height)),
             g,
             parts: WallParts { group: g, ..Default::default() },
             segs: vec![],
@@ -706,7 +825,7 @@ impl Framing {
         let plate_ax = m.axes_between(w.start, w.end, Some(inward));
         let bottom = MemberSpec::new("bottom_plate", stud_sec, mat)
             .priority(10)
-            .depth_dir(inward)
+            .depth_dir((inward + Vec3::Z * w.base_cross).normalized())
             .anchor(Anchor::body_toward(&plate_ax, Some(Vec3::Z), v_side))
             .group(g);
         let top = MemberSpec::new("top_plate", stud_sec, mat)
@@ -725,13 +844,34 @@ impl Framing {
         segs.push((x, len));
         for (k, &(a, bx)) in segs.iter().enumerate() {
             let name = if segs.len() == 1 { "bottom_plate".to_string() } else { format!("bottom_plate#{}", k + 1) };
-            let id = m.add_member_between(wp(a, 0.0), wp(bx, 0.0), &bottom.clone().named(&name));
+            let id = m.add_member_between(wp(a, f.bottom(a)), wp(bx, f.bottom(bx)), &bottom.clone().named(&name));
             f.segs.push((a, bx, id));
             f.parts.bottom_plates.push(id);
+            // The curb under it.
+            if let Some((under, over)) = w.curb {
+                let (y0, y1) = match w.justify {
+                    Justify::Exterior => (0.0, t),
+                    Justify::Center => (-t / 2.0, t / 2.0),
+                };
+                let corner = |x: f64, y: f64| {
+                    let p = frame.to_world(v3(x, y, 0.0));
+                    Vec2::new(p.x, p.y)
+                };
+                // (Clear of a wall this one butts into at an end, as its studs are: that wall, or the curb under
+                // it, has the corner.)
+                let (a, bx) = (a.max(w.start_inset), bx.min(len - w.end_inset));
+                let outline = vec![corner(a, y0), corner(bx, y0), corner(bx, y1), corner(a, y1)];
+                f.parts.curbed = true;
+                // (Where the slab comes up to the curb's top there is none: only where it has some height.)
+                if bx - a > 1e-6 && outline.iter().any(|&p| over.over(p) - under.over(p) > 1e-4) {
+                    let name = if segs.len() == 1 { "curb".to_string() } else { format!("curb#{}", k + 1) };
+                    m.solids.push(Solid { name, role: "curb".into(), material: "concrete".into(), group: Some(g), outline, bottom: under, top: over, seams: vec![], open: 0.0 });
+                }
+            }
         }
         // Double top plate as two members: lower ply (axis on its top face)
         // and cap plate(s) above, face-nailed together.
-        f.parts.top_plate = m.add_member_between(wp(0.0, f.ht), wp(len, f.ht), &top.clone().named("top_plate"));
+        f.parts.top_plate = m.add_member_between(wp(0.0, f.under_top(0.0)), wp(len, f.under_top(len)), &top.clone().named("top_plate"));
         let cap = MemberSpec { role: "cap_plate".into(), ..top.clone() };
         let c_dbl = m.add_connection(fx::double_top_plate());
         let mut breaks: Vec<f64> = w.cap_breaks.iter().copied().filter(|&x| x > 1e-6 && x < len - 1e-6).collect();
@@ -740,7 +880,7 @@ impl Framing {
         let n_caps = breaks.len() + 1;
         for (k, x1) in breaks.into_iter().chain([len]).enumerate() {
             let name = if n_caps == 1 { "cap_plate".to_string() } else { format!("cap_plate#{}", k + 1) };
-            let id = m.add_member_between(wp(x0, h), wp(x1, h), &cap.clone().named(&name));
+            let id = m.add_member_between(wp(x0, f.top(x0)), wp(x1, f.top(x1)), &cap.clone().named(&name));
             m.bond(id, f.parts.top_plate, c_dbl);
             f.parts.cap_plates.push(id);
             x0 = x1;
@@ -750,6 +890,23 @@ impl Framing {
 
     fn w(&self, x: f64, z: f64) -> Vec3 {
         self.frame.to_world(v3(x, 0.0, z))
+    }
+
+    /// The bottom of the bottom plate, `x` along (above the bottom at the start).
+    fn bottom(&self, x: f64) -> f64 {
+        self.rise * x / self.len
+    }
+
+    /// The top of the double top plate, `x` along.
+    fn top(&self, x: f64) -> f64 {
+        self.bottom(x) + self.tops.0 + (self.tops.1 - self.tops.0) * x / self.len
+    }
+
+    /// The underside of the double top plate (where studs end), `x` along. (Where the top slopes, a
+    /// ply is thicker measured plumb: its thickness over the slope's cosine.)
+    fn under_top(&self, x: f64) -> f64 {
+        let slope = (self.top(self.len) - self.top(0.0)) / self.len;
+        self.top(x) - self.b * (1.0 + slope * slope).sqrt()
     }
 
     fn bottom_at(&self, x: f64) -> Result<MemberId, String> {
@@ -781,15 +938,16 @@ impl Framing {
     /// Full-height stud or king at `x`.
     fn full(&mut self, m: &mut Model, x: f64, role: &str, name: Option<&str>) -> Result<MemberId, String> {
         let lo = self.bottom_at(x)?;
-        let (top, ht, c0, c1) = (self.parts.top_plate, self.ht, self.c_bot, self.c_top);
-        self.vertical(m, x, 0.0, ht, lo, top, role, c0, c1, name)
+        let (top, z0, z1, c0, c1) = (self.parts.top_plate, self.bottom(x), self.under_top(x), self.c_bot, self.c_top);
+        self.vertical(m, x, z0, z1, lo, top, role, c0, c1, name)
     }
 
     /// Jack at `x` under `header`, bonded to the post beside it.
     fn jack(&mut self, m: &mut Model, x: f64, head: f64, header: MemberId, beside: MemberId, name: Option<&str>) -> Result<MemberId, String> {
         let lo = self.bottom_at(x)?;
         let (c0, c1, cj) = (self.c_bot, self.c_crip, self.c_jack);
-        let id = self.vertical(m, x, 0.0, head, lo, header, "jack_stud", c0, c1, name)?;
+        let z0 = self.bottom(x);
+        let id = self.vertical(m, x, z0, head, lo, header, "jack_stud", c0, c1, name)?;
         m.bond(id, beside, cj);
         Ok(id)
     }
@@ -816,7 +974,7 @@ impl Framing {
         m.connect(hn1, header, Some(king1), self.c_hdr);
         self.parts.headers.push(header);
         // Header tight to the top plate: face-to-face bearing contact.
-        let clear = self.h - 2.0 * b - (o.head + m.section(hdr_sec).props.depth);
+        let clear = self.top(xk0 + 0.5 * b).min(self.top(xk1 - 0.5 * b)) - 2.0 * b - (o.head + m.section(hdr_sec).props.depth);
         if clear.abs() < 1e-6 {
             m.bond(self.parts.top_plate, header, self.c_plate_hdr);
         }
@@ -846,14 +1004,14 @@ impl Framing {
     /// Returns how many were built.
     fn cripples(&mut self, m: &mut Model, x: f64, o: &Opening, header: MemberId, sill: Option<MemberId>, name: Option<&str>) -> Result<usize, String> {
         let mut n = 0;
-        let (c_bot, c_crip, c_top, top, ht) = (self.c_bot, self.c_crip, self.c_top, self.parts.top_plate, self.ht);
+        let (c_bot, c_crip, c_top, top, ht, z0) = (self.c_bot, self.c_crip, self.c_top, self.parts.top_plate, self.under_top(x), self.bottom(x));
         if let Some(s) = sill {
             let lo = self.bottom_at(x)?;
-            self.vertical(m, x, 0.0, o.sill(), lo, s, "cripple", c_bot, c_crip, name)?;
+            self.vertical(m, x, z0, o.sill(), lo, s, "cripple", c_bot, c_crip, name)?;
             n += 1;
         }
         let depth = m.section(m.member(header).section).props.depth;
-        if self.h - 2.0 * self.b - (o.head + depth) >= self.b {
+        if self.top(x) - 2.0 * self.b - (o.head + depth) >= self.b {
             self.vertical(m, x, o.head, ht, header, top, "cripple", c_crip, c_top, name)?;
             n += 1;
         }

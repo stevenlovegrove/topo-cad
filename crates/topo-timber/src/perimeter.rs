@@ -24,6 +24,15 @@ pub struct Perimeter {
     /// `sides[i]` spans `points[i] → points[i + 1]` (wrapping when closed).
     pub sides: Vec<Side>,
     pub closed: bool,
+    /// The bottom of the walls at each point, where it is not `z` (a stepped or sloping base).
+    pub bases: Vec<Option<f64>>,
+    /// Each side's wall's height at its start and its end, where they are not its template's
+    /// (a top that slopes; and where two walls meet at different heights, a step).
+    pub heights: Vec<Option<(f64, f64)>>,
+    /// Each side's wall's bottom at its start and its end, where it is not the corners' (a wall
+    /// that stands on something of its own: where it meets one at another height, its bottom
+    /// plate does not meet the other's).
+    pub wall_bases: Vec<Option<(f64, f64)>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,7 +57,7 @@ impl PerimeterParts {
 
 impl Perimeter {
     pub fn start(name: &str, at: Vec2) -> Perimeter {
-        Perimeter { name: name.into(), z: 0.0, points: vec![at], sides: vec![], closed: false }
+        Perimeter { name: name.into(), z: 0.0, points: vec![at], sides: vec![], closed: false, bases: vec![], heights: vec![], wall_bases: vec![] }
     }
     /// Straight segment to an absolute plan point.
     pub fn to(mut self, p: Vec2, side: Side) -> Perimeter {
@@ -111,13 +120,14 @@ impl Perimeter {
         [meet(prev), meet(next)]
     }
 
-    pub fn try_build(&self, m: &mut Model) -> Result<PerimeterParts, String> {
+    /// Its walls as it would build them (placed, with their insets at corners), side by side;
+    /// none for an open side.
+    pub fn walls(&self) -> Vec<Option<Wall>> {
         let ns = self.sides.len();
         assert_eq!(ns, if self.closed { self.points.len() } else { self.points.len() - 1 }, "one side per segment");
         // Orientation decides which side is the interior.
         let signed = if self.closed { polygon_area(&self.points) } else { 1.0 };
         let interior_left = signed > 0.0;
-        let g = m.add_group(&self.name, "perimeter", Frame::WORLD, None);
 
         let mut start_inset = vec![0.0; ns];
         let mut wall_corners = vec![];
@@ -157,24 +167,57 @@ impl Perimeter {
             }
         }
 
+        let _ = &wall_corners;
+        (self.sides.iter().enumerate())
+            .map(|(i, side)| {
+                let Side::Wall(template) = side else { return None };
+                let (p0, p1) = self.seg(i);
+                let mut w = template.clone();
+                if w.name.is_empty() {
+                    w.name = format!("{} wall {}", self.name, i + 1);
+                }
+                let n = self.points.len();
+                let base = |k: usize| self.bases.get(k % n).copied().flatten().unwrap_or(self.z);
+                let (b0, b1) = self.wall_bases.get(i).copied().flatten().unwrap_or((base(i), base(i + 1)));
+                w.start = v3(p0.x, p0.y, b0);
+                w.end = v3(p1.x, p1.y, b1);
+                if let Some((h0, h1)) = self.heights.get(i).copied().flatten() {
+                    w.height = h0;
+                    w.height_end = ((h1 - h0).abs() > 1e-9).then_some(h1);
+                }
+                w.interior_left = interior_left;
+                w.start_inset = start_inset[i];
+                w.end_inset = end_inset[i];
+                w.corner_inside = self.corner_inside(i, interior_left);
+                Some(w)
+            })
+            .collect()
+    }
+
+    /// The corners where two walls meet (incoming side, outgoing side).
+    fn wall_corners(&self) -> Vec<(usize, usize)> {
+        let ns = self.sides.len();
+        let corners: Vec<(usize, usize)> = if self.closed { (0..ns).map(|k| ((k + ns - 1) % ns, k)).collect() } else { (1..ns).map(|k| (k - 1, k)).collect() };
+        corners.into_iter().filter(|&(a, b)| matches!((&self.sides[a], &self.sides[b]), (Side::Wall(_), Side::Wall(_)))).collect()
+    }
+
+    pub fn try_build(&self, m: &mut Model) -> Result<PerimeterParts, String> {
+        self.try_build_walls(m, self.walls())
+    }
+
+    /// Builds it with these walls (as `walls` gives them, perhaps with their studs solved).
+    pub fn try_build_walls(&self, m: &mut Model, planned: Vec<Option<Wall>>) -> Result<PerimeterParts, String> {
+        let g = m.add_group(&self.name, "perimeter", Frame::WORLD, None);
+        let wall_corners = self.wall_corners();
+        let sloped: Vec<bool> = planned.iter().map(|w| w.as_ref().is_some_and(|w| w.height_end.is_some_and(|h| (h - w.height).abs() > 1e-9) || (w.start.z - w.end.z).abs() > 1e-9)).collect();
+        let insets: Vec<(f64, f64)> = planned.iter().map(|w| w.as_ref().map_or((0.0, 0.0), |w| (w.start_inset, w.end_inset))).collect();
         let mut walls = vec![];
-        for (i, side) in self.sides.iter().enumerate() {
-            let Side::Wall(template) = side else {
+        for w in planned {
+            let Some(mut w) = w else {
                 walls.push(None);
                 continue;
             };
-            let (p0, p1) = self.seg(i);
-            let mut w = template.clone();
-            if w.name.is_empty() {
-                w.name = format!("{} wall {}", self.name, i + 1);
-            }
-            w.start = v3(p0.x, p0.y, self.z);
-            w.end = v3(p1.x, p1.y, self.z);
-            w.interior_left = interior_left;
-            w.start_inset = start_inset[i];
-            w.end_inset = end_inset[i];
             w.parent = Some(g);
-            w.corner_inside = self.corner_inside(i, interior_left);
             walls.push(Some(w.try_build(m)?));
         }
         // Interleave the top plate plies at every corner: the wall built first
@@ -183,7 +226,38 @@ impl Perimeter {
         for (a, b) in wall_corners {
             let (first, second) = if a < b { (a, b) } else { (b, a) };
             let (Some(pf), Some(ps)) = (&walls[first], &walls[second]) else { continue };
-            assert!(lap_corner(m, pf, ps, c), "cap plates of sides {a} and {b} do not meet");
+            // A wall whose top or bottom slopes: its plates meet the other's at an angle, and are
+            // not interleaved (that is said).
+            let corner = self.points[b % self.points.len()];
+            // Two walls in one line (a wall that changes what it stands on, or its height, part way): their
+            // plates meet end to end, each cut square; where they end at one node they are joined there.
+            let ((a0, a1), (b0, b1)) = (self.seg(a), self.seg(b));
+            if (a1 - a0).normalized().cross((b1 - b0).normalized()).abs() < 1e-9 {
+                let plates = |w: &WallParts| w.plates();
+                for p2 in plates(ps) {
+                    for p1 in plates(pf) {
+                        let e2 = [m.member(p2).start(), m.member(p2).end()];
+                        if let Some(n) = [m.member(p1).start(), m.member(p1).end()].into_iter().find(|n| e2.contains(n)) {
+                            m.connect(n, p2, Some(p1), c);
+                        }
+                    }
+                }
+                continue;
+            }
+            // (How far the second wall's framing keeps clear of the first at this corner: at its start, where
+            // it leaves the corner; at its end, where it arrives.)
+            let inset = if second == b { insets[second].0 } else { insets[second].1 };
+            if sloped[a] || sloped[b] {
+                butt_plates(m, pf, ps, corner, inset, c);
+                m.issues.push(Issue::new(Severity::Info, "corner-sloped", format!("{}: a wall at the corner of sides {} and {} slopes: its plates butt the other's there, not lapped", self.name, a + 1, b + 1)));
+                continue;
+            }
+            // Walls of different heights there: a step. Their plates do not lap; that is said.
+            if !lap_corner(m, pf, ps, c) {
+                butt_plates(m, pf, ps, corner, inset, c);
+                m.issues.push(Issue::new(Severity::Info, "corner-step", format!("{}: the walls of sides {} and {} meet at different heights: their top plates do not lap there", self.name, a + 1, b + 1)));
+                continue;
+            }
             // Bottom and lower top plates meeting at the corner node.
             let lower = |w: &WallParts| {
                 let mut v = w.bottom_plates.clone();
@@ -201,6 +275,130 @@ impl Perimeter {
         }
         Ok(PerimeterParts { group: g, walls })
     }
+}
+
+/// Where two walls' plates cannot lap at a corner (a top that slopes, or a step). The bottom
+/// plates meet at the corner node as at any corner. Each top ply of `butting` that ends at
+/// `corner` butts against a top ply of `through` ending at the same node; or, where none does
+/// (the plies at different heights there), it is cut back to end on the first face of `through`
+/// it runs into (a plate, or the end stud of a taller wall), at a node on that face.
+fn butt_plates(m: &mut Model, through: &WallParts, butting: &WallParts, corner: Vec2, inset: f64, c: ConnectionId) {
+    let near = |m: &Model, id: MemberId| {
+        let mm = m.member(id);
+        [mm.start(), mm.end()].into_iter().find(|&n| {
+            let p = m.pos(n);
+            Vec2::new(p.x, p.y).distance(corner) < 1e-6
+        })
+    };
+    let ends = |m: &Model, id: MemberId| [m.member(id).start(), m.member(id).end()];
+    for &p2 in &butting.bottom_plates {
+        let mut met = false;
+        for &p1 in &through.bottom_plates {
+            if let Some(n) = ends(m, p1).into_iter().find(|n| ends(m, p2).contains(n)) {
+                m.connect(n, p2, Some(p1), c);
+                met = true;
+            }
+        }
+        // (The walls' bottoms at different heights there: it ends on the other wall, as a top ply does.)
+        if !met {
+            if let Some(n) = near(m, p2) {
+                // (Lower than all of the other wall's framing, it meets none of it: then it is the curb under
+                // that wall that has the corner, and it ends on that, as far back as its own studs keep.)
+                if !cut_back(m, through, p2, n, c) && through.curbed && inset > 1e-9 {
+                    let far = ends(m, p2).into_iter().find(|&e| e != n).unwrap();
+                    let e = m.node_at(m.pos(n) + (m.pos(far) - m.pos(n)).normalized() * inset);
+                    let path = &mut m.member_mut(p2).path;
+                    if path[0] == n {
+                        path[0] = e;
+                    } else {
+                        *path.last_mut().unwrap() = e;
+                    }
+                }
+            }
+        }
+    }
+    let tops = |w: &WallParts| std::iter::once(w.top_plate).chain(w.cap_plates.iter().copied()).collect::<Vec<_>>();
+    for p in tops(butting) {
+        let Some(n) = near(m, p) else { continue };
+        if let Some(t) = tops(through).into_iter().find(|&t| ends(m, t).contains(&n)) {
+            // (Sloping differently, it is cut on the other's side toward it, not where a line along
+            // it first meets the other: that may be the other's top.)
+            let slope = |id: MemberId| m.member_axes(id).x.z;
+            let rule = if (slope(p) - slope(t)).abs() > 1e-9 {
+                let far = ends(m, p).into_iter().find(|&e| e != n).unwrap();
+                let toward = m.pos(far) - m.pos(n);
+                JointRule::ButtFace { member: p, against: t, face: m.face_toward(t, Vec3::new(toward.x, toward.y, 0.0)) }
+            } else {
+                JointRule::Butt { member: p, against: t }
+            };
+            m.add_rule(n, rule);
+            m.connect(n, p, Some(t), c);
+            continue;
+        }
+        cut_back(m, through, p, n, c);
+    }
+}
+
+/// Cuts a plate of one wall back from the corner node `n` to end on the first face of the
+/// `through` wall it runs into (a plate, or its end stud), at a node on that face.
+fn cut_back(m: &mut Model, through: &WallParts, p: MemberId, n: NodeId, c: ConnectionId) -> bool {
+    let ends = |m: &Model, id: MemberId| [m.member(id).start(), m.member(id).end()];
+    // From its far end toward the corner: the first face of the other wall that any of it enters
+    // (lines along it through its axis, its middle, and near each edge of its section: its axis
+    // is on an edge of it, and may pass beside what the rest of it runs into).
+    let far = ends(m, p).into_iter().find(|&e| e != n).unwrap();
+    let (o, d) = (m.pos(far), (m.pos(n) - m.pos(far)).normalized());
+    let sides = [Face::PlusU, Face::MinusU, Face::PlusV, Face::MinusV].map(|f| {
+        let f = m.face(p, f);
+        f.origin + f.along * (o - f.origin).dot(f.along) - o
+    });
+    let mid = (sides[0] + sides[1] + sides[2] + sides[3]) / 4.0;
+    let (hu, hv) = ((sides[0] - sides[1]) / 2.0, (sides[2] - sides[3]) / 2.0);
+    let mut lines = vec![Vec3::ZERO, mid];
+    for (su, sv) in [(-0.9, -0.9), (-0.9, 0.9), (0.9, -0.9), (0.9, 0.9)] {
+        lines.push(mid + hu * su + hv * sv);
+    }
+    // (Each face it meets: how far along, and whether its axis is one of the lines that meet it.)
+    let mut hits: Vec<(f64, bool, MemberId, Face)> = vec![];
+    for q in std::iter::once(through.top_plate).chain(through.cap_plates.iter().copied()).chain(through.bottom_plates.iter().copied()).chain(through.studs.iter().copied()) {
+        for face in [Face::PlusU, Face::MinusU, Face::PlusV, Face::MinusV] {
+            let f = m.face(q, face);
+            // (A face it meets, not one it runs along.)
+            let towards = d.dot(f.normal);
+            if towards > -0.5 {
+                continue;
+            }
+            let past = m.face_reach(q);
+            for (k, &line) in lines.iter().enumerate() {
+                let t = (f.origin - (o + line)).dot(f.normal) / towards;
+                let x = o + line + d * t;
+                let (along, across) = ((x - f.origin).dot(f.along), (x - f.origin).dot(f.across));
+                if t > 0.0 && along >= -past && along <= f.length + past && across.abs() <= f.half_width + 1e-6 {
+                    hits.push((t, k == 0, q, face));
+                }
+            }
+        }
+    }
+    // The first of them; of those as near, one its axis meets (its end is a node on that face).
+    let Some(first) = hits.iter().map(|h| h.0).min_by(f64::total_cmp) else { return false };
+    hits.retain(|h| h.0 < first + 1e-6);
+    hits.sort_by_key(|h| !h.1);
+    let Some((e, q)) = hits.iter().find_map(|&(_, _, q, face)| {
+        let f = m.face(q, face);
+        let e = m.node_at(o + d * ((f.origin - o).dot(f.normal) / d.dot(f.normal)));
+        (e != far && m.attach(e, q, face).is_ok()).then_some((e, q))
+    }) else {
+        return false;
+    };
+    let path = &mut m.member_mut(p).path;
+    if path[0] == n {
+        path[0] = e;
+    } else {
+        *path.last_mut().unwrap() = e;
+    }
+    m.add_rule(e, JointRule::Butt { member: p, against: q });
+    m.connect(e, p, Some(q), c);
+    true
 }
 
 #[cfg(test)]
@@ -230,6 +428,88 @@ mod tests {
     fn template(m: &mut Model) -> Wall {
         let dfl = m.add_material(graded("DFL", "No.2"));
         Wall::template(ft_in(8.0, 1.125), dfl)
+    }
+
+    #[test]
+    fn walls_whose_tops_slope_and_a_step_where_two_meet_at_different_heights() {
+        // A shed: the front low, the back high, the sides' tops sloping between them; built clean.
+        let mut m = Model::new("shed");
+        let w = template(&mut m);
+        let (lo, hi) = (ft(8.0), ft(10.0));
+        let mut p = Perimeter::start("Shed", Vec2::new(0.0, 0.0))
+            .to(Vec2::new(ft(12.0), 0.0), Side::Wall(w.clone().named("Front")))
+            .to(Vec2::new(ft(12.0), ft(10.0)), Side::Wall(w.clone().named("Right")))
+            .to(Vec2::new(0.0, ft(10.0)), Side::Wall(w.clone().named("Back")))
+            .close(Side::Wall(w.clone().named("Left")));
+        p.heights = vec![Some((lo, lo)), Some((lo, hi)), Some((hi, hi)), Some((hi, lo))];
+        let parts = p.build(&mut m);
+        // (Where a sloping ply butts a level one at a corner, its end face rises past the ply it
+        // is cut against: it meets a side face, and carries no weight through its end.)
+        check(&m);
+        let right = parts.walls[1].as_ref().unwrap();
+        let cap = right.cap_plates[0];
+        let (a, b) = (m.pos(m.member(cap).start()), m.pos(m.member(cap).end()));
+        assert!((a.z - lo).abs() < 1e-9 && (b.z - hi).abs() < 1e-9, "{a:?} {b:?}");
+        // Each stud of the right wall ends under the sloping double top plate where it stands (a ply's
+        // thickness measured plumb).
+        let b2 = inch(1.5) * (1.0 + ((hi - lo) / ft(10.0)).powi(2)).sqrt();
+        for &s in right.studs.iter().filter(|&&s| m.member(s).role == "stud") {
+            let (s0, s1) = (m.pos(m.member(s).start()), m.pos(m.member(s).end()));
+            let expect = lo + (hi - lo) * s0.y / ft(10.0) - b2;
+            assert!((s1.z - expect).abs() < 1e-9 && (s0.x - s1.x).abs() < 1e-12, "{s0:?} {s1:?} {expect}");
+        }
+        // Where a wall slopes, the plates at its corners butt rather than lap, and that is said.
+        assert_eq!(m.issues.iter().filter(|i| i.code == "corner-sloped").count(), 4, "{:#?}", m.issues);
+
+        // Now the back wall stands taller than the sides reach: steps at its corners, said, not refused.
+        let mut m = Model::new("stepped");
+        let w = template(&mut m);
+        let mut p = Perimeter::start("Stepped", Vec2::new(0.0, 0.0))
+            .to(Vec2::new(ft(12.0), 0.0), Side::Wall(w.clone()))
+            .to(Vec2::new(ft(12.0), ft(10.0)), Side::Wall(w.clone()))
+            .to(Vec2::new(0.0, ft(10.0)), Side::Wall(w.clone()))
+            .close(Side::Wall(w.clone()));
+        p.heights = vec![None, None, Some((hi, hi)), None];
+        p.build(&mut m);
+        // (The lower wall's plies end on the taller wall's end stud, on its side face.)
+        check(&m);
+        assert_eq!(m.issues.iter().filter(|i| i.code == "corner-step").count(), 2, "{:#?}", m.issues);
+    }
+
+    #[test]
+    fn a_wall_that_stands_lower_than_the_others_and_curbs_under_those() {
+        // Three walls on a 40 mm curb, the fourth on the slab the curb is on: it is as tall, so its
+        // top is as much lower, and it meets the others at a step at both ends, top and bottom.
+        let mut m = Model::new("on a curb");
+        let w = template(&mut m);
+        let curb = 0.04;
+        let on_curb = Wall { curb: Some((Level::flat(-curb), Level::flat(0.0))), ..w.clone() };
+        let mut p = Perimeter::start("Walls", Vec2::new(0.0, 0.0))
+            .to(Vec2::new(ft(12.0), 0.0), Side::Wall(on_curb.clone().named("Front")))
+            .to(Vec2::new(ft(12.0), ft(10.0)), Side::Wall(w.clone().named("Right")))
+            .to(Vec2::new(0.0, ft(10.0)), Side::Wall(on_curb.clone().named("Back")))
+            .close(Side::Wall(on_curb.clone().named("Left")));
+        p.wall_bases = vec![None, Some((-curb, -curb)), None, None];
+        let parts = p.build(&mut m);
+        check(&m);
+        let right = parts.walls[1].as_ref().unwrap();
+        let z = |id: MemberId| (m.pos(m.member(id).start()).z, m.pos(m.member(id).end()).z);
+        assert_eq!(z(right.bottom_plates[0]), (-curb, -curb));
+        let h = ft_in(8.0, 1.125);
+        let (a, b) = z(right.cap_plates[0]);
+        assert!((a - (h - curb)).abs() < 1e-9 && (b - (h - curb)).abs() < 1e-9, "{a} {b}");
+        let front = parts.walls[0].as_ref().unwrap();
+        assert!((z(front.cap_plates[0]).0 - h).abs() < 1e-9);
+        assert_eq!(m.issues.iter().filter(|i| i.code == "corner-step").count(), 2, "{:#?}", m.issues);
+        // A curb under each wall that stands on one: its top the wall's bottom, as wide as its plates.
+        let curbs: Vec<&Solid> = m.solids.iter().filter(|s| s.role == "curb").collect();
+        assert_eq!(curbs.len(), 3);
+        for c in &curbs {
+            assert!(c.top == Level::flat(0.0) && c.bottom == Level::flat(-curb), "{c:?}");
+        }
+        let front_curb = curbs.iter().find(|c| m.solid_path(c) == "Walls/Front/curb").unwrap();
+        let (lo, hi) = front_curb.outline.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+        assert!(lo.abs() < 1e-12 && (hi - inch(3.5)).abs() < 1e-9, "{lo} {hi}");
     }
 
     #[test]
@@ -296,6 +576,20 @@ mod tests {
         let cap_len: f64 = walls.iter().flat_map(|w| w.cap_plates.clone()).map(|c| g.member(c).cut_length()).sum();
         let low_len: f64 = walls.iter().map(|w| g.member(w.top_plate).cut_length()).sum();
         assert!((cap_len - low_len).abs() < 1e-6, "same total, different distribution");
+    }
+
+    #[test]
+    fn studs_placed_one_by_one() {
+        // Three measured studs, not at the wall's spacing: those exactly, none between, the spacing carried on beyond.
+        let mut m = Model::new("studs-at");
+        let w = template(&mut m).named("W").between(Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0)).studs_at(&[1.0, 1.36, 1.72]);
+        w.build(&mut m);
+        let xs: Vec<f64> = m.members.iter().filter(|x| x.role == "stud").map(|x| m.node(x.start()).pos.x).collect();
+        let has = |x: f64| xs.iter().any(|&s| (s - x).abs() < 1e-6);
+        let s = inch(16.0);
+        assert!(has(1.0) && has(1.36) && has(1.72), "the studs given: {xs:?}");
+        assert!(has(1.0 - s) && has(1.0 - 2.0 * s) && has(1.72 + s) && has(1.72 + 2.0 * s), "the spacing beyond them: {xs:?}");
+        assert_eq!(xs.iter().filter(|&&x| x > 1.0 + 1e-6 && x < 1.72 - 1e-6).count(), 1, "one between the outer two, the one given: {xs:?}");
     }
 
     #[test]

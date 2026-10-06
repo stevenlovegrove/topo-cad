@@ -204,6 +204,9 @@ pub struct Group {
 pub enum JointRule {
     /// `member` is cut against the face of `against`.
     Butt { member: MemberId, against: MemberId },
+    /// `member` is cut on this face of `against` (where the face to cut on is known: a sloping
+    /// plate butting a level one at a corner, on its side, not on its top).
+    ButtFace { member: MemberId, against: MemberId, face: Face },
     /// `member` extends through all other ending members at this node.
     Through { member: MemberId },
     /// `member` gets a square cut at the node.
@@ -240,6 +243,145 @@ pub struct Bond {
     pub a: MemberId,
     pub b: MemberId,
     pub connection: ConnectionId,
+}
+
+/// A face of a member: the side of its section toward `+u`, `-u`, `+v` or `-v`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Face {
+    PlusU,
+    MinusU,
+    PlusV,
+    MinusV,
+}
+
+/// A node on a member, off its axis: on one of its faces.
+///
+/// Where on the face is two numbers, free within the face: `along` the member
+/// from its first node, and `across` the face from its middle. The face's
+/// plane is not stored: it follows from the member (its axes, section and
+/// anchor), so the node's position is a function of these two and of the
+/// member. A node on a member's axis is in its path instead (the case of no
+/// offset); a node may be in one member's path and on the faces of others,
+/// which is how things that touch at faces are joined at a node.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub node: NodeId,
+    pub member: MemberId,
+    pub face: Face,
+    pub along: f64,
+    pub across: f64,
+}
+
+/// A solve that placed part of the model, kept to be shown: what was unknown and how it was
+/// free, what was asked, and what settled what.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Solved {
+    pub name: String,
+    #[serde(default)]
+    pub nodes: Vec<SolvedNode>,
+    pub variables: Vec<SolvedVariable>,
+    pub constraints: Vec<SolvedConstraint>,
+}
+
+/// A node of a solve: a named point, fixed in something or with numbers of its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedNode {
+    pub name: String,
+    /// What it is a point of.
+    pub of: String,
+    /// `fixed`, `on a line` (one number), `on a face` (two), or `free`.
+    pub kind: String,
+    pub at: Vec3,
+    pub numbers: Vec<SolvedNumber>,
+}
+
+/// One of a node's numbers: how far it is along a direction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedNumber {
+    pub name: String,
+    pub value: f64,
+    pub dir: Vec3,
+    /// What it is kept between, if it is bounded.
+    pub bounds: Option<(f64, f64)>,
+    pub settled: String,
+}
+
+/// An unknown of a solve: a rigid thing free to move (a frame and its joint), or a number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedVariable {
+    pub name: String,
+    /// `free`, `slider`, `hinge`, `planar` (how a rigid thing may move), or `scalar`.
+    pub kind: String,
+    pub at: Vec3,
+    pub value: Option<f64>,
+    /// For a number that is one of a node's: the node (it is shown with it).
+    #[serde(default)]
+    pub node: Option<String>,
+    pub freedoms: Vec<SolvedFreedom>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedFreedom {
+    pub what: String,
+    /// The direction it moves along, or the axis it turns about.
+    pub dir: Vec3,
+    pub turn: bool,
+    /// What settled it: `hard`, `weight` (it came to rest), `measured`, `hint`, or `open` (nothing did).
+    pub settled: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolvedConstraint {
+    pub name: String,
+    /// `hard`, `measured` or `hint`.
+    pub tier: String,
+    pub kind: String,
+    /// How far it is from holding (metres; radians for directions).
+    pub gap: f64,
+    /// For a one-sided constraint (a contact, a bound): how much room it has; nothing when it is touching.
+    #[serde(default)]
+    pub room: Option<f64>,
+    pub points: Vec<Vec3>,
+    /// The nodes it is between, by name.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    /// The variables it depends on, by name.
+    pub touches: Vec<String>,
+}
+
+/// A face of a member, as geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FacePlane {
+    /// The middle of the face's width, beside the member's first node.
+    pub origin: Vec3,
+    /// Along the member, across the face, and out of it (unit).
+    pub along: Vec3,
+    pub across: Vec3,
+    pub normal: Vec3,
+    pub length: f64,
+    pub half_width: f64,
+}
+
+impl FacePlane {
+    pub fn point(&self, along: f64, across: f64) -> Vec3 {
+        self.origin + self.along * along + self.across * across
+    }
+}
+
+/// A face of a member with these axes, section and anchor (the face's plane follows from them).
+pub fn face_plane(axes: &MemberAxes, section: &Section, anchor: &Anchor, face: Face) -> FacePlane {
+    let bb = section.bbox();
+    // The point of the section that is on the axis; the section's other points are placed from it.
+    let on_axis = (bb.min.x + (anchor.u + 0.5) * bb.width() + anchor.offset.x, bb.min.y + (anchor.v + 0.5) * bb.height() + anchor.offset.y);
+    let (mid_u, mid_v) = (bb.min.x + bb.width() / 2.0 - on_axis.0, bb.min.y + bb.height() / 2.0 - on_axis.1);
+    let (offset, across, normal, half_width) = match face {
+        Face::PlusV => (axes.u * mid_u + axes.v * (mid_v + bb.height() / 2.0), axes.u, axes.v, bb.width() / 2.0),
+        Face::MinusV => (axes.u * mid_u + axes.v * (mid_v - bb.height() / 2.0), axes.u, -axes.v, bb.width() / 2.0),
+        Face::PlusU => (axes.u * (mid_u + bb.width() / 2.0) + axes.v * mid_v, axes.v, axes.u, bb.height() / 2.0),
+        Face::MinusU => (axes.u * (mid_u - bb.width() / 2.0) + axes.v * mid_v, axes.v, -axes.u, bb.height() / 2.0),
+    };
+    FacePlane { origin: axes.origin + offset, along: axes.x, across, normal, length: axes.length, half_width }
 }
 
 /// Named alternatives a script offers (e.g. "current code" vs "as built"),
@@ -327,6 +469,8 @@ pub enum ModelError {
     OutsideMember { member: MemberId, t: f64 },
     NoIntersection { a: MemberId, b: MemberId, gap: f64 },
     Parallel { a: MemberId, b: MemberId },
+    NotOnFace { member: MemberId, face: Face, distance: f64 },
+    OutsideFace { member: MemberId, face: Face, along: f64, across: f64 },
 }
 
 impl fmt::Display for ModelError {
@@ -342,6 +486,8 @@ impl fmt::Display for ModelError {
                 write!(f, "axes of {a} and {b} do not meet (gap {gap:.4} m)")
             }
             ModelError::Parallel { a, b } => write!(f, "{a} and {b} are parallel"),
+            ModelError::NotOnFace { member, face, distance } => write!(f, "point is {distance:.4} m off the {face:?} face of {member}"),
+            ModelError::OutsideFace { member, face, along, across } => write!(f, "point lies outside the {face:?} face of {member} ({along:.4} m along, {across:.4} m across)"),
         }
     }
 }
@@ -379,6 +525,12 @@ pub struct Model {
     pub connections: Vec<Connection>,
     pub joints: Vec<JointSpec>,
     pub bonds: Vec<Bond>,
+    /// Nodes on members' faces (off their axes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+    /// The solves that placed parts of the model, to be shown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solves: Vec<Solved>,
     pub supports: Vec<Support>,
     pub load_cases: Vec<LoadCase>,
     pub loads: Vec<Load>,
@@ -388,12 +540,18 @@ pub struct Model {
     pub issues: Vec<crate::validate::Issue>,
     /// Sheathing and finish build-ups over framing groups.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub surfaces: Vec<crate::surfaces::Surface>,
+    pub buildups: Vec<crate::surfaces::Buildup>,
+    /// What the framing stands on: slabs, curbs (see `solids`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solids: Vec<crate::solids::Solid>,
     /// The drawing set, in sheet order; `None` for the standard set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheets: Option<Vec<crate::sheets::SheetSpec>>,
     #[serde(skip)]
     index: NodeIndex,
+    /// Inside `scoped`: the first node `node_at` may reuse (those made before are another's).
+    #[serde(skip)]
+    join_from: usize,
 }
 
 impl Model {
@@ -503,7 +661,7 @@ impl Model {
             for dy in -1..=1 {
                 for dz in -1..=1 {
                     if let Some(ids) = self.index.cells.get(&(cx + dx, cy + dy, cz + dz)) {
-                        for &id in ids {
+                        for &id in ids.iter().filter(|id| id.idx() >= self.join_from) {
                             let d = self.nodes[id.idx()].pos.distance(pos);
                             if d <= LEN_TOL && best.is_none_or(|(bd, _)| d < bd) {
                                 best = Some((d, id));
@@ -514,6 +672,15 @@ impl Model {
             }
         }
         best.map(|(_, id)| id)
+    }
+
+    /// Runs a generator that joins only what it makes: inside, `node_at` reuses only nodes made
+    /// inside. (Nothing is joined to another's node because it is where that node is.)
+    pub fn scoped<R>(&mut self, f: impl FnOnce(&mut Model) -> R) -> R {
+        let outer = std::mem::replace(&mut self.join_from, self.nodes.len());
+        let r = f(self);
+        self.join_from = outer;
+        r
     }
 
     /// Node at `pos`, reusing an existing coincident node (this is how shared
@@ -625,6 +792,24 @@ impl Model {
         (t, off)
     }
 
+    /// Puts a member's path back in order along it, its ends first and last (after nodes in
+    /// it have moved along it).
+    pub fn sort_path(&mut self, m: MemberId) {
+        let path = &self.members[m.idx()].path;
+        if path.len() < 3 {
+            return;
+        }
+        let (a, b) = (self.pos(path[0]), self.pos(*path.last().unwrap()));
+        let dir = (b - a).normalized();
+        let mut inner: Vec<NodeId> = path[1..path.len() - 1].to_vec();
+        inner.sort_by(|x, y| (self.pos(*x) - a).dot(dir).total_cmp(&(self.pos(*y) - a).dot(dir)));
+        let (first, last) = (path[0], *path.last().unwrap());
+        let mut sorted = vec![first];
+        sorted.extend(inner);
+        sorted.push(last);
+        self.members[m.idx()].path = sorted;
+    }
+
     /// Inserts an existing node into a member's path (making it a connection
     /// point). No-op if already present.
     pub fn insert_node_on(&mut self, m: MemberId, node: NodeId) -> Result<(), ModelError> {
@@ -643,6 +828,84 @@ impl Model {
         let at = ts.iter().position(|&ti| ti > t).unwrap_or(ts.len());
         self.members[m.idx()].path.insert(at, node);
         Ok(())
+    }
+
+    /// Makes two nodes one: everything at `drop` (members' paths, joints, supports, loads, nodes
+    /// on faces) is at `keep` instead. (`drop` is left, at nothing.)
+    pub fn merge_node(&mut self, keep: NodeId, drop: NodeId) {
+        if keep == drop {
+            return;
+        }
+        for m in &mut self.members {
+            for n in m.path.iter_mut().filter(|n| **n == drop) {
+                *n = keep;
+            }
+            m.path.dedup();
+        }
+        if let Some(k) = self.joints.iter().position(|j| j.node == drop) {
+            let j = self.joints.remove(k);
+            let into = self.joint_mut(keep);
+            into.rules.extend(j.rules);
+            into.connections.extend(j.connections);
+        }
+        for s in self.supports.iter_mut().filter(|s| s.node == drop) {
+            s.node = keep;
+        }
+        for l in &mut self.loads {
+            if let crate::loads::Load::Node { node, .. } = l {
+                if *node == drop {
+                    *node = keep;
+                }
+            }
+        }
+        for a in self.attachments.iter_mut().filter(|a| a.node == drop) {
+            a.node = keep;
+        }
+        if self.nodes[keep.idx()].name.is_none() {
+            self.nodes[keep.idx()].name = self.nodes[drop.idx()].name.take();
+        }
+    }
+
+    /// Drops the nodes nothing is at (no member's path, joint, support, load or node on a face
+    /// refers to them, and they have no name), and numbers the rest again, in order.
+    pub fn compact_nodes(&mut self) {
+        let mut used = vec![false; self.nodes.len()];
+        let mut mark = |n: NodeId| used[n.idx()] = true;
+        self.members.iter().flat_map(|m| m.path.iter()).for_each(|&n| mark(n));
+        self.joints.iter().for_each(|j| mark(j.node));
+        self.supports.iter().for_each(|s| mark(s.node));
+        self.attachments.iter().for_each(|a| mark(a.node));
+        for l in &self.loads {
+            if let crate::loads::Load::Node { node, .. } = l {
+                mark(*node);
+            }
+        }
+        for (k, n) in self.nodes.iter().enumerate() {
+            used[k] |= n.name.is_some();
+        }
+        if used.iter().all(|&u| u) {
+            return;
+        }
+        let mut to = vec![NodeId(u32::MAX); self.nodes.len()];
+        let mut kept = vec![];
+        for (k, n) in std::mem::take(&mut self.nodes).into_iter().enumerate() {
+            if used[k] {
+                to[k] = NodeId(kept.len() as u32);
+                kept.push(Node { id: to[k], ..n });
+            }
+        }
+        self.nodes = kept;
+        let map = |n: &mut NodeId| *n = to[n.idx()];
+        self.members.iter_mut().flat_map(|m| m.path.iter_mut()).for_each(map);
+        self.joints.iter_mut().for_each(|j| map(&mut j.node));
+        self.supports.iter_mut().for_each(|s| map(&mut s.node));
+        self.attachments.iter_mut().for_each(|a| map(&mut a.node));
+        for l in &mut self.loads {
+            if let crate::loads::Load::Node { node, .. } = l {
+                map(node);
+            }
+        }
+        self.reset_index();
     }
 
     /// Node on member `m` at point `p` (creating/reusing a node and inserting it into the path).
@@ -705,6 +968,65 @@ impl Model {
 
     pub fn bond(&mut self, a: MemberId, b: MemberId, connection: ConnectionId) {
         self.bonds.push(Bond { a, b, connection });
+    }
+
+    /// A face of a member: where it is, from the member's axes, section and anchor.
+    pub fn face(&self, member: MemberId, face: Face) -> FacePlane {
+        let m = self.member(member);
+        face_plane(&self.member_axes(member), self.section(m.section), &m.anchor, face)
+    }
+
+    /// The face of a member that faces most nearly `toward`.
+    pub fn face_toward(&self, member: MemberId, toward: Vec3) -> Face {
+        [Face::PlusU, Face::MinusU, Face::PlusV, Face::MinusV].into_iter().max_by(|&a, &b| self.face(member, a).normal.dot(toward).total_cmp(&self.face(member, b).normal.dot(toward))).unwrap()
+    }
+
+    /// Joins an existing node to a member at one of its faces: the node has to be on that
+    /// face (which reaches past the member's end nodes as far as its section is big: as far as
+    /// a joint there may run it past them). Where the node is on the member's axis (the axis
+    /// being in that face), it goes into the member's path instead, as any node on an axis
+    /// does, and `None` is returned.
+    pub fn attach(&mut self, node: NodeId, member: MemberId, face: Face) -> Result<Option<Attachment>, ModelError> {
+        if self.member(member).path.contains(&node) {
+            return Ok(None);
+        }
+        if let Some(a) = self.attachments.iter().find(|a| a.node == node && a.member == member) {
+            return Ok(Some(*a));
+        }
+        let (f, p) = (self.face(member, face), self.pos(node));
+        let d = p - f.origin;
+        let (along, across, off) = (d.dot(f.along), d.dot(f.across), d.dot(f.normal));
+        if off.abs() > LEN_TOL {
+            return Err(ModelError::NotOnFace { member, face, distance: off.abs() });
+        }
+        let past = self.face_reach(member);
+        if along < -past - LEN_TOL || along > f.length + past + LEN_TOL || across.abs() > f.half_width + LEN_TOL {
+            return Err(ModelError::OutsideFace { member, face, along, across });
+        }
+        if self.insert_node_on(member, node).is_ok() {
+            return Ok(None);
+        }
+        let a = Attachment { node, member, face, along, across };
+        self.attachments.push(a);
+        Ok(Some(a))
+    }
+
+    /// How far a member's faces reach past its end nodes: its section's larger size.
+    pub fn face_reach(&self, member: MemberId) -> f64 {
+        let bb = self.section(self.member(member).section).bbox();
+        bb.width().max(bb.height())
+    }
+
+    /// A node on a member's face, `along` it from its first node and `across` it from its middle.
+    pub fn node_on_face(&mut self, member: MemberId, face: Face, along: f64, across: f64) -> Result<NodeId, ModelError> {
+        let n = self.node_at(self.face(member, face).point(along, across));
+        self.attach(n, member, face)?;
+        Ok(n)
+    }
+
+    /// The members a node is on the face of.
+    pub fn attached_at(&self, node: NodeId) -> impl Iterator<Item = &Attachment> {
+        self.attachments.iter().filter(move |a| a.node == node)
     }
 
     /// Connects every member in `a` with every member in `b` where their axes
@@ -777,6 +1099,18 @@ impl Model {
         });
         let mut parts = vec![local];
         let mut g = m.group;
+        while let Some(id) = g {
+            parts.push(self.groups[id.idx()].name.clone());
+            g = self.groups[id.idx()].parent;
+        }
+        parts.reverse();
+        parts.join("/")
+    }
+
+    /// Full path of a solid: its group chain then its name (`Garage/Walls/East wall/curb`).
+    pub fn solid_path(&self, s: &crate::solids::Solid) -> String {
+        let mut parts = vec![s.name.clone()];
+        let mut g = s.group;
         while let Some(id) = g {
             parts.push(self.groups[id.idx()].name.clone());
             g = self.groups[id.idx()].parent;
@@ -874,6 +1208,37 @@ mod tests {
         assert!(m.member(a).path.contains(&n) && m.member(b).path.contains(&n));
         let c = m.add_member_between(v3(0., 0., 1.), v3(4., 0., 1.), &spec);
         assert!(matches!(m.intersect(a, c), Err(ModelError::Parallel { .. })));
+    }
+
+    #[test]
+    fn a_node_on_a_face_is_two_numbers_and_the_member() {
+        // A beam along x with its axis through its middle; its depth is up.
+        let (mut m, spec) = simple_model();
+        let beam = m.add_member_between(v3(0., 0., 0.), v3(4., 0., 0.), &spec);
+        let bb = m.section(m.member(beam).section).bbox();
+        let (w, d) = (bb.width(), bb.height());
+        let top = m.face_toward(beam, Vec3::Z);
+        let f = m.face(beam, top);
+        assert!((f.origin - v3(0., 0., d / 2.0)).norm() < 1e-12 && (f.half_width - w / 2.0).abs() < 1e-12 && f.normal.dot(Vec3::Z) > 0.999);
+        // A node on it: 1 m along and a little to one side. It is not on the axis, so not in the path.
+        let n = m.node_on_face(beam, top, 1.0, 0.01).unwrap();
+        assert!((m.pos(n) - f.point(1.0, 0.01)).norm() < 1e-12 && !m.member(beam).path.contains(&n));
+        assert_eq!(m.attached_at(n).map(|a| (a.member, a.along, a.across)).collect::<Vec<_>>(), [(beam, 1.0, 0.01)]);
+        // The numbers are free only within the face.
+        assert!(matches!(m.node_on_face(beam, top, 1.0, w), Err(ModelError::OutsideFace { .. })));
+        assert!(matches!(m.node_on_face(beam, top, 4.5, 0.0), Err(ModelError::OutsideFace { .. })));
+        let off = m.node_at(v3(2.0, 0.0, d));
+        assert!(matches!(m.attach(off, beam, top), Err(ModelError::NotOnFace { .. })));
+        // The plane follows the member: sat on its own bottom, its top is a depth up, and the node is no longer on it.
+        assert!(crate::validate(&m, &crate::Topology::build(&m)).iter().all(|i| !i.code.starts_with("attachment")));
+        m.members[beam.idx()].anchor = Anchor::body_toward(&m.member_axes(beam), None, Some(Vec3::Z));
+        assert!((m.face(beam, top).origin - v3(0., 0., d)).norm() < 1e-12);
+        assert!(crate::validate(&m, &crate::Topology::build(&m)).iter().any(|i| i.code == "attachment-off-face"));
+
+        // Where the axis is in the face, a node on the axis there is simply in the path.
+        let plate = m.add_member_between(v3(0., 1., 0.), v3(4., 1., 0.), &spec.clone().anchor(Anchor { u: 0.0, v: 0.5, offset: Vec2::ZERO }));
+        let n = m.node_on_face(plate, m.face_toward(plate, Vec3::Z), 2.0, 0.0).unwrap();
+        assert!(m.member(plate).path.contains(&n) && m.attached_at(n).next().is_none());
     }
 
     #[test]

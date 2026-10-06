@@ -46,12 +46,25 @@ pub struct Coupling {
     pub b: MemberId,
 }
 
+/// A node on a member's face, held to the member's axis as by a rigid arm: from
+/// `Model::attachments`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Link {
+    pub node: NodeId,
+    pub member: MemberId,
+    /// Where the arm meets the axis, from the member's first node.
+    pub along: f64,
+    /// From there to the node.
+    pub arm: Vec3,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AnalysisModel {
     pub nodes: Vec<ANode>,
     pub elements: Vec<Element>,
     pub supports: Vec<Support>,
     pub couplings: Vec<Coupling>,
+    pub links: Vec<Link>,
 }
 
 impl AnalysisModel {
@@ -107,6 +120,12 @@ impl AnalysisModel {
         }
         let nodes = model.nodes.iter().filter(|n| used[n.id.idx()]).map(|n| ANode { id: n.id, pos: n.pos }).collect();
         let couplings = model.bonds.iter().map(|b| Coupling { a: b.a, b: b.b }).collect();
-        AnalysisModel { nodes, elements, supports: model.supports.clone(), couplings }
+        let links = (model.attachments.iter())
+            .map(|a| {
+                let axes = model.member_axes(a.member);
+                Link { node: a.node, member: a.member, along: a.along, arm: model.pos(a.node) - (axes.origin + axes.x * a.along) }
+            })
+            .collect();
+        AnalysisModel { nodes, elements, supports: model.supports.clone(), couplings, links }
     }
 }

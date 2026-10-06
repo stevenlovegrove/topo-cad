@@ -103,10 +103,11 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
 
     for j in &model.joints {
         let junction = topo.junction(j.node);
-        let at = |m: MemberId| junction.get(m).is_some();
+        // (A member is at a node that is on its axis or on one of its faces.)
+        let at = |m: MemberId| junction.get(m).is_some() || model.attached_at(j.node).any(|a| a.member == m);
         for r in &j.rules {
             let ms: Vec<MemberId> = match r {
-                JointRule::Butt { member, against } => vec![*member, *against],
+                JointRule::Butt { member, against } | JointRule::ButtFace { member, against, .. } => vec![*member, *against],
                 JointRule::Through { member }
                 | JointRule::Square { member }
                 | JointRule::Plane { member, .. }
@@ -131,6 +132,17 @@ pub fn validate(model: &Model, topo: &Topology) -> Vec<Issue> {
                         .members([c.member]),
                 );
             }
+        }
+    }
+
+    // A node on a member's face is where the member (as it now is) puts that point of its face.
+    for a in &model.attachments {
+        let f = model.face(a.member, a.face);
+        let off = model.pos(a.node).distance(f.point(a.along, a.across));
+        if off > LEN_TOL {
+            out.push(Issue::new(Severity::Error, "attachment-off-face", format!("{} is {off:.4} m from where it is on the {:?} face of {}", a.node, a.face, a.member)).nodes([a.node]).members([a.member]));
+        } else if a.along < -model.face_reach(a.member) - LEN_TOL || a.along > f.length + model.face_reach(a.member) + LEN_TOL || a.across.abs() > f.half_width + LEN_TOL {
+            out.push(Issue::new(Severity::Error, "attachment-outside-face", format!("{} is outside the {:?} face of {}", a.node, a.face, a.member)).nodes([a.node]).members([a.member]));
         }
     }
 

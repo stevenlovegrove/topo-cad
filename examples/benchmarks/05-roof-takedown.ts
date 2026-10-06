@@ -22,9 +22,9 @@ const walls = Perimeter.start("Walls", [0, 0])
   .close(wall.named("West wall"));
 
 // Trusses span east (spanDir) and repeat along the ridge, to the right of
-// the span direction (here southward), starting from the origin.
+// the span direction (here southward), set out from the north-west corner.
 const roof = TrussRoof.fink({
-  origin: [0, depth],
+  at: walls.corner(4),
   spanDir: [1, 0],
   span: width,
   length: depth,

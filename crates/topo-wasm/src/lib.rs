@@ -62,6 +62,7 @@ impl Project {
         let mut v = validate(&self.model, &self.topo);
         v.extend(self.geom.issues.iter().cloned());
         v.extend(self.geom.clash_issues());
+        v.extend(self.geom.solid_clash_issues(&self.model));
         v.extend(self.geom.bearing_issues(&self.model));
         v.extend(topo_analysis::load_path_issues(&self.model, &self.topo, &self.geom));
         serde_json::to_string(&v).unwrap()
