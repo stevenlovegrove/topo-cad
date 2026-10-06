@@ -272,9 +272,11 @@ and then its checks read that state too:
   view overlays the deflected shape with an exaggeration slider; sheets take
   `deflection(...)` views.
 
-Next: lateral loads (wind, seismic), sheathing and shear walls (SDPWS),
-hold-downs and straps from part catalogs, and a 3D frame solver for irregular
-and as-built conditions.
+Next: the lumber checks read the as-loaded state and the takedown goes
+(what is missing for that, in order, is in
+[docs/unified-plan.md](docs/unified-plan.md)); then lateral loads (wind,
+seismic), sheathing and shear walls (SDPWS), hold-downs and straps from
+part catalogs.
 
 ## 7. Crates
 
@@ -394,12 +396,34 @@ project from its files. Everything is computed client-side:
 
 ## 9. Roadmap
 
-* **M1 (this):** core IR + topology + geometry + clash + SVG/DXF sheets +
-  schedules; timber walls (openings, corners, T-walls) and floor platforms;
-  analytical extraction; WASM build.
-* **M2:** loads → tributary takedown → NDS member checks + ASCE 7 ASD combos →
-  calc report; frame solver.
-* **M3:** features (notches, birdsmouth, tube copes, drilled holes), roofs.
-* **Beyond buildings (started):** tube and extrusion frames with a 3D frame
-  analysis. Next there: butted and tapered tubes, non-round sections along a
-  member, connector stiffness from test data, fatigue, laminates by ply.
+The plan for the model as one problem, where it stands and what is missing
+in order, is [docs/unified-plan.md](docs/unified-plan.md);
+[docs/constraints.md](docs/constraints.md) describes the solve that places
+things, and [docs/scan-workspace.md](docs/scan-workspace.md) the scan
+workspace and its own status table.
+
+* **Done.** Core IR, topology, geometry, clash, SVG/DXF sheets and
+  schedules; the app in the browser. Walls, perimeters, slabs, floors,
+  stairs, trusses and roofs as generators of one scene, placed by one
+  tiered solve, with readings as constraints of it. Gravity takedown, NDS
+  member and nailed-connection checks, ASCE 7 combinations, with traces and
+  sourced data. The scan workspace.
+* **Done, beyond buildings.** `Model` beside `Building`; tube, bar and
+  T-slot sections; metals and laminates; made joints and catalog
+  connectors; a 3D frame analysis and checks by plain mechanics; a bike and
+  a kids' cart as examples.
+* **Half done: loads on the graph.** Every model has an as-loaded state
+  (its graph as an elastic frame, bearing one-sided, unbraced directions
+  held and reported). Buildings' checks still read the takedown. Missing,
+  in order: joint forces as reactions; the lumber checks on the as-loaded
+  state; the takedown retired.
+* **Not started.** Loads and deflection inside the solve that places
+  things; the scan as evidence in that solve; lateral loads, sheathing and
+  shear walls, hold-downs from part catalogs.
+* **Smaller gaps.** Features (notches, birdsmouths, tube copes, drilled
+  holes); corner backing where walls step; hip and valley framing. For
+  tube and extrusion frames: butted and tapered tubes, connector stiffness
+  from test data (no maker publishes it), fatigue, laminates by ply.
+  Reference data not yet verified by eye: 4130 steel and the carbon fabric
+  laminate; no strength was found for chromoly beside a weld or braze, and
+  no rating for a T-slot joining plate.

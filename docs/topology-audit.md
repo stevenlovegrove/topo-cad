@@ -176,10 +176,13 @@ Steps 1 and 2 answer the case that prompted this. Steps 5 to 7 are what
 
 ## Since
 
-- Step 6, for models that ask for it (`analysis: "frame"`): the extracted
-  analytical model is solved as a 3D frame, supports' restraints and
-  connections' fixities read, node displacements given. Buildings still
-  use the takedown.
+- Steps 6 and 7 of this list, in part: the extracted analytical model is
+  solved as a 3D frame for every model (the as-loaded state), supports'
+  restraints and connections' fixities read, node displacements given, so
+  a deformed shape exists to set against a scan. The checks read it for
+  models that ask (`analysis: "frame"`); buildings' checks still use the
+  takedown, with its rules by role name and bounding box. What is left is
+  in [unified-plan.md](unified-plan.md), "What is missing".
 
 - Truss roofs are no longer given a height or `raised`: they sit on what
   the script says they bear on, wherever it is under them, and are

@@ -869,6 +869,11 @@ articulated-body formulations; no outside solver is used.
 
 ## Not yet
 
+- **Loads are not in this solve.** Things are placed rigid; what they do
+  under load is a second solve of the same graph (the as-loaded state:
+  [unified-plan.md](unified-plan.md), step 7), which moves nothing here.
+  One-sided contact and weight, which this solver has, are still unused by
+  the model.
 - **The roof's layers do not follow a tilted truss.**
 - **Checks a script asks for** (a ruleset): rules particular to a kind of
   building or a code, kept out of the generic model.

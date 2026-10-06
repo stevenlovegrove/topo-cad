@@ -57,13 +57,80 @@ positions because the solve found them.
   a trade (trusses bear at panel points, studs at 16 inches) is a
   generator's default, a hint, or a check the script asks for.
 
+## Where things stand (2026-10-05)
+
+Everything below is on `main`.
+
+**Placing things (steps 1 to 6½): done.** One scene of bodies, nodes and
+relations, solved in strict tiers, then written into the model, which keeps
+the solve. Perimeters, walls, studs, slabs, floors, trusses and roofs are in
+it; readings (tape, survey, scan points) are measured constraints of it.
+
+**Loads (step 7): half done, as a second stage on the same graph.** The
+solve that places things is rigid and is not touched by loads. About the
+placement it finds, every model's graph is solved again as an elastic frame
+under its loads: the **as-loaded state** (`topo_analysis::loaded`). It is
+shown (the deflected shape in both 3D views, its findings among the
+issues) and tested (every example in equilibrium), and for a model that
+asks for `analysis: "frame"` (a bike, a cart) the checks read it. For
+buildings the checks still read the takedown.
+
+**Not only buildings.** `Model.named(...)` beside `Building.named(...)`;
+round and box tube and T-slot profile sections; metals and laminates with
+sourced strengths; joints made by a process or a catalog connector, said
+per assembly, per point, or with a `coincide` between bodies; checks by
+plain mechanics where no design code applies. See
+[DESIGN.md](../DESIGN.md), "Frames".
+
+### What is missing, in the order it would be done
+
+1. **Joint forces as reactions.** The as-loaded state gives forces along
+   members and at supports. What one member puts on another at a joint or
+   a bearing point is in the solution and is not yet reported: the
+   bearing and nailed-connection checks need it.
+2. **The lumber checks on the as-loaded state.** Bending, shear,
+   compression, bearing and nailed connections (NDS) from the frame's
+   forces instead of the takedown's. Every building's ratios will change;
+   the two are to be run side by side and the differences looked at
+   before the switch.
+3. **The takedown retired.** With it go its rules by role name and by
+   bounding box (which member is a beam or a column, what bears on what),
+   and the load-path review that depends on them. (It also loses a little
+   load in primitive 6: 4,967 N given back of 5,073 N applied. Not
+   looked into.)
+4. **What the as-loaded state does not yet model.**
+   - A bearing point that is a node on both members' axes has no arm, and
+     cannot lift.
+   - Sheathing is not a diaphragm: what it braces is held and reported,
+     not carried.
+   - Members bonded face to face are tied solid; a nailed bond that slips
+     is not modelled.
+   - A section anchored off its axis is analysed on its node line.
+   - Lateral loads (wind, seismic) are not generated.
+   - It is linear, about the placed geometry: no buckling shape, no
+     second-order effect.
+5. **A known gap in an example.** The stairs (primitive 21) are joined to
+   nothing at their head: against the floor's header only by where they
+   are. The as-loaded state reports it; the stairs generator should state
+   that contact.
+6. **Loads and deflection in the one solve (steps 7 and 8 as first
+   written).** One-sided contact with weight in `topo-solve`, and bodies
+   that deform there, so that a sag feeds back into where things sit and
+   "unloaded" and "as loaded" are two states of one solve. Set aside by
+   decision (below); what the second stage has built (beam elements
+   between the graph's nodes, joints as fixities, arms to bearing points,
+   contacts let go when pulled) is what that solve would need.
+7. **The scan as evidence in the solve (step 9).** With an as-loaded
+   state, a scan of a loaded building can be compared with the model as
+   loaded; feeding it in as measured constraints waits on 6.
+
 ## What is not yet this
 
 | Today | What it should be |
 | --- | --- |
 | Where two walls meet at a step, the lower wall's plies end on the side of the taller wall's end stud | Corner framing (backing) for steps |
-| Member checks are computed from a takedown beside the model, by rule from geometry and role names. Beside it, every model now has an **as loaded** state: its graph solved as an elastic frame under the same loads (see step 7) | The checks read the as-loaded state; the takedown gone |
-| Members are perfectly rigid in the solve that places them. A model that asks for `analysis: "frame"` (a bike, a cart: `Model.named`) has its graph solved again as an elastic 3D frame, beside that solve: node displacements and member forces under each load case, from the analytical extract (fixity from connections, supports' restraints, nodes on faces held by rigid arms) | Bodies may deform: deflection under the same loads, in the same solve; the takedown gone |
+| A building's member checks are computed from a takedown beside the model, by rule from geometry and role names | The checks read the as-loaded state; the takedown gone |
+| The as-loaded state is a second solve about the placed geometry: members are rigid in the solve that places them, and a deflection does not move anything | Bodies deform in the one solve: deflection under the same loads, feeding back into where things sit |
 | The scan is compared with the model after the fact | Scan evidence is measured constraints |
 
 ## The order of work
@@ -164,13 +231,19 @@ Each step leaves everything working and removes one row above.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
    reads them. *Decided (2026-10-05): as a second stage on the same
-   graph, for now.* The solve that places things is not touched; about
-   that placement the graph is solved as an elastic frame
-   (`topo-analysis`, `frame`), for every model:
+   graph, for now*, not in `topo-solve`: putting it there risks the
+   buildings' placement (one-sided contact changes how things are placed;
+   deformation in hard constraints can absorb a misfit that is refused
+   today; parts that are separate problems become one), and the second
+   stage is purely additive. The solve that places things is not touched;
+   about that placement the graph is solved as an elastic frame
+   (`topo-analysis`: `frame`, `frame3d`), for every model.
    - *Done:* every member a beam through its path's nodes; ends held as
-     their connections say; a bearing point (a node on a face) held to its
-     member's axis by a rigid arm; members bonded face to face tied all
-     along where they lie together; loads as the takedown shares them out.
+     their connections say (rigid, pinned, or on a connector's spring); a
+     bearing point (a node on a face) held to its member's axis by a rigid
+     arm; members bonded face to face tied all along where they lie
+     together; supports hold the directions they say; loads as the
+     takedown shares them out, and forces and moments at nodes.
    - *Done:* **bearing points press and cannot pull.** Each case is solved
      with them all held (so cases add up); a combination that would pull
      on some is solved again as a whole with those let go, until none
@@ -179,24 +252,18 @@ Each step leaves everything working and removes one row above.
      direction nothing resists (a wall racking, a truss falling sideways)
      is held; what holding it takes is reported, and one that takes real
      force or moment is a warning: something is not joined to what carries
-     it. (It found that the stairs of primitive 21 are against the floor's
-     header only by where they are.)
+     it. A model that says it is a frame is held to more: any such
+     direction with load on it is an error.
    - *Done:* every example is in equilibrium as loaded, case by case and
-     combination by combination, carrying what the takedown carries.
-   - *Not yet:* the member checks read the takedown still; forces between
-     members at their joints are not yet given as reactions; a bearing
-     point that is a node on both axes (no arm) cannot lift; sheathing is
-     not a diaphragm.
+     combination by combination, carrying what the takedown carries
+     (tested); the 3D views draw the deflected shape.
+   - *Not yet:* see "What is missing" above, 1 to 5.
 8. **Deformable bodies.** Deflection under load in the same solve, so a
    sagged or tilted as-built state is a solution, and "unloaded" and
-   "as loaded" are two states of one model. *A start, beside the solve:*
-   `topo-analysis`'s `frame` solves the graph as an elastic frame for
-   models that ask for it (see [DESIGN.md](../DESIGN.md), "Frames"). It is
-   linear, about the placed geometry, and does not feed back into where
-   things are; what it shows (beam elements between the graph's nodes,
-   connections as end fixities, arms to nodes on faces) is the stiffness
-   this step needs in the one solve.
-9. **The scan as evidence in the solve.**
+   "as loaded" are two states of one model. *Not started in the solve.*
+   The as-loaded state is the same physics beside it: linear, about the
+   placed geometry, feeding nothing back.
+9. **The scan as evidence in the solve.** *Not started.*
 
 Along the way, as each needs it: the script API for named nodes; scopes
 solved once and reused (definitions); a sparse step for large components;
@@ -207,6 +274,16 @@ checks a script asks for (rulesets).
 - **Weight (for step 7).** Where it sits among the tiers (proposed: after
   hard, before measured), and what it acts on (proposed: bodies' poses
   only, never a shape parameter).
+- **Switching the checks.** The lumber checks on the as-loaded state will
+  not give the takedown's numbers (continuous plates, shared load between
+  bonded members, trusses on plates that give). Which differences are the
+  takedown's simplifications and which are the frame's is to be judged
+  example by example before the takedown goes.
+- **Bracing.** Whether sheathing becomes a part of the graph (a diaphragm
+  that carries what is now only held), and what its stiffness is from.
+- **When the one solve.** What would have to be true of the second stage
+  (speed on a whole building, the checks trusted) before deformation moves
+  into `topo-solve`.
 - **Edges of a face.** A tilted chord on a flat plate touches along an
   edge. Proposed: a contact at each edge of the supporting face (as
   seating does now), the bearing node in the middle of what is touched.

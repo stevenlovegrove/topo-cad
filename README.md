@@ -80,8 +80,14 @@ ratings) with the same traces and sourced data
 ([materials](crates/topo-data/data/materials.json),
 [joint zones](crates/topo-data/data/joint-zones.json),
 [T-slot profiles](crates/topo-data/data/tslot-profiles.json) and
-[connectors](crates/topo-data/data/tslot-connectors.json)). The 3D tab
-shows the deflected shape; `deflection(...)` puts it on a sheet.
+[connectors](crates/topo-data/data/tslot-connectors.json)). The 3D
+views show the deflected shape; `deflection(...)` puts it on a sheet.
+
+Every model, buildings too, has that deflected shape: its graph is solved
+as an elastic frame under its loads beside whatever its checks use (the
+*as-loaded state*). A building's checks still come from the gravity
+takedown; what is done and what is missing is in
+[docs/unified-plan.md](docs/unified-plan.md).
 
 The drawing set is code too: `.sheets(standardSheets("cover"), sheet("S-102",
 "Typical truss", elevation(roof.truss(2)), detail(heel, [roof.truss(2), walls],
