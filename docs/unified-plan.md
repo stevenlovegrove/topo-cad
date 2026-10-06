@@ -62,7 +62,7 @@ positions because the solve found them.
 | Today | What it should be |
 | --- | --- |
 | Where two walls meet at a step, the lower wall's plies end on the side of the taller wall's end stud | Corner framing (backing) for steps |
-| Loads, load path and member checks are computed beside the model from its geometry | Loads act on nodes and members of the one graph; reactions are the contacts' forces |
+| Member checks are computed from a takedown beside the model, by rule from geometry and role names. Beside it, every model now has an **as loaded** state: its graph solved as an elastic frame under the same loads (see step 7) | The checks read the as-loaded state; the takedown gone |
 | Members are perfectly rigid in the solve that places them. A model that asks for `analysis: "frame"` (a bike, a cart: `Model.named`) has its graph solved again as an elastic 3D frame, beside that solve: node displacements and member forces under each load case, from the analytical extract (fixity from connections, supports' restraints, nodes on faces held by rigid arms) | Bodies may deform: deflection under the same loads, in the same solve; the takedown gone |
 | The scan is compared with the model after the fact | Scan evidence is measured constraints |
 
@@ -163,7 +163,30 @@ Each step leaves everything working and removes one row above.
    a part. *Not yet:* hip and valley framing; planes fitted to a scan.
 7. **Loads in the graph.** Loads on nodes and members; contact becomes
    one-sided, with weight; reactions from the contacts; the takedown
-   reads them.
+   reads them. *Decided (2026-10-05): as a second stage on the same
+   graph, for now.* The solve that places things is not touched; about
+   that placement the graph is solved as an elastic frame
+   (`topo-analysis`, `frame`), for every model:
+   - *Done:* every member a beam through its path's nodes; ends held as
+     their connections say; a bearing point (a node on a face) held to its
+     member's axis by a rigid arm; members bonded face to face tied all
+     along where they lie together; loads as the takedown shares them out.
+   - *Done:* **bearing points press and cannot pull.** Each case is solved
+     with them all held (so cases add up); a combination that would pull
+     on some is solved again as a whole with those let go, until none
+     pulls and none let go has closed again (`Takedown::combined`).
+   - *Done:* **what the framing does not brace is held, and said.** A
+     direction nothing resists (a wall racking, a truss falling sideways)
+     is held; what holding it takes is reported, and one that takes real
+     force or moment is a warning: something is not joined to what carries
+     it. (It found that the stairs of primitive 21 are against the floor's
+     header only by where they are.)
+   - *Done:* every example is in equilibrium as loaded, case by case and
+     combination by combination, carrying what the takedown carries.
+   - *Not yet:* the member checks read the takedown still; forces between
+     members at their joints are not yet given as reactions; a bearing
+     point that is a node on both axes (no arm) cannot lift; sheathing is
+     not a diaphragm.
 8. **Deformable bodies.** Deflection under load in the same solve, so a
    sagged or tilted as-built state is a solution, and "unloaded" and
    "as loaded" are two states of one model. *A start, beside the solve:*

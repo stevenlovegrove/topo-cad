@@ -150,11 +150,11 @@ pub struct Reaction {
 }
 
 #[derive(Clone, Debug, Default)]
-struct Loading {
+pub(crate) struct Loading {
     /// (t, force) point loads.
-    points: Vec<(f64, Vec3, Option<MemberId>)>,
+    pub(crate) points: Vec<(f64, Vec3, Option<MemberId>)>,
     /// (t0, t1, w0, w1) line loads per unit member length.
-    lines: Vec<(f64, f64, Vec3, Vec3)>,
+    pub(crate) lines: Vec<(f64, f64, Vec3, Vec3)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -168,6 +168,21 @@ pub struct Takedown {
     /// Total vertical load applied per case (N, downward positive).
     pub applied: Vec<f64>,
     pub issues: Vec<Issue>,
+    /// Combinations that do not add up from their cases, solved as a whole: under them some
+    /// bearing points lift (they press and cannot pull), and what is left carries the load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub combined: Vec<Combined>,
+}
+
+/// A load combination solved as a whole.
+#[derive(Clone, Debug, Serialize)]
+pub struct Combined {
+    pub name: String,
+    pub factors: Vec<(LoadCaseId, f64)>,
+    pub diagrams: Vec<Diagram>,
+    pub reactions: Vec<Reaction>,
+    /// How many bearing points lifted.
+    pub lifted: usize,
 }
 
 /// Axis of a member: start point, unit direction, length.
@@ -351,6 +366,71 @@ fn sample_points(len: f64, keys: &[f64]) -> Vec<f64> {
     t
 }
 
+/// The loads as they act on members, per case: self-weight, loads along members, surface loads
+/// shared out to what receives them by tributary width, and point loads at nodes; and the total
+/// weight applied per case (N, downward positive).
+pub(crate) fn applied_loading(model: &Model, issues: &mut Vec<Issue>) -> (Vec<Vec<Loading>>, Vec<f64>) {
+    let (nm, nc) = (model.members.len(), model.load_cases.len());
+    let mut loading: Vec<Vec<Loading>> = vec![vec![Loading::default(); nm]; nc];
+    let mut applied = vec![0.0; nc];
+    for (ci, case) in model.load_cases.iter().enumerate() {
+        if case.self_weight {
+            for m in &model.members {
+                let (_, _, l) = axis(model, m.id);
+                let w = model.material(m.material).density * G * model.section(m.section).props.area;
+                loading[ci][m.id.idx()].lines.push((0.0, l, Vec3::Z * -w, Vec3::Z * -w));
+                applied[ci] += w * l;
+            }
+        }
+    }
+    for load in &model.loads {
+        match load {
+            Load::Area { case, group, pressure, direction, basis, .. } => {
+                let ci = case.idx();
+                let rs = receivers(model, *group);
+                if rs.is_empty() {
+                    issues.push(Issue::new(Severity::Warning, "area-load-unassigned", format!("area load on {} has no receiving members (rafters, truss top chords or joists)", model.group(*group).name)));
+                    continue;
+                }
+                let trib = tributary(model, &rs);
+                for m in rs {
+                    let (_, x, l) = axis(model, m);
+                    let cos = (1.0 - x.z * x.z).sqrt();
+                    let per_len = match basis {
+                        AreaBasis::Plan => pressure * trib[&m] * cos,
+                        AreaBasis::Surface => pressure * trib[&m],
+                    };
+                    let w = direction.normalized() * per_len;
+                    loading[ci][m.idx()].lines.push((0.0, l, w, w));
+                    applied[ci] += -w.z * l;
+                }
+            }
+            Load::MemberUniform { case, member, w, range } => {
+                let (_, _, l) = axis(model, *member);
+                let (t0, t1) = range.map(|(a, b)| (a.clamp(0.0, l), b.clamp(0.0, l))).unwrap_or((0.0, l));
+                if t1 > t0 {
+                    loading[case.idx()][member.idx()].lines.push((t0, t1, *w, *w));
+                    applied[case.idx()] += -w.z * (t1 - t0);
+                }
+            }
+            Load::Node { case, node, force, .. } => {
+                if let Some(m) = model.members.iter().find(|m| m.path.contains(node)) {
+                    let t = param(model, m.id, model.pos(*node));
+                    loading[case.idx()][m.id.idx()].points.push((t, *force, None));
+                    applied[case.idx()] += -force.z;
+                }
+            }
+        }
+    }
+
+    (loading, applied)
+}
+
+/// The model as loaded: its graph solved as an elastic frame, whatever analysis its checks use.
+pub fn loaded(model: &Model, topo: &Topology, geom: &Geometry) -> Takedown {
+    crate::frame::frame(model, topo, geom)
+}
+
 /// The analysis a model asks for: the gravity takedown, or one 3D frame
 /// (`Standards::analysis`). Both give forces along every member per load case.
 pub fn takedown(model: &Model, topo: &Topology, geom: &Geometry) -> Takedown {
@@ -429,58 +509,7 @@ pub fn takedown(model: &Model, topo: &Topology, geom: &Geometry) -> Takedown {
         issues.push(Issue::new(Severity::Warning, "support-cycle", format!("{} members support each other in a cycle; their loads are not taken down", stuck.len())).members(stuck));
     }
 
-    // ----- applied loads ---------------------------------------------------------
-    let mut loading: Vec<Vec<Loading>> = vec![vec![Loading::default(); nm]; nc];
-    let mut applied = vec![0.0; nc];
-    for (ci, case) in model.load_cases.iter().enumerate() {
-        if case.self_weight {
-            for m in &model.members {
-                let (_, _, l) = axis(model, m.id);
-                let w = model.material(m.material).density * G * model.section(m.section).props.area;
-                loading[ci][m.id.idx()].lines.push((0.0, l, Vec3::Z * -w, Vec3::Z * -w));
-                applied[ci] += w * l;
-            }
-        }
-    }
-    for load in &model.loads {
-        match load {
-            Load::Area { case, group, pressure, direction, basis, .. } => {
-                let ci = case.idx();
-                let rs = receivers(model, *group);
-                if rs.is_empty() {
-                    issues.push(Issue::new(Severity::Warning, "area-load-unassigned", format!("area load on {} has no receiving members (rafters, truss top chords or joists)", model.group(*group).name)));
-                    continue;
-                }
-                let trib = tributary(model, &rs);
-                for m in rs {
-                    let (_, x, l) = axis(model, m);
-                    let cos = (1.0 - x.z * x.z).sqrt();
-                    let per_len = match basis {
-                        AreaBasis::Plan => pressure * trib[&m] * cos,
-                        AreaBasis::Surface => pressure * trib[&m],
-                    };
-                    let w = direction.normalized() * per_len;
-                    loading[ci][m.idx()].lines.push((0.0, l, w, w));
-                    applied[ci] += -w.z * l;
-                }
-            }
-            Load::MemberUniform { case, member, w, range } => {
-                let (_, _, l) = axis(model, *member);
-                let (t0, t1) = range.map(|(a, b)| (a.clamp(0.0, l), b.clamp(0.0, l))).unwrap_or((0.0, l));
-                if t1 > t0 {
-                    loading[case.idx()][member.idx()].lines.push((t0, t1, *w, *w));
-                    applied[case.idx()] += -w.z * (t1 - t0);
-                }
-            }
-            Load::Node { case, node, force, .. } => {
-                if let Some(m) = model.members.iter().find(|m| m.path.contains(node)) {
-                    let t = param(model, m.id, model.pos(*node));
-                    loading[case.idx()][m.id.idx()].points.push((t, *force, None));
-                    applied[case.idx()] += -force.z;
-                }
-            }
-        }
-    }
+    let (mut loading, applied) = applied_loading(model, &mut issues);
 
     // ----- member info ------------------------------------------------------------
     let mut info: Vec<MemberInfo> = model
@@ -592,7 +621,7 @@ pub fn takedown(model: &Model, topo: &Topology, geom: &Geometry) -> Takedown {
             }
         }
     }
-    Takedown { cases, info, diagrams, reactions, applied, issues }
+    Takedown { cases, info, diagrams, reactions, applied, issues, combined: vec![] }
 }
 
 /// Puts a reaction onto its supporting member as an equal and opposite load.
@@ -938,6 +967,9 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
 impl Takedown {
     /// Superposes load cases: `factors` per case.
     pub fn combine(&self, factors: &[(LoadCaseId, f64)]) -> (Vec<Diagram>, Vec<Reaction>) {
+        if let Some(c) = self.combined.iter().find(|c| c.factors == factors) {
+            return (c.diagrams.clone(), c.reactions.clone());
+        }
         let nm = self.info.len();
         let mut ds: Vec<Diagram> = (0..nm).map(|m| Diagram::zeros(self.diagrams.first().map(|c| c[m].t.clone()).unwrap_or_default())).collect();
         let mut rs: Vec<Reaction> = self.reactions.first().cloned().unwrap_or_default();

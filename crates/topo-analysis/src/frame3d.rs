@@ -63,6 +63,9 @@ pub struct ElemResult {
     /// Forces and moments on the element's i end, local (x, u, v).
     pub f: Vec3,
     pub m: Vec3,
+    /// And on its j end.
+    pub fj: Vec3,
+    pub mj: Vec3,
     /// Uniform load, local.
     pub q: Vec3,
     /// Node displacements at i and j, global.
@@ -93,6 +96,9 @@ pub struct Solution {
     pub elems: Vec<ElemResult>,
     /// Reaction (force or moment from the support on the structure) per `fixed` entry.
     pub reactions: Vec<f64>,
+    /// What it takes to hold each degree of freedom nothing restrains (as `Solved`'s list): zero
+    /// where no load works on it; otherwise the structure is a mechanism there, held by this.
+    pub held: Vec<f64>,
 }
 
 /// Why a frame could not be solved.
@@ -210,55 +216,128 @@ fn spring(k: &mut M12, fs: &mut [[f64; 12]], r: usize, ks: f64) {
     }
 }
 
-/// Solves `a x = b` for several right-hand sides, `a` symmetric positive
-/// semi-definite. A degree of freedom with no stiffness left is set to zero
-/// if no load acts on it (returned in the list); otherwise `Err(dof)`.
-#[allow(clippy::needless_range_loop)] // index-based elimination reads clearest
-fn solve_spd(mut a: Vec<Vec<f64>>, mut bs: Vec<Vec<f64>>) -> Result<(Vec<Vec<f64>>, Vec<usize>), usize> {
-    let n = a.len();
-    let diag0: Vec<f64> = (0..n).map(|i| a[i][i]).collect();
-    let scale = diag0.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
-    let load: Vec<f64> = bs.iter().map(|b| b.iter().fold(0.0f64, |m, v| m.max(v.abs()))).collect();
-    let mut dead = vec![false; n];
-    for c in 0..n {
-        let p = a[c][c];
-        if p <= 1e-9 * diag0[c].abs() || diag0[c].abs() <= 1e-13 * scale {
-            if bs.iter().zip(&load).any(|(b, l)| b[c].abs() > 1e-7 * l.max(1e-300)) {
-                return Err(c);
+/// A symmetric matrix kept by its skyline: of each column, the entries from
+/// its first non-zero row down to the diagonal. Factored in place as
+/// Uᵀ D U (no pivoting: the stiffness of a held structure is positive
+/// definite). A degree of freedom with no stiffness left is held at zero
+/// and listed.
+struct Skyline {
+    /// First row kept, per column.
+    first: Vec<usize>,
+    /// Per column: rows `first..=j`.
+    cols: Vec<Vec<f64>>,
+    dead: Vec<bool>,
+}
+
+impl Skyline {
+    fn new(first: Vec<usize>) -> Skyline {
+        let cols = first.iter().enumerate().map(|(j, &f)| vec![0.0; j - f + 1]).collect();
+        Skyline { dead: vec![false; first.len()], first, cols }
+    }
+    fn add(&mut self, r: usize, c: usize, v: f64) {
+        let (i, j) = if r <= c { (r, c) } else { (c, r) };
+        self.cols[j][i - self.first[j]] += v;
+    }
+    #[allow(clippy::needless_range_loop)] // index-based elimination reads clearest
+    fn factor(&mut self) {
+        let n = self.first.len();
+        let diag0: Vec<f64> = (0..n).map(|j| self.cols[j][j - self.first[j]]).collect();
+        let scale = diag0.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
+        let mut d = vec![0.0; n];
+        for j in 0..n {
+            let fj = self.first[j];
+            // Reduce the column against the columns before it.
+            for i in fj + 1..j {
+                let fi = self.first[i];
+                let from = fi.max(fj);
+                let mut sum = 0.0;
+                for k in from..i {
+                    sum += self.cols[i][k - fi] * self.cols[j][k - fj];
+                }
+                self.cols[j][i - fj] -= sum;
             }
-            dead[c] = true;
-            for r in 0..n {
-                a[r][c] = 0.0;
-                a[c][r] = 0.0;
+            let mut dj = self.cols[j][j - fj];
+            for i in fj..j {
+                let g = self.cols[j][i - fj];
+                let u = if self.dead[i] { 0.0 } else { g / d[i] };
+                self.cols[j][i - fj] = u;
+                dj -= g * u;
             }
+            if dj <= 1e-9 * diag0[j].abs() || diag0[j].abs() <= 1e-13 * scale {
+                // Nothing resists it: held, and apart from the rest.
+                self.dead[j] = true;
+                for v in self.cols[j].iter_mut() {
+                    *v = 0.0;
+                }
+                dj = 1.0;
+            }
+            d[j] = dj;
+            self.cols[j][j - fj] = dj;
+        }
+    }
+    fn solve(&self, b: &[f64]) -> Vec<f64> {
+        let n = self.first.len();
+        let mut x = b.to_vec();
+        for j in 0..n {
+            let fj = self.first[j];
+            if self.dead[j] {
+                x[j] = 0.0;
+                continue;
+            }
+            let mut sum = 0.0;
+            for i in fj..j {
+                sum += self.cols[j][i - fj] * x[i];
+            }
+            x[j] -= sum;
+        }
+        for j in 0..n {
+            x[j] = if self.dead[j] { 0.0 } else { x[j] / self.cols[j][j - self.first[j]] };
+        }
+        for j in (0..n).rev() {
+            let fj = self.first[j];
+            let xj = x[j];
+            if xj != 0.0 {
+                for i in fj..j {
+                    x[i] -= self.cols[j][i - fj] * xj;
+                }
+            }
+        }
+        x
+    }
+}
+
+/// An order of the nodes that keeps joined ones near each other (reverse
+/// Cuthill–McKee), so the stiffness's skyline is shallow.
+fn node_order(n: usize, elems: &[Elem]) -> Vec<usize> {
+    let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+    for e in elems {
+        if !adj[e.i].contains(&e.j) {
+            adj[e.i].push(e.j);
+            adj[e.j].push(e.i);
+        }
+    }
+    let mut order = Vec::with_capacity(n);
+    let mut seen = vec![false; n];
+    let mut by_degree: Vec<usize> = (0..n).collect();
+    by_degree.sort_by_key(|&i| adj[i].len());
+    for &start in &by_degree {
+        if seen[start] {
             continue;
         }
-        for r in c + 1..n {
-            let f = a[r][c] / p;
-            if f != 0.0 {
-                for k in c..n {
-                    a[r][k] -= f * a[c][k];
-                }
-                for b in bs.iter_mut() {
-                    b[r] -= f * b[c];
-                }
+        seen[start] = true;
+        let mut queue = std::collections::VecDeque::from([start]);
+        while let Some(i) = queue.pop_front() {
+            order.push(i);
+            let mut next: Vec<usize> = adj[i].iter().copied().filter(|&j| !seen[j]).collect();
+            next.sort_by_key(|&j| adj[j].len());
+            for j in next {
+                seen[j] = true;
+                queue.push_back(j);
             }
         }
     }
-    let xs = bs
-        .iter()
-        .map(|b| {
-            let mut x = vec![0.0; n];
-            for r in (0..n).rev() {
-                if !dead[r] {
-                    let s: f64 = (r + 1..n).map(|k| a[r][k] * x[k]).sum();
-                    x[r] = (b[r] - s) / a[r][r];
-                }
-            }
-            x
-        })
-        .collect();
-    Ok((xs, (0..n).filter(|&i| dead[i]).collect()))
+    order.reverse();
+    order
 }
 
 impl Frame3d {
@@ -274,13 +353,38 @@ impl Frame3d {
         Ok((l, x, v.cross(x), v))
     }
 
-    /// Solves every case. Degrees of freedom held because nothing restrains
-    /// them are returned as (node, dof).
+    /// Solves every case. A degree of freedom nothing restrains is held at
+    /// zero: each is returned as (node, dof), and what holding it takes is in
+    /// each solution's `held` (zero where no load works on it).
     #[allow(clippy::needless_range_loop)] // index-based assembly reads clearest
     pub fn solve(&self, cases: &[Case]) -> Result<Solved, SolveError> {
         let n = 6 * self.nodes.len();
         let nc = cases.len();
-        let mut k = vec![vec![0.0; n]; n];
+        // Equations: the free degrees of freedom, node by node in an order that keeps the skyline shallow.
+        let mut is_fixed = vec![false; n];
+        for &(nd, d) in &self.fixed {
+            is_fixed[6 * nd + d] = true;
+        }
+        let mut eq = vec![usize::MAX; n];
+        let mut free = vec![];
+        for node in node_order(self.nodes.len(), &self.elems) {
+            for d in 0..6 {
+                if !is_fixed[6 * node + d] {
+                    eq[6 * node + d] = free.len();
+                    free.push(6 * node + d);
+                }
+            }
+        }
+        let mut first: Vec<usize> = (0..free.len()).collect();
+        for e in &self.elems {
+            let eqs: Vec<usize> = (0..6).flat_map(|d| [eq[6 * e.i + d], eq[6 * e.j + d]]).filter(|&q| q != usize::MAX).collect();
+            if let Some(&lo) = eqs.iter().min() {
+                for &q in &eqs {
+                    first[q] = first[q].min(lo);
+                }
+            }
+        }
+        let mut k = Skyline::new(first);
         let mut f = vec![vec![0.0; n]; nc];
         for (c, case) in cases.iter().enumerate() {
             for (i, l) in case.nodal.iter().enumerate() {
@@ -326,32 +430,34 @@ impl Frame3d {
                     let cb = [db.x, db.y, db.z];
                     for p in 0..3 {
                         for q in 0..3 {
-                            k[ga + p][gb + q] += ca[p] * kab * cb[q];
+                            let (r, cc) = (eq[ga + p], eq[gb + q]);
+                            // (Each pair once: the matrix is symmetric, and kept by its upper half.)
+                            if r != usize::MAX && cc != usize::MAX && r <= cc {
+                                k.add(r, cc, ca[p] * kab * cb[q]);
+                            }
                         }
                     }
                 }
             }
             locals.push((len, x, u, v, kl, enl, qs));
         }
-        let fixed: Vec<usize> = self.fixed.iter().map(|&(nd, d)| 6 * nd + d).collect();
-        let mut is_fixed = vec![false; n];
-        for &d in &fixed {
-            is_fixed[d] = true;
-        }
-        let free: Vec<usize> = (0..n).filter(|&d| !is_fixed[d]).collect();
-        let kr: Vec<Vec<f64>> = free.iter().map(|&r| free.iter().map(|&c| k[r][c]).collect()).collect();
-        let fr: Vec<Vec<f64>> = f.iter().map(|fc| free.iter().map(|&r| fc[r]).collect()).collect();
-        let (xs, dead) = solve_spd(kr, fr).map_err(|d| SolveError::Mechanism { node: free[d] / 6, dof: free[d] % 6 })?;
-        let held = dead.iter().map(|&d| (free[d] / 6, free[d] % 6)).collect();
+        k.factor();
+        let held: Vec<(usize, usize)> = (0..free.len()).filter(|&q| k.dead[q]).map(|q| (free[q] / 6, free[q] % 6)).collect();
         let mut out = vec![];
         for c in 0..nc {
+            let x = k.solve(&free.iter().map(|&d| f[c][d]).collect::<Vec<_>>());
             let mut u = vec![0.0; n];
             for (i, &d) in free.iter().enumerate() {
-                u[d] = xs[c][i];
+                u[d] = x[i];
             }
-            let reactions = fixed.iter().map(|&d| (0..n).map(|col| k[d][col] * u[col]).sum::<f64>() - f[c][d]).collect();
             let node = |i: usize| -> (Vec3, Vec3) { (Vec3::new(u[6 * i], u[6 * i + 1], u[6 * i + 2]), Vec3::new(u[6 * i + 3], u[6 * i + 4], u[6 * i + 5])) };
-            let elems = self
+            // What the elements take from each node, less what is applied there: zero where a
+            // node is free, and elsewhere what holds it.
+            let mut residual = vec![0.0; n];
+            for (d, r) in residual.iter_mut().enumerate() {
+                *r = -cases[c].nodal[d / 6][d % 6];
+            }
+            let elems: Vec<ElemResult> = self
                 .elems
                 .iter()
                 .zip(&locals)
@@ -359,22 +465,20 @@ impl Frame3d {
                     let ((ti, ri), (tj, rj)) = (node(e.i), node(e.j));
                     let loc = |g: Vec3| [g.dot(*x), g.dot(*u_ax), g.dot(*v)];
                     let dl: Vec<f64> = [loc(ti), loc(ri), loc(tj), loc(rj)].concat();
-                    let end = |a: usize| (0..12).map(|b| kl[a][b] * dl[b]).sum::<f64>() - enl[c][a];
-                    ElemResult {
-                        len: *len,
-                        x: *x,
-                        u: *u_ax,
-                        v: *v,
-                        f: Vec3::new(end(0), end(1), end(2)),
-                        m: Vec3::new(end(3), end(4), end(5)),
-                        q: qs[c],
-                        di: ti,
-                        dj: tj,
+                    let end: Vec<f64> = (0..12).map(|a| (0..12).map(|b| kl[a][b] * dl[b]).sum::<f64>() - enl[c][a]).collect();
+                    for (base, at) in [(0, e.i), (6, e.j)] {
+                        let (fo, mo) = (*x * end[base] + *u_ax * end[base + 1] + *v * end[base + 2], *x * end[base + 3] + *u_ax * end[base + 4] + *v * end[base + 5]);
+                        for (d, val) in [fo.x, fo.y, fo.z, mo.x, mo.y, mo.z].into_iter().enumerate() {
+                            residual[6 * at + d] += val;
+                        }
                     }
+                    ElemResult { len: *len, x: *x, u: *u_ax, v: *v, f: Vec3::new(end[0], end[1], end[2]), m: Vec3::new(end[3], end[4], end[5]), fj: Vec3::new(end[6], end[7], end[8]), mj: Vec3::new(end[9], end[10], end[11]), q: qs[c], di: ti, dj: tj }
                 })
                 .collect();
+            let reactions = self.fixed.iter().map(|&(nd, d)| residual[6 * nd + d]).collect();
+            let holding = held.iter().map(|&(nd, d)| residual[6 * nd + d]).collect();
             let disp = (0..self.nodes.len()).map(|i| [u[6 * i], u[6 * i + 1], u[6 * i + 2], u[6 * i + 3], u[6 * i + 4], u[6 * i + 5]]).collect();
-            out.push(Solution { disp, elems, reactions });
+            out.push(Solution { disp, elems, reactions, held: holding });
         }
         Ok((out, held))
     }
@@ -533,9 +637,10 @@ mod tests {
         // Statics of the truss: each rafter carries 500/sin 45° in compression.
         assert!(close(f.section(&s[0], 1, 0.3).n, -500.0 * 2f64.sqrt()), "{:?}", f.section(&s[0], 1, 0.3));
         assert!(close(s[0].reactions[2], 500.0));
-        // Without the tie and the roller's partner, it spreads: a mechanism.
+        // Without the tie and the roller's partner, it spreads: a mechanism, held, and what
+        // holds it is not nothing.
         let g = Frame3d { nodes, elems: vec![pin(1, 2), pin(0, 2)], fixed };
-        let e = g.solve(&[Case { w: vec![Vec3::ZERO; 2], ..c }]).err().unwrap();
-        assert!(matches!(e, SolveError::Mechanism { .. }), "{e}");
+        let (s, held) = g.solve(&[Case { w: vec![Vec3::ZERO; 2], ..c }]).unwrap();
+        assert!(held.iter().zip(&s[0].held).any(|(h, f)| h.1 < 3 && f.abs() > 100.0), "{held:?} {:?}", s[0].held);
     }
 }

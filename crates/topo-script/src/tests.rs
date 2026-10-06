@@ -2309,3 +2309,135 @@ fn a_joint_between_assemblies_is_said_with_the_coincidence() {
     let (_, td) = solve("");
     assert!(td.issues.iter().any(|i| i.code == "frame-unsolved"), "{:#?}", td.issues);
 }
+
+/// Explore: the elastic frame solve on every example (run with --ignored --nocapture).
+#[test]
+#[ignore]
+fn explore_frame_on_examples() {
+    let dir = format!("{}/../../examples", env!("CARGO_MANIFEST_DIR"));
+    let only = std::env::var("ONLY").ok();
+    let mut files: Vec<String> = vec![];
+    for sub in ["primitives", "benchmarks", ""] {
+        let d = if sub.is_empty() { dir.clone() } else { format!("{dir}/{sub}") };
+        let mut here: Vec<String> = std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.ends_with(".ts") && !p.ends_with(".measured.ts") && !p.contains("site-template") && !p.contains("truss-shape")).collect();
+        here.sort();
+        files.extend(here);
+    }
+    for path in files {
+        if only.as_ref().is_some_and(|o| !path.contains(o.as_str())) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let name = path.rsplit('/').next().unwrap();
+        let Ok(m) = run(&text, &path) else { println!("{name}: does not build"); continue };
+        let topo = Topology::build(&m);
+        let g = Geometry::build(&m, &topo);
+        let t0 = std::time::Instant::now();
+        let td = topo_analysis::loaded(&m, &topo, &g);
+        let dt = t0.elapsed().as_secs_f64();
+        let old = topo_analysis::takedown(&m, &topo, &g);
+        let mut line = format!("{name}: {} members, {} nodes, {:.2}s", m.members.len(), m.nodes.len(), dt);
+        for (ci, c) in m.load_cases.iter().enumerate() {
+            let up: f64 = td.reactions.get(ci).map(|r| r.iter().filter(|r| r.by.is_none()).map(|r| r.force.z).sum()).unwrap_or(0.0);
+            let old_up: f64 = old.reactions.get(ci).map(|r| r.iter().filter(|r| r.by.is_none()).map(|r| r.force.z).sum()).unwrap_or(0.0);
+            let dmax = td.diagrams.get(ci).map(|ds| ds.iter().map(|d| d.max_displacement().0).fold(0.0, f64::max)).unwrap_or(0.0);
+            line += &format!(" | {}: applied {:.0} up {:.0} (takedown {:.0}/{:.0}) d {:.2}mm", c.name, td.applied[ci], up, old.applied[ci], old_up, dmax * 1000.0);
+        }
+        println!("{line}");
+        for c in &td.combined {
+            let want: f64 = c.factors.iter().map(|(id, f)| f * td.applied[id.idx()]).sum();
+            let up: f64 = c.reactions.iter().map(|r| r.force.z).sum();
+            let dmax = c.diagrams.iter().map(|d| d.max_displacement().0).fold(0.0, f64::max);
+            println!("    {}: {} lifted, applied {want:.0} up {up:.0}, d {:.2}mm", c.name, c.lifted, dmax * 1000.0);
+        }
+        for i in td.issues.iter().take(4) {
+            println!("    {}: {}", i.code, i.message.chars().take(220).collect::<String>());
+            if only.is_some() {
+                let mut at: Vec<String> = i.nodes.iter().flat_map(|n| m.members.iter().filter(move |mm| mm.path.contains(n)).map(|mm| m.member_path(mm.id))).collect();
+                at.sort();
+                at.dedup();
+                for a in at.iter().take(12) {
+                    println!("        at {a}");
+                }
+            }
+        }
+        if only.is_some() {
+            for (ci, c) in m.load_cases.iter().enumerate() {
+                let mut worst: Vec<(f64, String)> = td.diagrams[ci].iter().enumerate().map(|(k, d)| (d.max_displacement().0, m.member_path(topo_core::MemberId(k as u32)))).collect();
+                worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+                for (d, p) in worst.iter().take(6) {
+                    println!("    {} moves {:.2} mm: {p}", c.name, d * 1000.0);
+                }
+            }
+        }
+    }
+}
+
+/// Explore: how a member is joined (MEMBER=path tail, FILE=example).
+#[test]
+#[ignore]
+fn explore_member_joints() {
+    let dir = format!("{}/../../examples", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{dir}/{}", std::env::var("FILE").unwrap());
+    let m = run(&std::fs::read_to_string(&path).unwrap(), &path).unwrap();
+    let id = m.find_member(&std::env::var("MEMBER").unwrap()).unwrap();
+    let topo = Topology::build(&m);
+    for &n in &m.member(id).path {
+        let p = m.pos(n);
+        println!("node {n} at ({:.3}, {:.3}, {:.3}) support: {}", p.x, p.y, p.z, m.supports.iter().any(|s| s.node == n));
+        for j in &topo.junction(n).members {
+            println!("    {:?} {}", j.incidence, m.member_path(j.member));
+        }
+        for c in m.joint(n).map(|j| j.connections.clone()).unwrap_or_default() {
+            println!("    joined: {} to {:?} by {} ({:?})", m.member_path(c.member), c.to.map(|t| m.member_path(t)), m.connection(c.connection).name, m.connection(c.connection).fixity);
+        }
+        for a in m.attached_at(n) {
+            println!("    on a face of {} ({:?}, along {:.3})", m.member_path(a.member), a.face, a.along);
+        }
+    }
+    for a in m.attachments.iter().filter(|a| a.member == id) {
+        println!("held to its {:?} face at {:.3}: node {}", a.face, a.along, a.node);
+    }
+    for b in m.bonds.iter().filter(|b| b.a == id || b.b == id) {
+        println!("bonded: {} and {}", m.member_path(b.a), m.member_path(b.b));
+    }
+}
+
+/// Every example, as loaded: its graph solved as an elastic frame beside whatever its checks
+/// use. Each case's supports give back exactly what is applied, and so does each combination
+/// solved again with lifted bearing points let go; and it carries the same total as the takedown.
+#[test]
+fn every_example_as_loaded_is_in_equilibrium() {
+    let dir = format!("{}/../../examples", env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<String> = vec![];
+    for sub in ["primitives", "benchmarks", ""] {
+        let d = if sub.is_empty() { dir.clone() } else { format!("{dir}/{sub}") };
+        files.extend(std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.ends_with(".ts") && !p.ends_with(".measured.ts") && !p.contains("site-template") && !p.contains("truss-shape")));
+    }
+    files.sort();
+    assert!(files.len() > 40);
+    // What the loaded state finds that the takedown does not: the flight of stairs is against
+    // the floor's header only by where it is, joined to nothing at its head.
+    let unsupported = ["21-a-stairwell-and-stairs.ts"];
+    for path in files {
+        let name = path.rsplit('/').next().unwrap();
+        let m = run(&std::fs::read_to_string(&path).unwrap(), &path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let topo = Topology::build(&m);
+        let g = Geometry::build(&m, &topo);
+        let td = topo_analysis::loaded(&m, &topo, &g);
+        assert!(!td.issues.iter().any(|i| i.code == "frame-unsolved"), "{name}: {:#?}", td.issues);
+        assert_eq!(td.issues.iter().any(|i| i.code == "frame-unsupported"), unsupported.contains(&name), "{name}: {:#?}", td.issues);
+        for (ci, case) in m.load_cases.iter().enumerate() {
+            let up: f64 = td.reactions[ci].iter().map(|r| r.force.z).sum();
+            assert!((up - td.applied[ci]).abs() < 1e-6 * td.applied[ci].abs().max(1.0), "{name} {}: up {up} applied {}", case.name, td.applied[ci]);
+            // (No hold takes weight: nothing is carried by what is not there.)
+        }
+        for c in &td.combined {
+            let want: f64 = c.factors.iter().map(|(id, f)| f * td.applied[id.idx()]).sum();
+            let up: f64 = c.reactions.iter().map(|r| r.force.z).sum();
+            assert!((up - want).abs() < 1e-6 * want.abs().max(1.0), "{name} {}: up {up} applied {want}", c.name);
+            let moved = c.diagrams.iter().map(|d| d.max_displacement().0).fold(0.0, f64::max);
+            assert!(moved < 0.2, "{name} {}: moves {moved} m with {} bearing points let go", c.name, c.lifted);
+        }
+    }
+}

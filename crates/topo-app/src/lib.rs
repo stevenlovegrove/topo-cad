@@ -54,6 +54,10 @@ pub struct Built {
     pub model: Model,
     pub geom: Geometry,
     pub td: Takedown,
+    /// The model as loaded (its graph as an elastic frame), where its checks are from a
+    /// takedown: the same loads, with what the framing does under them. (A model analysed as
+    /// a frame has this as `td`.)
+    pub loaded: Option<Takedown>,
     pub analysis: Analysis,
     pub set: DrawingSet,
     pub fit: Option<SolveReport>,
@@ -67,13 +71,15 @@ impl Built {
     pub fn new(model: Model, fit: Option<SolveReport>, excluded: &[String]) -> Built {
         let topo = Topology::build(&model);
         let geom = Geometry::build(&model, &topo);
-        let issues = all_issues(&model, &topo, &geom).iter().map(|i| i.to_string()).collect();
+        let mut issues: Vec<String> = all_issues(&model, &topo, &geom).iter().map(|i| i.to_string()).collect();
+        let loaded = (!model.standards.is_frame() && !model.members.is_empty()).then(|| topo_analysis::loaded(&model, &topo, &geom));
+        issues.extend(loaded.iter().flat_map(|l| l.issues.iter().map(|i| i.to_string())));
         let set = DrawingSet::build_with(&model, &topo, &geom, fit.as_ref().map(fit_tables).unwrap_or_default());
         let svgs = (0..set.sheets.len()).map(|i| set.sheet_svg(&model, i)).collect();
         let td = takedown(&model, &topo, &geom);
         let ids: Vec<_> = model.load_cases.iter().filter(|c| excluded.contains(&c.name)).map(|c| c.id).collect();
         let analysis = nds_asd_excluding(&model, &geom, &td, &ids);
-        Built { model, geom, td, analysis, set, fit, issues, svgs }
+        Built { model, geom, td, loaded, analysis, set, fit, issues, svgs }
     }
 }
 
@@ -460,8 +466,9 @@ fn member_detail(b: &Built, path: &str, combo: &str) -> Result<Value, String> {
 /// The largest displacement of a frame analysis over all combinations.
 fn max_displacement(b: &Built) -> Value {
     let mut best: Option<(f64, String, String)> = None;
+    let state = b.loaded.as_ref().unwrap_or(&b.td);
     for c in &b.analysis.combos {
-        let (ds, _) = b.td.combine(&c.factors);
+        let (ds, _) = state.combine(&c.factors);
         for (i, d) in ds.iter().enumerate() {
             let (v, _) = d.max_displacement();
             if v > 0.0 && best.as_ref().is_none_or(|x| v > x.0) {
@@ -485,7 +492,7 @@ fn deflected(b: &Built, combo: &str) -> Value {
         .combos
         .iter()
         .filter(|c| combo.is_empty() || c.name == combo)
-        .map(|c| (c.name.clone(), b.td.combine(&c.factors).0))
+        .map(|c| (c.name.clone(), b.loaded.as_ref().unwrap_or(&b.td).combine(&c.factors).0))
         .max_by(|x, y| peak(&x.1).total_cmp(&peak(&y.1)));
     let Some((name, ds)) = chosen else { return json!({ "members": [], "max": 0.0 }) };
     let r = |v: f64| (v * 1e7).round() / 1e7;

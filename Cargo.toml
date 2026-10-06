@@ -16,6 +16,10 @@ members = [
     "crates/topo-solve",
 ]
 
+# The frame solve is arithmetic in loops: slow unoptimised, and the tests run it on every example.
+[profile.dev.package.topo-analysis]
+opt-level = 2
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

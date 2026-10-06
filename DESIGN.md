@@ -223,8 +223,15 @@ every number can be reviewed; a plane-frame solver handles trusses.
 
 ### Frames (`frame`, `frame3d`, `mech`)
 
+Every model has an **as loaded** state beside whatever its checks use: its
+graph solved as an elastic frame under its loads (`topo_analysis::loaded`;
+[docs/unified-plan.md](docs/unified-plan.md), step 7). Bearing points press
+and cannot pull, bonded members act together, and what light framing leaves
+unbraced is held and reported. The 3D views draw its deflected shape.
+
 Not everything is light framing carried down by bearing. A model may ask
-for `analysis: "frame"` (the default of a `Model` that is not a `Building`):
+for `analysis: "frame"` (the default of a `Model` that is not a `Building`),
+and then its checks read that state too:
 
 * **One 3D frame** of all members (`frame3d`: direct stiffness,
   Euler–Bernoulli beams, six degrees of freedom per node). A member is
