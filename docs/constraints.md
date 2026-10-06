@@ -691,6 +691,17 @@ on a face that faces up or down is). *Known limitation:* at a step, the
 lower wall's plies end on the side of the taller wall's end stud, which
 is narrower than they are wide: no backing is framed for them yet.
 
+### Joined how, where bodies are made one
+
+`coincide(a, b)` makes two nodes one; the members that end there, of
+different assemblies, meet as pinned unless the relation says how they are
+joined: `coincide(fork.node("crown"), frame.node("crown"), { joint:
+Joint.clamped("Headset") })`. The joint is recorded at the node for each
+member that ends there and is not already joined by its own assembly, and
+is what an analysis of the graph reads as that end's fixity
+([examples/bike.ts](../examples/bike.ts): frame, fork, cockpit and seatpost
+are four bodies, joined so).
+
 ## Seeing it
 
 `examples/primitives` has the smallest models that show each thing:

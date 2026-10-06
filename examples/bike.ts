@@ -5,7 +5,7 @@
 // Pick the frame's material in the Loads panel (Scenario): the same points
 // and tubes in brazed steel, welded aluminium or moulded carbon.
 import {
-  Aluminum, Assembly, Carbon, deflection, elevation, iso, Joint, kgf, mm, Model, plan, scenarios, schedule, sheet, Steel, tube, rod, utilization,
+  Aluminum, Assembly, Carbon, coincide, deflection, elevation, iso, Joint, kgf, mm, Model, plan, scenarios, schedule, sheet, Steel, tube, rod, utilization,
   type Joints, type MaterialSpec, type Point3, type SectionSpec,
 } from "topo-cad";
 
@@ -130,19 +130,13 @@ const chain = (pedal * crank) / chainring;
 // Braking at 0.6 g on the front wheel.
 const brake = 0.6 * W;
 
-const bike = Assembly.named("Bike")
-  // Frame.
+// ----- the parts: each a body, joined to the next at a node ----------------------
+// The frame: front and rear triangles on the bottom bracket shell, and the rear axle.
+const frameSet = Assembly.named("Frame")
   .point("bb", bb).point("bbL", side(bb, bbShell / 2)).point("bbR", side(bb, -bbShell / 2))
   .point("seatCluster", seatCluster).point("seatTop", seatTop)
   .point("headTop", headTop).point("topJoint", add(headTop, downSteer, mm(30))).point("downJoint", add(crown, downSteer, -mm(35))).point("crown", crown)
   .point("rearL", side(rearAxle, rearHub / 2)).point("rearR", side(rearAxle, -rearHub / 2))
-  // Fork.
-  .point("crownL", side(crown, frontHub / 2)).point("crownR", side(crown, -frontHub / 2))
-  .point("frontL", side(frontAxle, frontHub / 2)).point("frontR", side(frontAxle, -frontHub / 2))
-  // Seatpost, stem and handlebar.
-  .point("saddle", add(seatTop, upSeat, seatpostOut))
-  .point("stemClamp", stemClamp).point("barCentre", barCentre)
-  .point("barL", side(barCentre, barWidth / 2)).point("barR", side(barCentre, -barWidth / 2))
   .member("bb_shell", ["bbL", "bb", "bbR"], { section: system.shell, ...frame, priority: 10 })
   .member("head_tube", ["crown", "downJoint", "topJoint", "headTop"], { section: system.head, ...frame, priority: 9 })
   .member("seat_tube", ["bb", "seatCluster", "seatTop"], { section: system.seat, ...frame, priority: 8 })
@@ -152,36 +146,15 @@ const bike = Assembly.named("Bike")
   .member("chainstay", ["bb", "rearR"], { section: system.chainstay, ...frame, priority: 5 })
   .member("seatstay", ["seatCluster", "rearL"], { section: system.seatstay, ...frame, priority: 3 })
   .member("seatstay", ["seatCluster", "rearR"], { section: system.seatstay, ...frame, priority: 3 })
-  .member("fork_crown", ["crownL", "crown", "crownR"], { section: tube(mm(28.6), mm(2.0)), ...frame, priority: 10 })
-  .member("fork_blade", ["crownL", "frontL"], { section: system.blade, ...frame, priority: 4 })
-  .member("fork_blade", ["crownR", "frontR"], { section: system.blade, ...frame, priority: 4 })
   .member("rear_axle", ["rearL", "rearR"], { section: rod(mm(10)), ...steel })
-  .member("front_axle", ["frontL", "frontR"], { section: rod(mm(9)), ...steel })
-  .member("seatpost", ["seatTop", "saddle"], { section: tube(mm(27.2), mm(2.2)), ...cockpit })
-  .member("steerer", ["headTop", "stemClamp"], { section: tube(mm(28.6), mm(1.55)), ...steel })
-  .member("stem", ["stemClamp", "barCentre"], { section: tube(mm(31.8), mm(2.0)), ...cockpit })
-  .member("handlebar", ["barL", "barCentre", "barR"], { section: tube(mm(23.8), mm(1.6)), ...cockpit, priority: 10 })
-  // The frame's joints, and the parts that are clamped on.
   .joints(system.joint)
-  .jointAt("seatTop", Joint.clamped("Seatpost clamp"))
-  .jointAt("headTop", Joint.clamped("Headset"))
-  .jointAt("stemClamp", Joint.clamped("Stem clamp"))
-  .jointAt("barCentre", Joint.clamped("Handlebar clamp"))
   .jointAt("rearL", Joint.clamped("Quick release"), { member: "rear_axle" })
   .jointAt("rearR", Joint.clamped("Quick release"), { member: "rear_axle" })
-  .jointAt("frontL", Joint.clamped("Quick release"), { member: "front_axle" })
-  .jointAt("frontR", Joint.clamped("Quick release"), { member: "front_axle" })
-  // Held at the four dropouts as the wheels hold it: upright, free to roll
-  // at the front, free to spread sideways on one side.
+  // Held at the dropouts as the rear wheel holds it: upright, free to spread sideways on one side.
   .support("rearL", "pinned")
   .support("rearR", { x: true, z: true })
-  .support("frontL", { y: true, z: true })
-  .support("frontR", "roller")
-  // Seated: weight on the saddle, the pedals and the bars.
-  .force("Seated", "saddle", [0, 0, -0.55 * W])
+  // Seated: the pedals' share of the weight.
   .force("Seated", "bb", [0, 0, -0.3 * W])
-  .force("Seated", "barL", [0, 0, -0.075 * W])
-  .force("Seated", "barR", [0, 0, -0.075 * W])
   // Sprinting: all the weight and the pull on the right pedal. The crank
   // turns freely, so its drive torque reaches the frame as chain tension
   // (bottom bracket pulled back, right dropout pulled forward); the pedal's
@@ -189,18 +162,61 @@ const bike = Assembly.named("Bike")
   .force("Sprint, right pedal down", "bb", [-chain, 0, -pedal])
   .moment("Sprint, right pedal down", "bb", [pedalOut * pedal, 0, -chainline * chain])
   .force("Sprint, right pedal down", "rearR", [chain, 0, 0])
-  .force("Sprint, right pedal down", "barR", [0, 0, pull])
-  // Braking hard on the front wheel while seated: the rider is thrown
-  // forward, the road pushes back at the tyre (a force and a moment at the
-  // front axle).
-  .force("Front brake, 0.6 g", "saddle", [0.55 * brake, 0, -0.55 * W])
-  .force("Front brake, 0.6 g", "bb", [0.3 * brake, 0, -0.3 * W])
-  .force("Front brake, 0.6 g", "barL", [0.075 * brake, 0, -0.075 * W])
-  .force("Front brake, 0.6 g", "barR", [0.075 * brake, 0, -0.075 * W])
+  .force("Front brake, 0.6 g", "bb", [0.3 * brake, 0, -0.3 * W]);
+
+// The fork: crown, blades and the front axle; made as the frame is.
+const fork = Assembly.named("Fork")
+  .point("crown", crown).point("crownL", side(crown, frontHub / 2)).point("crownR", side(crown, -frontHub / 2))
+  .point("frontL", side(frontAxle, frontHub / 2)).point("frontR", side(frontAxle, -frontHub / 2))
+  .member("fork_crown", ["crownL", "crown", "crownR"], { section: tube(mm(28.6), mm(2.0)), ...frame, priority: 10 })
+  .member("fork_blade", ["crownL", "frontL"], { section: system.blade, ...frame, priority: 4 })
+  .member("fork_blade", ["crownR", "frontR"], { section: system.blade, ...frame, priority: 4 })
+  .member("front_axle", ["frontL", "frontR"], { section: rod(mm(9)), ...steel })
+  .joints(system.joint)
+  .jointAt("frontL", Joint.clamped("Quick release"), { member: "front_axle" })
+  .jointAt("frontR", Joint.clamped("Quick release"), { member: "front_axle" })
+  // The front wheel: free to roll, held sideways on one side.
+  .support("frontL", { y: true, z: true })
+  .support("frontR", "roller")
+  // Braking hard on the front wheel: the road pushes back at the tyre (a
+  // force and a moment at the front axle).
   .force("Front brake, 0.6 g", "frontL", [-brake / 2, 0, 0])
   .force("Front brake, 0.6 g", "frontR", [-brake / 2, 0, 0])
   .moment("Front brake, 0.6 g", "frontL", [0, (brake / 2) * wheelRadius, 0])
   .moment("Front brake, 0.6 g", "frontR", [0, (brake / 2) * wheelRadius, 0]);
+
+// The steerer, stem and handlebar, clamped to each other.
+const cockpitSet = Assembly.named("Cockpit")
+  .point("headTop", headTop).point("stemClamp", stemClamp).point("barCentre", barCentre)
+  .point("barL", side(barCentre, barWidth / 2)).point("barR", side(barCentre, -barWidth / 2))
+  .member("steerer", ["headTop", "stemClamp"], { section: tube(mm(28.6), mm(1.55)), ...steel })
+  .member("stem", ["stemClamp", "barCentre"], { section: tube(mm(31.8), mm(2.0)), ...cockpit })
+  .member("handlebar", ["barL", "barCentre", "barR"], { section: tube(mm(23.8), mm(1.6)), ...cockpit, priority: 10 })
+  .joints(Joint.clamped("Stem clamp"))
+  .force("Seated", "barL", [0, 0, -0.075 * W])
+  .force("Seated", "barR", [0, 0, -0.075 * W])
+  .force("Sprint, right pedal down", "barR", [0, 0, pull])
+  .force("Front brake, 0.6 g", "barL", [0.075 * brake, 0, -0.075 * W])
+  .force("Front brake, 0.6 g", "barR", [0.075 * brake, 0, -0.075 * W]);
+
+const seatpost = Assembly.named("Seatpost")
+  .point("foot", seatTop).point("saddle", add(seatTop, upSeat, seatpostOut))
+  .member("seatpost", ["foot", "saddle"], { section: tube(mm(27.2), mm(2.2)), ...cockpit })
+  .force("Seated", "saddle", [0, 0, -0.55 * W])
+  // Braking while seated: the rider is thrown forward.
+  .force("Front brake, 0.6 g", "saddle", [0.55 * brake, 0, -0.55 * W]);
+
+// Nothing is joined because of where it is: each part is one with the next at a node, by a clamp.
+const bike = [
+  frameSet,
+  fork,
+  cockpitSet,
+  seatpost,
+  coincide(fork.node("crown"), frameSet.node("crown"), { joint: Joint.clamped("Headset") }),
+  coincide(cockpitSet.node("headTop"), frameSet.node("headTop"), { joint: Joint.clamped("Headset") }),
+  coincide(seatpost.node("foot"), frameSet.node("seatTop"), { joint: Joint.clamped("Seatpost clamp") }),
+];
+const parts = [frameSet, fork, cockpitSet, seatpost];
 
 export default Model.named("Road bike")
   .info({
@@ -213,21 +229,21 @@ export default Model.named("Road bike")
     ],
     notes: [
       "Tubes are uniform in the model: butted walls, tapered stays and oval sections are not modelled.",
-      "The head tube carries the fork at the crown only (no headset bearings); the wheels are the four supports at the dropouts.",
+      "Frame, fork, cockpit and seatpost are separate parts, each one with the next at a node by a clamp. The head tube carries the fork at the crown only (no headset bearings); the wheels are the four supports at the dropouts.",
       "Tube ends are drawn cut flat to the tube they meet: the cope (notch) of a welded or brazed joint is not drawn.",
     ],
   })
   .designBasis({ safetyFactor: 1.5 })
-  .add(bike)
+  .add(...bike)
   .sheets(
-    sheet("B-101", "General arrangement", elevation(bike, { from: "south", title: "Side elevation" }), plan(bike, { title: "Plan" }), iso(bike, { title: "Road bike" })),
+    sheet("B-101", "General arrangement", elevation(parts, { from: "south", title: "Side elevation" }), plan(parts, { title: "Plan" }), iso(parts, { title: "Road bike" })),
     sheet(
       "B-201",
       "Deflection",
-      deflection(bike, { from: "south", combination: "Self-weight + Seated", title: "Seated" }),
-      deflection(bike, { from: "south", combination: "Self-weight + Front brake, 0.6 g", title: "Front brake" }),
-      deflection(bike, { from: "east", combination: "Self-weight + Sprint, right pedal down", title: "Sprint, from the front" }),
+      deflection(parts, { from: "south", combination: "Self-weight + Seated", title: "Seated" }),
+      deflection(parts, { from: "south", combination: "Self-weight + Front brake, 0.6 g", title: "Front brake" }),
+      deflection(parts, { from: "east", combination: "Self-weight + Sprint, right pedal down", title: "Sprint, from the front" }),
     ),
-    sheet("B-301", "Checks", utilization(bike, { from: "south" }), schedule("checks"), schedule("reactions")),
+    sheet("B-301", "Checks", utilization(parts, { from: "south" }), schedule("checks"), schedule("reactions")),
     sheet("B-401", "Schedules", schedule("members"), schedule("connections")),
   );

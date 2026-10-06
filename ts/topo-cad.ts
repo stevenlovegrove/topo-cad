@@ -2977,8 +2977,8 @@ export class Relation {
    * it), to about that; measured, so it gives way to what must hold, and says
    * by how much. (A point given along only some axes reads only those.)
    */
-  static coincide(a: NodeHandle, b: NodeHandle, o: { tolerance?: Length } = {}): Relation {
-    return new Relation({ type: "coincide", a: a.name, b: b.name, tolerance: o.tolerance });
+  static coincide(a: NodeHandle, b: NodeHandle, o: { tolerance?: Length; joint?: Joints } = {}): Relation {
+    return new Relation({ type: "coincide", a: a.name, b: b.name, tolerance: o.tolerance, joint: o.joint });
   }
   /** A reading with a tape: the two nodes are `distance` apart, to about `tolerance` (default 3 mm). */
   static tape(a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation {
@@ -2992,8 +2992,13 @@ export class Relation {
     return this.spec;
   }
 }
-/** Two nodes are one: the same point, and joined there; or, with a `tolerance`, read to be one point. */
-export const coincide = (a: NodeHandle, b: NodeHandle, o: { tolerance?: Length } = {}): Relation => Relation.coincide(a, b, o);
+/**
+ * Two nodes are one: the same point, and joined there; or, with a `tolerance`, read to be one point.
+ * `joint` says how the members that end there are joined, where they are of different
+ * assemblies (`coincide(fork.node("steerer top"), frame.node("head top"), { joint: Joint.clamped("Headset") })`):
+ * without it they meet as pinned.
+ */
+export const coincide = (a: NodeHandle, b: NodeHandle, o: { tolerance?: Length; joint?: Joints } = {}): Relation => Relation.coincide(a, b, o);
 /** A reading with a tape between two nodes: measured, so it gives way to what must hold, and says by how much. */
 export const tape = (a: NodeHandle, b: NodeHandle, distance: Length, o: { tolerance?: Length } = {}): Relation => Relation.tape(a, b, distance, o);
 /** A surveyed point: measured, along whichever of x, y, z are given. */

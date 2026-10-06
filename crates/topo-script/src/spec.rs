@@ -143,7 +143,7 @@ impl SceneSpec {
             unknowns: std::mem::take(&mut b.unknowns),
             sheets: b.sheets.take(),
             asce7: b.asce7.take(),
-            self_weight: b.self_weight.take(),
+            self_weight: b.self_weight,
             combinations: b.combinations.take(),
             units: b.units.take(),
             analysis: b.analysis.take(),
@@ -201,6 +201,9 @@ pub enum ItemSpec {
         b: String,
         #[serde(default)]
         tolerance: Option<f64>,
+        /// How what meets at the one node is joined there (members of different assemblies).
+        #[serde(default)]
+        joint: Option<JointsSpec>,
     },
     /// A reading with a tape: two nodes are this far apart, to about `tolerance`.
     Tape { a: String, b: String, distance: f64, tolerance: f64 },
@@ -231,7 +234,7 @@ impl ItemSpec {
 /// A relation, into a scene, its nodes found by `node`.
 fn relate(sc: &mut scene::Scene, item: &ItemSpec, node: &mut dyn FnMut(&mut scene::Scene, &str) -> Result<scene::NodeRef, String>) -> Result<(), String> {
     match item {
-        ItemSpec::Coincide { a, b, tolerance } => {
+        ItemSpec::Coincide { a, b, tolerance, .. } => {
             let (na, nb) = (node(sc, a)?, node(sc, b)?);
             match tolerance {
                 None => sc.coincide(&format!("{a} is {b}"), na, nb),
@@ -2554,11 +2557,13 @@ struct Pass<'a> {
     slabs: Vec<f64>,
     /// A fit's unknowns: their numbers.
     fit: Option<Vec<scene::ScalarId>>,
+    /// Coincidences that say how what meets there is joined: a node of an assembly, and the joint.
+    joined: Vec<(&'a str, &'a JointsSpec)>,
 }
 
 /// Its assemblies and roofs, on what the solve placed; and a fit's unknowns as solved.
 fn finish(pass: Pass) -> Result<(Model, Option<Vec<f64>>), String> {
-    let Pass { mut b, written, declared, roofs, surfaces, fit, .. } = pass;
+    let Pass { mut b, written, declared, roofs, surfaces, fit, joined, .. } = pass;
     let values: HashMap<scene::ScalarId, f64> = written.values.iter().copied().collect();
     let fitted = fit.map(|ss| ss.iter().map(|s| values[s]).collect());
     for open in &written.open {
@@ -2569,6 +2574,24 @@ fn finish(pass: Pass) -> Result<(Model, Option<Vec<f64>>), String> {
     }
     for (a, d) in &declared {
         b.finish(a, d, &written)?;
+    }
+    // Where assemblies were made one at a node and the joint was said: every member that ends
+    // there and is not yet joined to anything is joined so, to another that is there.
+    for (name, joint) in joined {
+        let node = declared
+            .iter()
+            .find_map(|(a, d)| name.strip_prefix(a.name.as_str()).and_then(|rest| rest.strip_prefix('/')).and_then(|p| d.points.get(p)).map(|n| written.nodes[n.0]))
+            .ok_or_else(|| format!("a joint at {name}: that is not a point of an assembly"))?;
+        let Some(c) = b.joint(name, joint)? else { continue };
+        let at: Vec<MemberId> = b.m.members.iter().filter(|m| m.path.contains(&node)).map(|m| m.id).collect();
+        for &id in &at {
+            let mem = b.m.member(id);
+            let ends_here = mem.start() == node || mem.end() == node;
+            let joined_already = b.m.joint(node).is_some_and(|j| j.connections.iter().any(|u| u.member == id));
+            if let (true, false, Some(&to)) = (ends_here, joined_already, at.iter().find(|&&o| o != id)) {
+                b.m.connect(node, id, Some(to), c);
+            }
+        }
     }
     for (r, placed) in &roofs {
         b.finish_roof(r, placed, &written)?;
@@ -2768,5 +2791,6 @@ fn build_pass<'a>(spec: &'a BuildingSpec, at: &[PerimeterParams], drawn: &[Perim
     let solved = numbers.iter().zip(drawn).map(|(n, d)| PerimeterParams::solved(n, &values, d.corners[0])).collect();
     let slabs = slab_tops.iter().map(|n| values[n]).collect();
     let surfaces = spec.items.iter().filter_map(|i| if let ItemSpec::Roof(r) = i { Some(r) } else { None }).collect();
-    Ok(Pass { b, written, declared, roofs, surfaces, solved, slabs, fit })
+    let joined = spec.items.iter().filter_map(|i| if let ItemSpec::Coincide { a, joint: Some(j), .. } = i { Some((a.as_str(), j)) } else { None }).collect();
+    Ok(Pass { b, written, declared, roofs, surfaces, solved, slabs, fit, joined })
 }

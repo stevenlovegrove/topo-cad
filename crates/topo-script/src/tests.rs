@@ -2279,3 +2279,33 @@ fn a_frame_carries_load_through_a_node_on_a_face() {
     assert!(td.diagrams[ci][beam.idx()].max_displacement().0 > 1e-6);
     assert!(td.diagrams[ci][beam.idx()].tq.iter().any(|t| t.abs() > 100.0));
 }
+
+/// Two bodies made one at a node: the joint said with the coincidence carries moment across
+/// it; without one they meet as pinned, and an arm held only so is a mechanism, said.
+#[test]
+fn a_joint_between_assemblies_is_said_with_the_coincidence() {
+    let model = |how: &str| format!(r#"
+        import {{ Aluminum, Assembly, coincide, Joint, mm, Model, tube }} from "topo-cad";
+        const al = {{ section: tube(mm(30), mm(2)), material: Aluminum.T6061 }};
+        const post = Assembly.named("Post").point("foot", [0, 0, 0]).point("top", [0, 0, 0.5]).member("post", ["foot", "top"], al).support("foot", "fixed");
+        const arm = Assembly.named("Arm").point("root", [0, 0, 0.5]).point("tip", [1, 0, 0.5]).member("arm", ["root", "tip"], al).force("Hang", "tip", [0, 0, -100]);
+        export default Model.named("x").designBasis({{ selfWeight: false }}).add(post, arm, coincide(arm.node("root"), post.node("top"){how}));
+    "#);
+    let solve = |how: &str| {
+        let m = run(&model(how), "x.ts").unwrap_or_else(|e| panic!("{e}"));
+        let topo = Topology::build(&m);
+        let g = Geometry::build(&m, &topo);
+        let td = topo_analysis::takedown(&m, &topo, &g);
+        (m, td)
+    };
+    let (m, td) = solve(r#", { joint: Joint.clamped("Clamp") }"#);
+    assert!(td.issues.is_empty(), "{:#?}", td.issues);
+    let ci = m.load_cases.iter().position(|c| c.name == "Hang").unwrap();
+    let arm = m.find_member("arm#1").unwrap();
+    assert!((td.diagrams[ci][arm.idx()].m[0].abs() - 100.0).abs() < 1e-6, "the arm's root carries P L");
+    let post = m.find_member("post#1").unwrap();
+    let dp = &td.diagrams[ci][post.idx()];
+    assert!((dp.m[0].hypot(dp.m2[0]) - 100.0).abs() < 1e-6, "and so does the post, to its foot: {} {}", dp.m[0], dp.m2[0]);
+    let (_, td) = solve("");
+    assert!(td.issues.iter().any(|i| i.code == "frame-unsolved"), "{:#?}", td.issues);
+}

@@ -67,3 +67,33 @@ fn new_project_template_builds_clean() {
     assert!(b.issues.is_empty(), "{:#?}", b.issues);
     assert_eq!(slug(" My Garage! (v2) "), "my-garage-v2");
 }
+
+/// Models that are not buildings: metric, analysed as a frame; the app answers for them as for
+/// any other (their state, a member's diagrams in their units, the mesh, the deflected shape).
+#[test]
+fn bike_and_cart_in_a_session() {
+    let dir = examples();
+    for file in ["bike.ts", "kids-cart.ts"] {
+        let entry = format!("{dir}/{file}");
+        let mut s = Session::new(&entry, files(&dir, file));
+        let script = s.script().unwrap();
+        s.rebuild(&script);
+        let st = s.state();
+        assert!(st.get("error").is_none(), "{file}: {st}");
+        assert!(st["analysis"]["standard"].as_str().unwrap().contains("factor of safety"), "{file}");
+        assert!(st["analysis"]["displacement"]["mm"].as_f64().unwrap() > 0.1, "{file}");
+        let mesh: Value = serde_json::from_str(&s.request("mesh", "").unwrap()).unwrap();
+        let first = &mesh["members"][0];
+        assert!(first["made_of"].is_string(), "{file}: {first}");
+        let path = first["path"].as_str().unwrap();
+        let d: Value = serde_json::from_str(&s.request("member", &json!({ "path": path, "combo": "" }).to_string()).unwrap()).unwrap();
+        assert_eq!(d["units"]["f"], "N", "{file}");
+        assert_eq!(d["behaviour"], "frame", "{file}");
+        assert!(d["length"].as_str().unwrap().ends_with(" mm"), "{file}");
+        let shape: Value = serde_json::from_str(&s.request("deflected", r#"{"combo": ""}"#).unwrap()).unwrap();
+        assert_eq!(shape["members"].as_array().unwrap().len(), mesh["members"].as_array().unwrap().len(), "{file}");
+        assert!(shape["max"].as_f64().unwrap() > 1e-4, "{file}");
+        let v: Value = serde_json::from_str(&s.request("view3d", r#"{"az": 200, "el": 25}"#).unwrap()).unwrap();
+        assert!(!v["segments"].as_array().unwrap().is_empty(), "{file}");
+    }
+}
