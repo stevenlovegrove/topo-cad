@@ -1,0 +1,431 @@
+{
+  "label": "Files in examples",
+  "writable": false,
+  "files": [
+    {
+      "id": "a-roof-fitted-to-a-photo.ts",
+      "mtime": "\"1793499816528754364-4438\"",
+      "project": true
+    },
+    {
+      "id": "as-measured.ts",
+      "mtime": "\"1793400787403470244-1948\"",
+      "project": true
+    },
+    {
+      "id": "benchmarks/01-floor-joist.ts",
+      "mtime": "\"1793400787403693038-1983\"",
+      "project": true
+    },
+    {
+      "id": "benchmarks/02-header-point-loads.ts",
+      "mtime": "\"1793400787403793998-1863\"",
+      "project": true
+    },
+    {
+      "id": "benchmarks/03-post-column.ts",
+      "mtime": "\"1793400787403907791-962\"",
+      "project": true
+    },
+    {
+      "id": "benchmarks/04-nailed-header.ts",
+      "mtime": "\"1793400787404004583-1955\"",
+      "project": true
+    },
+    {
+      "id": "benchmarks/05-roof-takedown.ts",
+      "mtime": "\"1793400787404136626-2456\"",
+      "project": true
+    },
+    {
+      "id": "benchmarks/06-awc-span-table.ts",
+      "mtime": "\"1793400787404553797-2255\"",
+      "project": true
+    },
+    {
+      "id": "bike.ts",
+      "mtime": "\"1793400787404769049-9475\"",
+      "project": true
+    },
+    {
+      "id": "block-m4.ts",
+      "mtime": "\"1793400787404941676-4586\"",
+      "project": true
+    },
+    {
+      "id": "bracket.ts",
+      "mtime": "\"1793400787405007135-1064\"",
+      "project": true
+    },
+    {
+      "id": "corner.ts",
+      "mtime": "\"1793400787405070969-3960\"",
+      "project": true
+    },
+    {
+      "id": "cybertruck.fit.ts",
+      "mtime": "\"1793499816529363411-13007\"",
+      "project": false
+    },
+    {
+      "id": "cybertruck.proportions.ts",
+      "mtime": "\"1793400787405256471-1418\"",
+      "project": false
+    },
+    {
+      "id": "cybertruck.sightings.ts",
+      "mtime": "\"1793400787405406639-9057\"",
+      "project": false
+    },
+    {
+      "id": "cybertruck.ts",
+      "mtime": "\"1793400787405654475-45326\"",
+      "project": true
+    },
+    {
+      "id": "four-bar.ts",
+      "mtime": "\"1793400787405758767-3009\"",
+      "project": true
+    },
+    {
+      "id": "garage-as-built.ts",
+      "mtime": "\"1793400787405865977-3096\"",
+      "project": true
+    },
+    {
+      "id": "garage-truss-shape.ts",
+      "mtime": "\"1793400787405964353-2342\"",
+      "project": false
+    },
+    {
+      "id": "garage-truss.ts",
+      "mtime": "\"1793400787406060104-6206\"",
+      "project": true
+    },
+    {
+      "id": "header-and-truss-row.ts",
+      "mtime": "\"1793400787406144438-6387\"",
+      "project": true
+    },
+    {
+      "id": "joinery/01-butt.ts",
+      "mtime": "\"1793400787406251772-2019\"",
+      "project": true
+    },
+    {
+      "id": "joinery/02-cope.ts",
+      "mtime": "\"1793400787406331856-1772\"",
+      "project": true
+    },
+    {
+      "id": "joinery/03-miter.ts",
+      "mtime": "\"1793400787406419982-2983\"",
+      "project": true
+    },
+    {
+      "id": "joinery/04-lap.ts",
+      "mtime": "\"1793400787406500691-2791\"",
+      "project": true
+    },
+    {
+      "id": "joinery/05-housed.ts",
+      "mtime": "\"1793400787406579567-1964\"",
+      "project": true
+    },
+    {
+      "id": "joinery/06-birdsmouth.ts",
+      "mtime": "\"1793400787406663235-3163\"",
+      "project": true
+    },
+    {
+      "id": "joinery/07-tube-onto-timber.ts",
+      "mtime": "\"1793400787406740027-3971\"",
+      "project": true
+    },
+    {
+      "id": "joinery/08-mortise-and-tenon.ts",
+      "mtime": "\"1793400787406824945-4631\"",
+      "project": true
+    },
+    {
+      "id": "kids-trike.ts",
+      "mtime": "\"1793400787406924404-7385\"",
+      "project": true
+    },
+    {
+      "id": "l-shape.ts",
+      "mtime": "\"1793400787406986363-2214\"",
+      "project": true
+    },
+    {
+      "id": "lean-to.drawn.json",
+      "mtime": "\"1793500046071577217-619844\"",
+      "project": false
+    },
+    {
+      "id": "lean-to.solved.json",
+      "mtime": "\"1793586103106083032-98133\"",
+      "project": false
+    },
+    {
+      "id": "lean-to.ts",
+      "mtime": "\"1793400787407040989-3204\"",
+      "project": true
+    },
+    {
+      "id": "legs.ts",
+      "mtime": "\"1793400787407112239-2683\"",
+      "project": true
+    },
+    {
+      "id": "photo-lego-brick.sightings.gen.ts",
+      "mtime": "\"1793400787407393200-446\"",
+      "project": false
+    },
+    {
+      "id": "photo-lego-brick.sightings.ts",
+      "mtime": "\"1793400787407490785-4167\"",
+      "project": false
+    },
+    {
+      "id": "photo-lego-brick.ts",
+      "mtime": "\"1793499816529574163-6587\"",
+      "project": true
+    },
+    {
+      "id": "primitives/01-beam-on-beam.ts",
+      "mtime": "\"1793400787407704120-2015\"",
+      "project": true
+    },
+    {
+      "id": "primitives/06-placed-by-a-corner.ts",
+      "mtime": "\"1793400787407793413-3713\"",
+      "project": true
+    },
+    {
+      "id": "primitives/09-walls-that-slope.ts",
+      "mtime": "\"1793400787407883830-2617\"",
+      "project": true
+    },
+    {
+      "id": "primitives/10-walls-on-a-slab-and-a-curb.ts",
+      "mtime": "\"1793400787407969123-3463\"",
+      "project": true
+    },
+    {
+      "id": "primitives/11-a-floor-on-walls.ts",
+      "mtime": "\"1793400787408046290-1892\"",
+      "project": true
+    },
+    {
+      "id": "primitives/12-a-slab-laid-to-fall-and-a-level-curb.ts",
+      "mtime": "\"1793400787408143874-4338\"",
+      "project": true
+    },
+    {
+      "id": "primitives/13-walls-on-a-slab-laid-to-fall.ts",
+      "mtime": "\"1793400787408221875-3882\"",
+      "project": true
+    },
+    {
+      "id": "primitives/14-a-floor-at-two-heights.ts",
+      "mtime": "\"1793400787408313459-2243\"",
+      "project": true
+    },
+    {
+      "id": "primitives/15-a-slab-read-from-a-scan.ts",
+      "mtime": "\"1793400787408390377-2282\"",
+      "project": true
+    },
+    {
+      "id": "primitives/16-from-the-slab-up.ts",
+      "mtime": "\"1793400787408480461-4591\"",
+      "project": true
+    },
+    {
+      "id": "primitives/17-a-roof-over-part.ts",
+      "mtime": "\"1793400787408575879-3325\"",
+      "project": true
+    },
+    {
+      "id": "primitives/18-a-loft-on-a-beam.ts",
+      "mtime": "\"1793400787408653505-3319\"",
+      "project": true
+    },
+    {
+      "id": "primitives/19-an-interior-wall.ts",
+      "mtime": "\"1793400787408741839-4843\"",
+      "project": true
+    },
+    {
+      "id": "primitives/20-a-second-storey.ts",
+      "mtime": "\"1793400787408846173-3628\"",
+      "project": true
+    },
+    {
+      "id": "primitives/21-a-stairwell-and-stairs.ts",
+      "mtime": "\"1793400787408961549-3776\"",
+      "project": true
+    },
+    {
+      "id": "primitives/22-a-floor-on-walls-as-built.ts",
+      "mtime": "\"1793400787409037800-4246\"",
+      "project": true
+    },
+    {
+      "id": "primitives/23-a-rafter-roof.ts",
+      "mtime": "\"1793400787409118468-2865\"",
+      "project": true
+    },
+    {
+      "id": "primitives/24-a-hip-roof.ts",
+      "mtime": "\"1793400787409208135-2396\"",
+      "project": true
+    },
+    {
+      "id": "primitives/25-a-roof-that-turns-a-corner.ts",
+      "mtime": "\"1793400787409292053-6449\"",
+      "project": true
+    },
+    {
+      "id": "primitives/26-a-dormer.ts",
+      "mtime": "\"1793400787409368887-2400\"",
+      "project": true
+    },
+    {
+      "id": "primitives/27-what-a-floor-and-a-roof-are-made-of.ts",
+      "mtime": "\"1793400787409455013-4161\"",
+      "project": true
+    },
+    {
+      "id": "primitives/28-a-shed-roof.ts",
+      "mtime": "\"1793400787409541639-3358\"",
+      "project": true
+    },
+    {
+      "id": "primitives/29-a-saltbox.ts",
+      "mtime": "\"1793400787409628598-2010\"",
+      "project": true
+    },
+    {
+      "id": "primitives/30-a-flat-roof-on-trusses-of-your-own.ts",
+      "mtime": "\"1793400787409706057-4543\"",
+      "project": true
+    },
+    {
+      "id": "primitives/31-an-open-web-floor.ts",
+      "mtime": "\"1793400787409765016-3020\"",
+      "project": true
+    },
+    {
+      "id": "primitives/32-a-roof-of-parts.ts",
+      "mtime": "\"1793400787409828017-2347\"",
+      "project": true
+    },
+    {
+      "id": "primitives/33-raised-heel-trusses.ts",
+      "mtime": "\"1793400787409884434-3212\"",
+      "project": true
+    },
+    {
+      "id": "primitives/34-a-girder-truss-carrying-commons.ts",
+      "mtime": "\"1793400787409939059-4101\"",
+      "project": true
+    },
+    {
+      "id": "road-bike.ts",
+      "mtime": "\"1793400787410031977-13506\"",
+      "project": true
+    },
+    {
+      "id": "sheet-bracket.ts",
+      "mtime": "\"1793400787410143311-4762\"",
+      "project": true
+    },
+    {
+      "id": "sheet-seams.ts",
+      "mtime": "\"1793400787410225687-2665\"",
+      "project": true
+    },
+    {
+      "id": "sheet-stack.ts",
+      "mtime": "\"1793400787410309688-2208\"",
+      "project": true
+    },
+    {
+      "id": "site-template.ts",
+      "mtime": "\"1793400787410521565-2016\"",
+      "project": false
+    },
+    {
+      "id": "table.ts",
+      "mtime": "\"1793400787410591732-3280\"",
+      "project": false
+    },
+    {
+      "id": "truss-gallery.ts",
+      "mtime": "\"1793400787410702734-4994\"",
+      "project": true
+    },
+    {
+      "id": "tslot.ts",
+      "mtime": "\"1793400787410989861-5174\"",
+      "project": false
+    },
+    {
+      "id": "uneven-floor.ts",
+      "mtime": "\"1793400787411056529-2230\"",
+      "project": true
+    },
+    {
+      "id": "volumes/01-a-block-under-a-shelf.ts",
+      "mtime": "\"1793400787411181030-1404\"",
+      "project": true
+    },
+    {
+      "id": "volumes/02-a-bracket-extruded-to-a-plate.ts",
+      "mtime": "\"1793400787411269197-2213\"",
+      "project": true
+    },
+    {
+      "id": "volumes/03-a-wheel-on-an-axle.ts",
+      "mtime": "\"1793400787411356157-2552\"",
+      "project": true
+    },
+    {
+      "id": "volumes/04-a-rail-swept-along-a-plate.ts",
+      "mtime": "\"1793400787411445866-2908\"",
+      "project": true
+    },
+    {
+      "id": "volumes/05-a-tapered-plinth.ts",
+      "mtime": "\"1793400787411548992-1413\"",
+      "project": true
+    },
+    {
+      "id": "volumes/06-a-lid-and-its-stop.ts",
+      "mtime": "\"1793400787411754619-2154\"",
+      "project": true
+    },
+    {
+      "id": "volumes/07-a-drawer.ts",
+      "mtime": "\"1793400787411869287-1580\"",
+      "project": true
+    },
+    {
+      "id": "volumes/08-a-wheel-well.ts",
+      "mtime": "\"1793400787411991038-3118\"",
+      "project": true
+    },
+    {
+      "id": "volumes/09-a-clearance.ts",
+      "mtime": "\"1793400787412075831-1820\"",
+      "project": true
+    },
+    {
+      "id": "walls.ts",
+      "mtime": "\"1793400787412142790-4389\"",
+      "project": true
+    }
+  ]
+}
